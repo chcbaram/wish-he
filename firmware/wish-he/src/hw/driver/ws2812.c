@@ -19,9 +19,10 @@
  *   1 -> 0xFC (상위 6비트 high = 0.750us)
  *   주기는 1.0us 로 규격(1.25us ±600ns) 안이다.
  *
- * 현재는 블로킹 전송이다. 프레임 1992 B / 8MHz = 약 2ms.
- * 키 스캔이 들어오면 상용 펌웨어처럼 SPI+DMA 로 바꿔야 한다
- * (상용은 hpm_spi_dma_install_callback 을 쓴다).
+ * 전송은 SPI TX + HDMA 논블로킹이다. CPU 는 프레임버퍼만 채우고 바로 빠져나오므로
+ * 키 스캔 루프를 막지 않는다 — 상용 펌웨어가 40kHz 스캔과 LED 를 공존시키는 방식과 같다.
+ *
+ * 주의: DMA 는 D-cache 를 보지 않는다. 전송 전에 프레임버퍼를 라이트백해야 한다.
  */
 #include "ws2812.h"
 
@@ -32,6 +33,10 @@
 #include "hpm_spi_drv.h"
 #include "hpm_clock_drv.h"
 #include "hpm_iomux.h"
+#include "hpm_dmav2_drv.h"
+#include "hpm_dmamux_drv.h"
+#include "hpm_misc.h"
+#include "hpm_l1c_drv.h"
 
 
 #if CLI_USE(HW_WS2812)
@@ -40,6 +45,7 @@ static void cliWs2812(cli_args_t *args);
 
 
 #define WS2812_SPI            HPM_SPI1
+#define WS2812_DMA_CH         HW_DMA_CH_WS2812   /* 채널 배분은 hw_def.h 참조 */
 #define WS2812_SPI_HZ         8000000U
 
 #define WS2812_BIT_0          0xE0
@@ -54,6 +60,7 @@ static void cliWs2812(cli_args_t *args);
 static bool     is_init = false;
 static uint8_t  frame_buf[WS2812_BUF_LEN];
 static spi_control_config_t ctrl_config;
+static volatile bool is_busy = false;
 
 
 /* 테스트 패턴 밝기. 전류 예산 때문에 낮게 유지한다 (docs/README.md 4절). */
@@ -125,9 +132,18 @@ bool ws2812Init(void)
   spi_master_get_default_control_config(&ctrl_config);
   ctrl_config.master_config.cmd_enable  = false;
   ctrl_config.master_config.addr_enable = false;
-  ctrl_config.common_config.tx_dma_enable = false;
+  ctrl_config.common_config.tx_dma_enable = true;    /* DMA 전송 */
   ctrl_config.common_config.rx_dma_enable = false;
   ctrl_config.common_config.trans_mode    = spi_trans_write_only;
+
+  /*
+   * IAP 도 WS2812 를 SPI1+DMA 로 돌린다. 채널이 살아있는 채로 넘어올 수 있으므로
+   * 쓰기 전에 정리한다.
+   */
+  dma_abort_channel(HPM_HDMA, 1u << WS2812_DMA_CH);
+  dma_disable_channel(HPM_HDMA, WS2812_DMA_CH);
+  (void)dma_check_transfer_status(HPM_HDMA, WS2812_DMA_CH);   /* 남은 플래그 W1C */
+  is_busy = false;
 
   ws2812Clear();
 
@@ -175,18 +191,65 @@ void ws2812Clear(void)
   }
 }
 
-bool ws2812Refresh(void)
+/*
+ * 주의: SDK 의 dma_check_transfer_status() 는 완료 플래그가 하나도 없으면
+ * ONGOING 을 돌려준다. 즉 "한 번도 안 쓴 채널" 도 진행 중으로 보인다.
+ * 그래서 유휴 판정에 그대로 쓰면 안 되고, 시작 시점을 우리가 기억해야 한다.
+ */
+bool ws2812IsBusy(void)
 {
-  hpm_stat_t status;
+  uint32_t status;
 
   if (is_init != true) return false;
+  if (is_busy != true) return false;
 
-  status = spi_transfer(WS2812_SPI, &ctrl_config,
-                        NULL, NULL,
-                        frame_buf, WS2812_BUF_LEN,
-                        NULL, 0);
+  status = dma_check_transfer_status(HPM_HDMA, WS2812_DMA_CH);
+  if (status & (DMA_CHANNEL_STATUS_TC | DMA_CHANNEL_STATUS_ERROR | DMA_CHANNEL_STATUS_ABORT))
+  {
+    is_busy = false;
+  }
 
-  return (status == status_success);
+  return is_busy;
+}
+
+bool ws2812Refresh(void)
+{
+  dma_channel_config_t ch_config = {0};
+
+  if (is_init != true)   return false;
+  if (ws2812IsBusy())    return false;   /* 이전 프레임이 아직 나가는 중 */
+
+  /* DMA 는 캐시를 거치지 않는다. 버퍼를 메모리까지 밀어낸다. */
+  l1c_dc_writeback((uint32_t)frame_buf, WS2812_BUF_LEN);
+
+  if (spi_setup_dma_transfer(WS2812_SPI, &ctrl_config,
+                             NULL, NULL, WS2812_BUF_LEN, 0) != status_success)
+  {
+    return false;
+  }
+
+  dma_default_channel_config(HPM_HDMA, &ch_config);
+  ch_config.src_addr      = core_local_mem_to_sys_address(0, (uint32_t)frame_buf);
+  ch_config.dst_addr      = (uint32_t)&WS2812_SPI->DATA;
+  ch_config.src_width     = DMA_TRANSFER_WIDTH_BYTE;
+  ch_config.dst_width     = DMA_TRANSFER_WIDTH_BYTE;
+  ch_config.src_addr_ctrl = DMA_ADDRESS_CONTROL_INCREMENT;
+  ch_config.dst_addr_ctrl = DMA_ADDRESS_CONTROL_FIXED;   /* SPI DATA 는 고정 주소 */
+  ch_config.src_burst_size = DMA_NUM_TRANSFER_PER_BURST_1T;
+  ch_config.dst_mode      = DMA_HANDSHAKE_MODE_HANDSHAKE; /* SPI 가 요청할 때만 */
+  ch_config.size_in_byte  = WS2812_BUF_LEN;
+
+  dmamux_config(HPM_DMAMUX,
+                DMA_SOC_CHN_TO_DMAMUX_CHN(HPM_HDMA, WS2812_DMA_CH),
+                HPM_DMA_SRC_SPI1_TX, true);
+
+  if (dma_setup_channel(HPM_HDMA, WS2812_DMA_CH, &ch_config, true) != status_success)
+  {
+    return false;
+  }
+
+  is_busy = true;
+  return true;
 }
 
 uint16_t ws2812GetMaxCh(void)
@@ -206,6 +269,7 @@ void cliWs2812(cli_args_t *args)
     cliPrintf("ws2812 ch    : %d\n", HW_WS2812_MAX_CH);
     cliPrintf("frame bytes  : %d\n", WS2812_BUF_LEN);
     cliPrintf("spi clk      : %d Hz\n", (int)clock_get_frequency(clock_spi1));
+    cliPrintf("busy         : %d\n", ws2812IsBusy() ? 1 : 0);
     ret = true;
   }
 

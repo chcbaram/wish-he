@@ -17,6 +17,23 @@
 /* IAP 부트로더 진입 / 소프트 리셋. docs/README.md 6.3 참조 */
 #define _USE_HW_RESET
 
+/*
+ * HDMA 채널 배분 — 전역 자원이므로 여기서 한 곳에 모아 관리한다.
+ * 드라이버가 각자 임의 번호를 잡으면 조용히 서로 덮어쓴다(실제로 겪었다).
+ */
+#define      HW_DMA_CH_UART0_RX     0
+#define      HW_DMA_CH_WS2812       2
+/*           HW_DMA_CH_ADC          3~  (예정) */
+
+/*
+ * 우선순위는 채널 번호와 무관하다 — CHCTRL[n].CTRL bit29 로 채널마다 따로 준다.
+ * 2단계뿐이고 dma_default_channel_config() 기본값은 LOW 다.
+ *
+ *   ADC    : HIGH  — 스캔 타이밍이 밀리면 키 입력이 튄다
+ *   WS2812 : LOW   — 2ms 정도 늦어도 눈에 안 보인다
+ *   UART   : LOW
+ */
+
 /* WS2812 (PA29 = SPI1.MOSI). 이 보드의 유일한 시각 표시 수단이다. */
 #define _USE_HW_WS2812
 #define      HW_WS2812_MAX_CH       83

@@ -91,7 +91,7 @@ bool uartInit(void)
   uart_tbl[HW_UART_CH_DEBUG].p_uart  = HPM_UART0;
   uart_tbl[HW_UART_CH_DEBUG].clock   = clock_uart0;
   uart_tbl[HW_UART_CH_DEBUG].p_dma   = HPM_HDMA;
-  uart_tbl[HW_UART_CH_DEBUG].dma_ch  = 0;
+  uart_tbl[HW_UART_CH_DEBUG].dma_ch  = HW_DMA_CH_UART0_RX;
   uart_tbl[HW_UART_CH_DEBUG].dma_req = HPM_DMA_SRC_UART0_RX;
 
   is_init = true;
