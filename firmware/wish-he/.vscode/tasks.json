@@ -1,0 +1,48 @@
+{
+	"version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build-configure",
+      "type": "shell",
+      "windows":{
+        "command": "cmake -S . -B build -G 'MinGW Makefiles'" ,
+      },
+      "command": "cmake -S . -B build",
+      "problemMatcher": []
+    },
+    {
+      "label": "build-build",
+      "type": "shell",
+      "windows":{
+        "command": "cmake -S . -B build -G 'MinGW Makefiles'; cmake --build build -j20",
+      },
+      "command": "cmake -S . -B build; cmake --build build -j20",
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "build-clean",
+      "type": "shell",
+      "command": "cmake --build build --target clean",
+      "problemMatcher": [],
+    },
+    {
+      "label": "flash",
+      "type": "shell",
+      "command": "${env:HPM_RISCV_OPENOCD_PATH}/openocd -s tools/openocd -f hpm5361-fw.cfg -c \"init; halt; program build/hpm5361-fw.elf verify; reset; exit\"",
+      "dependsOn": "build-build",
+      "problemMatcher": [],
+    },
+    {
+      "label": "openocd-server",
+      "type": "shell",
+      "command": "${env:HPM_RISCV_OPENOCD_PATH}/openocd -s tools/openocd -f hpm5361-fw.cfg",
+      "isBackground": true,
+      "problemMatcher": [],
+    },
+
+  ]
+}
