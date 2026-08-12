@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="560" viewBox="0 0 1120 560" role="img" aria-label="WS2812 데이터 경로">
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8c959f"/></marker></defs>
+<rect width="1120" height="560" fill="#ffffff"/>
+<text xml:space="preserve" x="560.0" y="34" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="17" fill="#1f2328" text-anchor="middle" font-weight="700">WS2812 는 어떻게 켜지나</text>
+<text xml:space="preserve" x="560.0" y="56" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="12.5" fill="#6a737d" text-anchor="middle" font-weight="400">CPU 는 색만 정하고 빠진다. 나머지는 DMA 와 SPI 가 알아서 한다.</text>
+<rect x="50" y="86" width="170" height="84" rx="8" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.6"/>
+<text xml:space="preserve" x="135.0" y="114" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="14" fill="#1f2328" text-anchor="middle" font-weight="700">CPU</text>
+<text xml:space="preserve" x="135.0" y="136" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">색을 정한다</text>
+<text xml:space="preserve" x="135.0" y="154" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="10.5" fill="#6a737d" text-anchor="middle" font-weight="400">ws2812SetColor()</text>
+<rect x="262" y="86" width="170" height="84" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.6"/>
+<text xml:space="preserve" x="347.0" y="114" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="14" fill="#1f2328" text-anchor="middle" font-weight="700">frame_buf</text>
+<text xml:space="preserve" x="347.0" y="136" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">2052 바이트</text>
+<text xml:space="preserve" x="347.0" y="154" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="10.5" fill="#6a737d" text-anchor="middle" font-weight="400">메모리에 쌓아둔다</text>
+<rect x="474" y="86" width="170" height="84" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.6"/>
+<text xml:space="preserve" x="559.0" y="114" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="14" fill="#1f2328" text-anchor="middle" font-weight="700">HDMA ch2</text>
+<text xml:space="preserve" x="559.0" y="136" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">혼자 퍼나른다</text>
+<text xml:space="preserve" x="559.0" y="154" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="10.5" fill="#6a737d" text-anchor="middle" font-weight="400">CPU 개입 없음</text>
+<rect x="686" y="86" width="170" height="84" rx="8" fill="#fef3c7" stroke="#d97706" stroke-width="1.6"/>
+<text xml:space="preserve" x="771.0" y="114" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="14" fill="#1f2328" text-anchor="middle" font-weight="700">SPI1</text>
+<text xml:space="preserve" x="771.0" y="136" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">8 MHz</text>
+<text xml:space="preserve" x="771.0" y="154" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="10.5" fill="#6a737d" text-anchor="middle" font-weight="400">비트를 실어 보낸다</text>
+<rect x="898" y="86" width="170" height="84" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="1.6"/>
+<text xml:space="preserve" x="983.0" y="114" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="14" fill="#1f2328" text-anchor="middle" font-weight="700">WS2812 x83</text>
+<text xml:space="preserve" x="983.0" y="136" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">PA29 로 들어간다</text>
+<line x1="228" y1="128.0" x2="254" y2="128.0" stroke="#8c959f" stroke-width="2.2" marker-end="url(#a)"/>
+<line x1="440" y1="128.0" x2="466" y2="128.0" stroke="#8c959f" stroke-width="2.2" marker-end="url(#a)"/>
+<line x1="652" y1="128.0" x2="678" y2="128.0" stroke="#8c959f" stroke-width="2.2" marker-end="url(#a)"/>
+<line x1="864" y1="128.0" x2="890" y2="128.0" stroke="#8c959f" stroke-width="2.2" marker-end="url(#a)"/>
+<circle cx="920" cy="190" r="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.4"/>
+<circle cx="936" cy="190" r="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.4"/>
+<circle cx="952" cy="190" r="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.4"/>
+<circle cx="968" cy="190" r="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.4"/>
+<circle cx="984" cy="190" r="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.4"/>
+<circle cx="1000" cy="190" r="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.4"/>
+<circle cx="1016" cy="190" r="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.4"/>
+<circle cx="1032" cy="190" r="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.4"/>
+<circle cx="1048" cy="190" r="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.4"/>
+<text xml:space="preserve" x="1062" y="194" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="12" fill="#6a737d" text-anchor="end" font-weight="400">...</text>
+<rect x="40" y="210" width="1040" height="190" rx="8" fill="#fafbfc" stroke="#d0d7de" stroke-width="1.2"/>
+<text xml:space="preserve" x="64" y="238" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="14" fill="#1f2328" text-anchor="start" font-weight="700">SPI 1 바이트 = WS2812 1 비트</text>
+<text xml:space="preserve" x="64" y="258" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="start" font-weight="400">8비트 x 125ns = 1.0us. 앞쪽을 몇 칸 높게 두느냐로 0 과 1 을 만든다.</text>
+<rect x="150" y="282" width="44" height="34" rx="0" fill="#ffffff" stroke="#e6e8eb" stroke-width="1"/>
+<rect x="194" y="282" width="44" height="34" rx="0" fill="#ffffff" stroke="#e6e8eb" stroke-width="1"/>
+<rect x="238" y="282" width="44" height="34" rx="0" fill="#ffffff" stroke="#e6e8eb" stroke-width="1"/>
+<rect x="282" y="282" width="44" height="34" rx="0" fill="#ffffff" stroke="#e6e8eb" stroke-width="1"/>
+<rect x="326" y="282" width="44" height="34" rx="0" fill="#ffffff" stroke="#e6e8eb" stroke-width="1"/>
+<rect x="370" y="282" width="44" height="34" rx="0" fill="#ffffff" stroke="#e6e8eb" stroke-width="1"/>
+<rect x="414" y="282" width="44" height="34" rx="0" fill="#ffffff" stroke="#e6e8eb" stroke-width="1"/>
+<rect x="458" y="282" width="44" height="34" rx="0" fill="#ffffff" stroke="#e6e8eb" stroke-width="1"/>
+<path d="M 150,316 L 150,282 L 282,282 L 282,316 L 502,316" fill="none" stroke="#3b82f6" stroke-width="2.6"/>
+<text xml:space="preserve" x="138" y="288" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="12.5" fill="#3b82f6" text-anchor="end" font-weight="700">0xE0</text>
+<text xml:space="preserve" x="216.0" y="274" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="10.5" fill="#3b82f6" text-anchor="middle" font-weight="600">375ns</text>
+<text xml:space="preserve" x="516" y="304" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="12.5" fill="#1f2328" text-anchor="start" font-weight="700">= 0</text>
+<text xml:space="preserve" x="516" y="320" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="10.5" fill="#6a737d" text-anchor="start" font-weight="400">규격 T0H 0.4us</text>
+<rect x="620" y="282" width="44" height="34" rx="0" fill="#ffffff" stroke="#e6e8eb" stroke-width="1"/>
+<rect x="664" y="282" width="44" height="34" rx="0" fill="#ffffff" stroke="#e6e8eb" stroke-width="1"/>
+<rect x="708" y="282" width="44" height="34" rx="0" fill="#ffffff" stroke="#e6e8eb" stroke-width="1"/>
+<rect x="752" y="282" width="44" height="34" rx="0" fill="#ffffff" stroke="#e6e8eb" stroke-width="1"/>
+<rect x="796" y="282" width="44" height="34" rx="0" fill="#ffffff" stroke="#e6e8eb" stroke-width="1"/>
+<rect x="840" y="282" width="44" height="34" rx="0" fill="#ffffff" stroke="#e6e8eb" stroke-width="1"/>
+<rect x="884" y="282" width="44" height="34" rx="0" fill="#ffffff" stroke="#e6e8eb" stroke-width="1"/>
+<rect x="928" y="282" width="44" height="34" rx="0" fill="#ffffff" stroke="#e6e8eb" stroke-width="1"/>
+<path d="M 620,316 L 620,282 L 884,282 L 884,316 L 972,316" fill="none" stroke="#d97706" stroke-width="2.6"/>
+<text xml:space="preserve" x="608" y="288" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="12.5" fill="#d97706" text-anchor="end" font-weight="700">0xFC</text>
+<text xml:space="preserve" x="752.0" y="274" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="10.5" fill="#d97706" text-anchor="middle" font-weight="600">750ns</text>
+<text xml:space="preserve" x="986" y="304" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="12.5" fill="#1f2328" text-anchor="start" font-weight="700">= 1</text>
+<text xml:space="preserve" x="986" y="320" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="10.5" fill="#6a737d" text-anchor="start" font-weight="400">규격 T1H 0.8us</text>
+<line x1="150" y1="344" x2="502" y2="344" stroke="#6a737d" stroke-width="1.0"/>
+<line x1="150" y1="340" x2="150" y2="348" stroke="#6a737d" stroke-width="1.0"/>
+<line x1="502" y1="340" x2="502" y2="348" stroke="#6a737d" stroke-width="1.0"/>
+<rect x="300.0" y="336" width="52" height="16" rx="0" fill="#ffffff" stroke="#ffffff" stroke-width="0"/>
+<text xml:space="preserve" x="326.0" y="348" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="10.5" fill="#6a737d" text-anchor="middle" font-weight="400">1.0us</text>
+<line x1="620" y1="344" x2="972" y2="344" stroke="#6a737d" stroke-width="1.0"/>
+<line x1="620" y1="340" x2="620" y2="348" stroke="#6a737d" stroke-width="1.0"/>
+<line x1="972" y1="340" x2="972" y2="348" stroke="#6a737d" stroke-width="1.0"/>
+<rect x="770.0" y="336" width="52" height="16" rx="0" fill="#ffffff" stroke="#ffffff" stroke-width="0"/>
+<text xml:space="preserve" x="796.0" y="348" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="10.5" fill="#6a737d" text-anchor="middle" font-weight="400">1.0us</text>
+<rect x="40" y="418" width="1040" height="118" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.2"/>
+<text xml:space="preserve" x="64" y="446" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="14" fill="#1f2328" text-anchor="start" font-weight="700">CPU 는 기다리지 않는다</text>
+<rect x="150" y="462" width="16" height="26" rx="3" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.6"/>
+<rect x="166" y="462" width="814" height="26" rx="3" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.6"/>
+<text xml:space="preserve" x="573.0" y="480" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="12" fill="#1f2328" text-anchor="middle" font-weight="600">DMA 가 전송   2052 x 1.0us = 2.05 ms</text>
+<text xml:space="preserve" x="138" y="480" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11" fill="#7c3aed" text-anchor="end" font-weight="700">호출</text>
+<text xml:space="preserve" x="150" y="510" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="start" font-weight="400">ws2812Refresh() 는 수 us 만에 반환한다. 이 2ms 동안 CPU 는 키 스캔을 돈다.</text>
+</svg>

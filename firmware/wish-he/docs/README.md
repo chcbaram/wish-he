@@ -7,6 +7,8 @@ HPM5361 홀이펙트 키보드 펌웨어. **상용 보드의 IAP 부트로더 �
 - 콘솔: 이 보드에는 UART 헤더가 없다 → **USB CDC** + **JTAG 로 읽는 RAM 링버퍼**
 - 클럭: 400MHz (외부 전원 보드, DCDC 설정 금지 — 6.2 절)
 
+구현 단계와 진행 상황은 [steps.md](steps.md) 를 본다.
+
 IAP 부트로더의 리버스 엔지니어링 결과(부팅 판정 · USB 업데이트 프로토콜)는
 `../hpm5361-fw/docs/board-iap.md` 에 있다. 프로브·복구 절차는 같은 곳의
 `debug-recovery.md` 를 본다.
@@ -127,6 +129,8 @@ MCU·USB·홀센서(64개면 150~200mA)를 빼면 LED 몫은 대략 200~300mA �
 
 > 나중에 **프레임 전류 합산 리미터**(총합이 예산을 넘으면 전체 비례 축소)를 넣는 것이
 > 정석이다. QMK 의 `RGB_MATRIX_MAXIMUM_BRIGHTNESS` 와 같은 역할.
+
+![WS2812 데이터 경로](images/ws2812-dma.svg)
 
 ### 전송 — SPI TX + HDMA (논블로킹)
 
