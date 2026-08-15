@@ -38,6 +38,12 @@
 #define _USE_HW_WS2812
 #define      HW_WS2812_MAX_CH       83
 
+/* 키 스캔 (ADC 시퀀스 + 아날로그 MUX). 8채널 x 8스텝 = 64키 */
+#define _USE_HW_KEYS
+#define      HW_KEYS_STEP_MAX       8       /* MUX 스텝 = 논리 행 */
+#define      HW_KEYS_CH_MAX         8       /* ADC 채널 = 논리 열 */
+#define      KEYS_CH_MAX_PER_ADC    (HW_KEYS_CH_MAX / 2)   /* ADC 하나가 맡는 채널 */
+
 #define _USE_HW_UART
 #define      HW_UART_MAX_CH         2
 #define      HW_UART_CH_DEBUG       _DEF_UART1     /* ch0 = UART0 (PA00/PA01), FT2232 VCP */
@@ -83,6 +89,7 @@
 #define _USE_CLI_HW_LOG             1
 #define _USE_CLI_HW_RESET           1
 #define _USE_CLI_HW_WS2812          1
+#define _USE_CLI_HW_KEYS            1
 #define _USE_CLI_HW_UART            1
 #define _USE_CLI_HW_USB             1
 

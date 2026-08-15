@@ -92,6 +92,7 @@ set(SRC_FILES_SDK
 
   ${HPM_SDK_DIR}/drivers/src/hpm_uart_drv.c
   ${HPM_SDK_DIR}/drivers/src/hpm_gpio_drv.c
+  ${HPM_SDK_DIR}/drivers/src/hpm_adc16_drv.c
   ${HPM_SDK_DIR}/drivers/src/hpm_spi_drv.c
   ${HPM_SDK_DIR}/drivers/src/hpm_mchtmr_drv.c
   ${HPM_SDK_DIR}/drivers/src/hpm_pllctlv2_drv.c

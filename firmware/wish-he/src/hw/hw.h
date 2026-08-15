@@ -11,6 +11,7 @@ extern "C" {
 #include "led.h"
 #include "reset.h"
 #include "ws2812.h"
+#include "keys.h"
 #include "uart.h"
 #include "cli.h"
 #include "log.h"
