@@ -345,7 +345,7 @@ static const keys_switch_t keys_switch[] =
    * 이 보드에서 재야 한다. 아래 값은 이 보드 61키를 보정해 얻은 평균이다
    * (최소 2275, 최대 2683, 평균 2514).
    */
-  { "GEON Raw HE",      340, 838 * KEYS_ACC_CNT },
+  { "GEON RAW HE",      340, 838 * KEYS_ACC_CNT },
 };
 
 /*
