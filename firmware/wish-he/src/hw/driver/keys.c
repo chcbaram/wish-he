@@ -473,6 +473,9 @@ static void keysTrack(uint32_t step)
 
   for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
   {
+    /* 스위치가 없는 자리는 판정하지 않는다. 기준값 추적은 그대로 둬도 무해하다. */
+    if ((keys_present[step] & (1U << c)) == 0) continue;
+
     uint16_t v = raw[step][c];
     int32_t  d;
 
@@ -646,10 +649,15 @@ static void keysCalRejectOutlier(void)
   uint16_t median;
 
 
+  /* ★ 없는 셀은 중앙값을 왜곡한다. 자석이 없어 늘 높은 값이라 기준을 위로 끌어올린다. */
   for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
   {
-    for (uint32_t c = 0; c < KEYS_CH_MAX; c++) sorted[n++] = base[st][c];
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      if (keys_present[st] & (1U << c)) sorted[n++] = base[st][c];
+    }
   }
+  if (n == 0) return;
 
   /* 64개뿐이라 삽입정렬로 충분하다 */
   for (uint32_t i = 1; i < n; i++)
@@ -665,6 +673,7 @@ static void keysCalRejectOutlier(void)
   {
     for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
     {
+      if ((keys_present[st] & (1U << c)) == 0) continue;
       if ((int32_t)median - (int32_t)base[st][c] > KEYS_CAL_OUTLIER)
       {
         logPrintf("[  ] s%d/ch%d 눌린 채 캘리 (%d -> 중앙값 %d)\n",
@@ -694,6 +703,19 @@ bool keysGetPressed(uint16_t row, uint16_t col)
 {
   if (row >= KEYS_STEP_MAX || col >= KEYS_CH_MAX) return false;
   return (pressed[row] & (1U << col)) != 0;
+}
+
+/* 키맵은 keyboards/<모델>/layout.h 에 있다. 표를 밖으로 내보내지 않고 조회만 준다. */
+uint8_t keysGetKeycode(uint16_t row, uint16_t col)
+{
+  if (row >= KEYS_STEP_MAX || col >= KEYS_CH_MAX) return 0;
+  return keys_keymap[row][col];
+}
+
+bool keysIsPresent(uint16_t row, uint16_t col)
+{
+  if (row >= KEYS_STEP_MAX || col >= KEYS_CH_MAX) return false;
+  return (keys_present[row] & (1U << col)) != 0;
 }
 
 /*
@@ -749,7 +771,8 @@ void cliKeys(cli_args_t *args)
     for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++) cliPrintf("%d ", adc1_seq_ch[i]);
     cliPrintf("\nmux addr    : ");
     for (uint32_t i = 0; i < KEYS_STEP_MAX; i++) cliPrintf("%d ", mux_addr[i]);
-    cliPrintf("\ncalibrated  : %d  (%d + %d scan, %d ms)\n",
+    cliPrintf("\nlayout      : %s  %d 키\n", KEYS_LAYOUT_NAME, KEYS_LAYOUT_KEY_CNT);
+    cliPrintf("calibrated  : %d  (%d + %d scan, %d ms)\n",
               is_calibrated, KEYS_CAL_DISCARD, KEYS_CAL_SAMPLES, (int)cal_time_ms);
     cliPrintf("scan        : %d us\n", (int)scan_time_us);
     cliPrintf("timeout     : %d\n", (int)timeout_cnt);

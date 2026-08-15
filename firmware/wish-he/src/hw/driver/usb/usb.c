@@ -19,6 +19,7 @@
 #include "hpm_interrupt.h"
 #include "usb/cherryusb/cdc_acm_if.h"
 #include "usb/cherryusb/hid_if.h"
+#include "usb/cherryusb/hid_kbd_if.h"
 #include "usb/cherryusb/usb_desc.h"
 #endif
 
@@ -62,10 +63,12 @@ bool usbBegin(UsbMode_t usb_mode)
 
   /*
    * 등록 순서가 인터페이스 번호다 (usb_desc.h 의 배치와 반드시 일치해야 한다).
-   *   hidIfInit()     -> IF0
-   *   cdcIfRegister() -> IF1, IF2
+   *   hidKbdInit()    -> IF0   (부트 키보드는 반드시 첫 번째)
+   *   hidIfInit()     -> IF1
+   *   cdcIfRegister() -> IF2, IF3
    */
   usbDescRegister(0);
+  hidKbdInit();
   hidIfInit();
   cdcIfRegister();
 
@@ -133,8 +136,22 @@ void cliUsb(cli_args_t *args)
 
   if (args->argc == 1 && args->isStr(0, "info"))
   {
+    uint32_t pre_time = millis();
+    uint32_t pre_cnt  = hidKbdGetSentCount();
+    uint32_t rate     = 0;
+
     while (cliKeepLoop())
     {
+      /* 리포트 실측 — bInterval=1 이면 8000/s 근처가 나와야 한다 */
+      if (millis() - pre_time >= 1000)
+      {
+        uint32_t now = hidKbdGetSentCount();
+
+        rate     = now - pre_cnt;
+        pre_cnt  = now;
+        pre_time = millis();
+      }
+
       cliPrintf("USB Mode    : %d      \n", usbGetMode());
       cliPrintf("USB Type    : %d      \n", usbGetType());
       cliPrintf("USB Connect : %d      \n", usbIsConnect());
@@ -142,10 +159,12 @@ void cliUsb(cli_args_t *args)
       cliPrintf("USB Baud    : %d      \n", (int)cdcGetBaud());
       cliPrintf("HID Ready   : %d      \n", hidIfIsConfigured());
       cliPrintf("HID Rx      : %d      \n", (int)hidIfGetRxCount());
-      cliMoveUp(7);
+      cliPrintf("KBD Ready   : %d      \n", hidKbdIsConfigured());
+      cliPrintf("KBD Report  : %d /s   \n", (int)rate);
+      cliMoveUp(9);
       delay(100);
     }
-    cliMoveDown(7);
+    cliMoveDown(9);
     ret = true;
   }
 

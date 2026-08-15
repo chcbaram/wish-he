@@ -19,11 +19,20 @@
 #include "usb_hid.h"
 #include "usb/cherryusb/cdc_acm_if.h"
 #include "usb/cherryusb/hid_if.h"
+#include "usb/cherryusb/hid_kbd_if.h"
 
 
-#define USB_CONFIG_SIZE   (9 + HID_CUSTOM_INOUT_DESCRIPTOR_LEN + CDC_ACM_DESCRIPTOR_LEN)
+#define USB_CONFIG_SIZE   (9 + HID_KEYBOARD_DESCRIPTOR_LEN \
+                         + HID_CUSTOM_INOUT_DESCRIPTOR_LEN + CDC_ACM_DESCRIPTOR_LEN)
 
-/* 인터럽트 엔드포인트 폴링 주기. HS 는 2^(n-1) 마이크로프레임, FS 는 ms 단위다. */
+/*
+ * 인터럽트 엔드포인트 폴링 주기. HS 는 2^(n-1) 마이크로프레임, FS 는 ms 단위다.
+ *
+ * 키보드는 1 = 125us = 8kHz — 상용 보드와 같다. 설정 채널은 그렇게 빠를 이유가 없어
+ * 4 = 1ms 로 둔다. 대역폭 예약을 아끼는 편이 낫다.
+ */
+#define KBD_INTERVAL_HS   1       /* 125us = 8kHz */
+#define KBD_INTERVAL_FS   1       /* 1ms — FS 의 하한 */
 #define HID_INTERVAL_HS   4       /* 2^3 = 8 마이크로프레임 = 1ms */
 #define HID_INTERVAL_FS   1       /* 1ms */
 
@@ -33,14 +42,18 @@ static const uint8_t device_descriptor[] = {
 };
 
 static const uint8_t config_descriptor_hs[] = {
-  USB_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x03, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
+  USB_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x04, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
+  HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_KBD, 0x01, KBD_REPORT_DESC_SIZE,
+                               KBD_IN_EP, KBD_EP_MPS, KBD_INTERVAL_HS),
   HID_CUSTOM_INOUT_DESCRIPTOR_INIT(USB_IF_HID, 0x00, HID_REPORT_DESC_SIZE,
                                    HID_OUT_EP, HID_IN_EP, HID_EP_MPS, HID_INTERVAL_HS),
   CDC_ACM_DESCRIPTOR_INIT(USB_IF_CDC, CDC_INT_EP, CDC_OUT_EP, CDC_IN_EP, USB_BULK_EP_MPS_HS, 0x02),
 };
 
 static const uint8_t config_descriptor_fs[] = {
-  USB_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x03, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
+  USB_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x04, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
+  HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_KBD, 0x01, KBD_REPORT_DESC_SIZE,
+                               KBD_IN_EP, KBD_EP_MPS, KBD_INTERVAL_FS),
   HID_CUSTOM_INOUT_DESCRIPTOR_INIT(USB_IF_HID, 0x00, HID_REPORT_DESC_SIZE,
                                    HID_OUT_EP, HID_IN_EP, HID_EP_MPS, HID_INTERVAL_FS),
   CDC_ACM_DESCRIPTOR_INIT(USB_IF_CDC, CDC_INT_EP, CDC_OUT_EP, CDC_IN_EP, USB_BULK_EP_MPS_FS, 0x02),
@@ -52,14 +65,18 @@ static const uint8_t device_quality_descriptor[] = {
 
 /* other-speed 는 "지금 속도의 반대쪽"을 기술한다. HS 로 동작 중이면 FS 규격을 담는 게 맞다. */
 static const uint8_t other_speed_config_descriptor_hs[] = {
-  USB_OTHER_SPEED_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x03, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
+  USB_OTHER_SPEED_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x04, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
+  HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_KBD, 0x01, KBD_REPORT_DESC_SIZE,
+                               KBD_IN_EP, KBD_EP_MPS, KBD_INTERVAL_FS),
   HID_CUSTOM_INOUT_DESCRIPTOR_INIT(USB_IF_HID, 0x00, HID_REPORT_DESC_SIZE,
                                    HID_OUT_EP, HID_IN_EP, HID_EP_MPS, HID_INTERVAL_FS),
   CDC_ACM_DESCRIPTOR_INIT(USB_IF_CDC, CDC_INT_EP, CDC_OUT_EP, CDC_IN_EP, USB_BULK_EP_MPS_FS, 0x02),
 };
 
 static const uint8_t other_speed_config_descriptor_fs[] = {
-  USB_OTHER_SPEED_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x03, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
+  USB_OTHER_SPEED_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x04, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
+  HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_KBD, 0x01, KBD_REPORT_DESC_SIZE,
+                               KBD_IN_EP, KBD_EP_MPS, KBD_INTERVAL_HS),
   HID_CUSTOM_INOUT_DESCRIPTOR_INIT(USB_IF_HID, 0x00, HID_REPORT_DESC_SIZE,
                                    HID_OUT_EP, HID_IN_EP, HID_EP_MPS, HID_INTERVAL_HS),
   CDC_ACM_DESCRIPTOR_INIT(USB_IF_CDC, CDC_INT_EP, CDC_OUT_EP, CDC_IN_EP, USB_BULK_EP_MPS_HS, 0x02),
@@ -124,6 +141,7 @@ void usbDescRegister(uint8_t busid)
 /* 스택 이벤트는 클래스 글루 전부에게 뿌린다. */
 void usbDescEventHandler(uint8_t busid, uint8_t event)
 {
+  hidKbdEventHandler(busid, event);
   hidIfEventHandler(busid, event);
   cdcIfEventHandler(busid, event);
 }

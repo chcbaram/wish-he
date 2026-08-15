@@ -60,6 +60,34 @@ def set_board(name):
     HDR_PATH = d / "layout.h"
 
 ADDR_RE = re.compile(r"^(\d+),(\d+)$")
+
+# ── 기본 키맵 (HID Usage ID, Keyboard/Keypad page)
+#
+# 물리 배치 읽기 순서대로 늘어놓는다. 레이아웃 옵션 키와 여분 소켓은 0(KC_NO)으로
+# 두고 사용자가 채운다 — 무엇을 넣을지는 실제로 어떤 키캡을 끼우느냐에 달렸다.
+KC = {
+    "NO": 0x00, "A": 0x04, "B": 0x05, "C": 0x06, "D": 0x07, "E": 0x08, "F": 0x09,
+    "G": 0x0A, "H": 0x0B, "I": 0x0C, "J": 0x0D, "K": 0x0E, "L": 0x0F, "M": 0x10,
+    "N": 0x11, "O": 0x12, "P": 0x13, "Q": 0x14, "R": 0x15, "S": 0x16, "T": 0x17,
+    "U": 0x18, "V": 0x19, "W": 0x1A, "X": 0x1B, "Y": 0x1C, "Z": 0x1D,
+    "1": 0x1E, "2": 0x1F, "3": 0x20, "4": 0x21, "5": 0x22, "6": 0x23, "7": 0x24,
+    "8": 0x25, "9": 0x26, "0": 0x27,
+    "ENT": 0x28, "ESC": 0x29, "BSPC": 0x2A, "TAB": 0x2B, "SPC": 0x2C,
+    "MINS": 0x2D, "EQL": 0x2E, "LBRC": 0x2F, "RBRC": 0x30, "BSLS": 0x31,
+    "SCLN": 0x33, "QUOT": 0x34, "GRV": 0x35, "COMM": 0x36, "DOT": 0x37,
+    "SLSH": 0x38, "CAPS": 0x39,
+    "LCTL": 0xE0, "LSFT": 0xE1, "LALT": 0xE2, "LGUI": 0xE3,
+    "RCTL": 0xE4, "RSFT": 0xE5, "RALT": 0xE6, "RGUI": 0xE7,
+}
+
+# 행별 기본 배치. 행의 실제 키 수가 더 많으면 나머지는 NO 로 채운다.
+DEFAULT_ROWS = [
+    ["ESC", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "MINS", "EQL", "BSPC"],
+    ["TAB", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "LBRC", "RBRC", "BSLS"],
+    ["CAPS", "A", "S", "D", "F", "G", "H", "J", "K", "L", "SCLN", "QUOT", "ENT"],
+    ["LSFT", "Z", "X", "C", "V", "B", "N", "M", "COMM", "DOT", "SLSH", "RSFT"],
+    ["LCTL", "LGUI", "LALT", "SPC", "RALT", "RGUI", "RCTL"],
+]
 LEARN_RE = re.compile(r"#(\d+)\s+(\d+),(\d+)")
 
 
@@ -266,6 +294,40 @@ def cmd_gen():
     ]
     for n in range(0, len(keys), 8):
         L.append("  " + " ".join(f"{{{s},{c}}}," for s, c in keys[n:n + 8]))
+    L += ["};", ""]
+
+    # ── 기본 키맵
+    kmap = [[0] * COLS for _ in range(ROWS)]
+    names = [[None] * COLS for _ in range(ROWS)]
+    n = 0
+    for r, row in enumerate(rows_of(kle)):
+        base = DEFAULT_ROWS[r] if r < len(DEFAULT_ROWS) else []
+        k = 0
+        for item in row:
+            if not (isinstance(item, str) and ADDR_RE.match(item.split("\n")[0])):
+                continue
+            s_, c_ = addr_of(item)
+            nm = base[k] if k < len(base) else "NO"
+            kmap[s_][c_] = KC[nm]
+            names[s_][c_] = nm
+            k += 1
+            n += 1
+
+    L += [
+        "/*",
+        " * 기본 키맵 — HID Usage ID (Keyboard/Keypad page).",
+        " *",
+        " * 0xE0~0xE7 은 모디파이어라 리포트의 키 배열이 아니라 [0] 바이트의 비트로 들어간다.",
+        " * 0x00 (KC_NO) 은 레이아웃 옵션 키나 여분 소켓 — 무엇을 넣을지는 어떤 키캡을",
+        " * 끼우느냐에 달렸으므로 비워 둔다.",
+        " */",
+        "static const uint8_t keys_keymap[KEYS_LAYOUT_ROWS][KEYS_LAYOUT_COLS] =",
+        "{",
+    ]
+    for s_ in range(ROWS):
+        cells = ", ".join(f"0x{kmap[s_][c]:02X}" for c in range(COLS))
+        tags = " ".join((names[s_][c] or "-")[:4].ljust(4) for c in range(COLS))
+        L.append(f"  {{ {cells} }},   /* s{s_}  {tags} */")
     L += ["};", ""]
 
     # 물리 좌표 — CLI 가 실제 배치로 그려서 매핑을 눈으로 검증할 수 있게 한다.

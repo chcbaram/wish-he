@@ -39,6 +39,12 @@ bool     keysCalibrate(void);
 /* 눌림 판정. row = MUX 스텝, col = ADC 채널 */
 bool     keysGetPressed(uint16_t row, uint16_t col);
 
+/* 레이아웃에 실재하는 셀인가 (keyboards/<모델>/layout.h) */
+bool     keysIsPresent(uint16_t row, uint16_t col);
+
+/* 그 자리의 HID Usage ID. 0 이면 배정 안 됨 */
+uint8_t  keysGetKeycode(uint16_t row, uint16_t col);
+
 /* 행 비트마스크 (col c -> bit c). QMK matrix_row_t 와 비트 순서가 같다. */
 uint16_t keysGetRow(uint16_t row);
 
