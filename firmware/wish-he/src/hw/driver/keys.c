@@ -1073,10 +1073,23 @@ void cliKeys(cli_args_t *args)
 
 
   /*
-   * 명령이 도는 동안 리포트를 막는다. 측정용으로 누른 키가 터미널에 입력되면
-   * CLI 가 끊겨 측정 자체가 안 된다. 나갈 때 되돌린다.
+   * 키를 눌러가며 측정하는 명령만 리포트를 막는다.
+   *
+   * 측정용으로 누른 키가 호스트로 입력되면 터미널이 엉켜 측정 자체가 안 된다.
+   * 반대로 info·cfg 처럼 한 번 찍고 끝나는 명령은 막을 이유가 없다 — 사용자가
+   * 키를 누를 일이 없는데 막아두면 그냥 키보드가 멈춘 것으로 보인다.
    */
-  report_off = true;
+  static const char *interactive[] =
+    { "cal", "map", "learn", "layout", "show", "bar", "watch", "noise", "raw" };
+
+  for (uint32_t i = 0; i < sizeof(interactive) / sizeof(interactive[0]); i++)
+  {
+    if (args->argc == 1 && args->isStr(0, (char *)interactive[i]))
+    {
+      report_off = true;
+      break;
+    }
+  }
 
 
   if (args->argc == 1 && args->isStr(0, "info"))
