@@ -29,6 +29,14 @@ uint16_t keysGetRaw(uint8_t step, uint8_t ch);
 uint32_t keysGetScanTime(void);
 
 /*
+ * 리포트를 내보내도 되는가.
+ *
+ * keys 명령(매핑·보정·관측)이 도는 동안은 false 다. 측정하려고 누른 키가 호스트로
+ * 입력되면 터미널이 엉켜 측정을 못 한다.
+ */
+bool     keysIsReportEnabled(void);
+
+/*
  * 무압 기준값을 다시 잡는다. 부팅 때 자동으로 한 번 한다.
  *
  * 채널마다 기준값이 다르므로(자석·센서·기구 공차) 절대값이 아니라 기준값 대비

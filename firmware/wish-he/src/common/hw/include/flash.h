@@ -12,13 +12,10 @@ extern "C" {
 #ifdef _USE_HW_FLASH
 
 
-#define FLASH_SECTOR_SIZE     4096
-#define FLASH_PAGE_SIZE       256
-
-/* 주소는 전부 플래시 오프셋이다 (XIP 주소가 아니다). 0x00000 ~ 0xFFFFF */
-#define FLASH_XIP_BASE        0x80000000UL
-
-
+/*
+ * 주소는 전부 플래시 오프셋이다 (XIP 주소가 아니다).
+ * 섹터·페이지 크기와 영역 배치는 보드 설정이라 hw_def.h 에 있다.
+ */
 bool flashInit(void);
 
 /*

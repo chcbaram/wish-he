@@ -29,6 +29,9 @@
 #include "hpm_l1c_drv.h"
 
 
+/* XIP 창의 시작 주소. 호출자는 플래시 오프셋만 다루므로 여기 안에서만 쓴다. */
+#define FLASH_XIP_BASE        0x80000000UL
+
 /* board.c 의 nor_cfg_option 과 반드시 같아야 한다 (함정 ①) */
 #define NOR_CFG_HEADER        0xFCF90002U
 #define NOR_CFG_OPTION0       0x00000006U   /* 120MHz */
@@ -175,7 +178,7 @@ void cliFlash(cli_args_t *args)
   if (args->argc == 1 && args->isStr(0, "info"))
   {
     cliPrintf("init        : %d\n", is_init);
-    cliPrintf("sector size : %d\n", FLASH_SECTOR_SIZE);
+    cliPrintf("sector size : %d\n", HW_FLASH_SECTOR_SIZE);
     cliPrintf("err step    : %d  (1=cfg 2=erase 3=program)\n", (int)err_step);
     cliPrintf("err status  : %d\n", (int)err_stat);
     ret = true;
@@ -215,7 +218,7 @@ void cliFlash(cli_args_t *args)
     else
     {
       uint32_t t = millis();
-      bool     ok = flashErase(addr, FLASH_SECTOR_SIZE);
+      bool     ok = flashErase(addr, HW_FLASH_SECTOR_SIZE);
 
       cliPrintf("erase 0x%06X : %s  (%d ms)\n", (unsigned)addr,
                 ok ? "OK" : "E_", (int)(millis() - t));

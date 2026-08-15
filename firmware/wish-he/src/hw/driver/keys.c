@@ -110,6 +110,14 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
 #define KEYS_NOISE_MS           3000
 
 /*
+ * 보정 — 이 깊이까지 눌러야 "끝까지 눌렀다" 로 본다.
+ *
+ * 실측 풀 스트로크가 약 838 이라 그 60% 다. 너무 높게 잡으면 사용자가 아무리 눌러도
+ * 안 끝나고, 낮게 잡으면 덜 눌린 값이 바닥값으로 저장된다.
+ */
+#define KEYS_CAL_STROKE_MIN     500
+
+/*
  * keys bar — 눌린 깊이를 가로 막대로.
  *
  * 스트로크가 실측 838 이라 상한을 900 으로 두면 끝까지 눌러도 막대가 넘치지 않는다.
@@ -290,6 +298,27 @@ static uint32_t timeout_cnt  = 0;
 static uint32_t cal_time_ms  = 0;
 static uint32_t drift_ms     = 0;
 static bool     is_cfg_loaded = false;
+
+/*
+ * keys 명령이 도는 동안에는 HID 리포트를 막는다.
+ *
+ * 측정하려고 누른 키가 호스트로 그대로 입력되어 터미널이 엉키거나 CLI 가 끊긴다.
+ * 매핑·보정처럼 전 키를 눌러야 하는 작업에서는 치명적이다.
+ */
+static bool     report_off = false;
+
+/* 보정 중 키별 바닥값 수집용 */
+static uint16_t cal_min_tmp[KEYS_MAX];
+
+static bool keysCalIsDone(uint16_t row, uint16_t col)
+{
+  uint32_t i = row * KEYS_CH_MAX + col;
+
+  if (i >= KEYS_MAX)                return false;
+  if (cal_min_tmp[i] == 0xFFFF)     return false;
+
+  return ((int32_t)base[row][col] - (int32_t)cal_min_tmp[i]) >= KEYS_CAL_STROKE_MIN;
+}
 static bool     drift_due    = false;
 
 static void keysCalRejectOutlier(void);
@@ -638,6 +667,12 @@ uint32_t keysGetScanTime(void)
   return scan_time_us;
 }
 
+/* 리포트를 내보내도 되는가. keys 명령 중에는 false 다. */
+bool keysIsReportEnabled(void)
+{
+  return (report_off == false);
+}
+
 /*
  * 무압 기준값을 잡는다.
  *
@@ -856,7 +891,7 @@ static bool keysCfgSave(void)
   cfg.seq++;
   cfg.crc = keysCfgCrc(&cfg);
 
-  if (flashErase(addr, FLASH_SECTOR_SIZE) == false)                       return false;
+  if (flashErase(addr, HW_FLASH_SECTOR_SIZE) == false)                       return false;
   if (flashWrite(addr, (const uint8_t *)&cfg, sizeof(cfg)) == false)       return false;
 
   return true;
@@ -915,6 +950,63 @@ uint16_t keysGetRow(uint16_t row)
  *---------------------------------------------------------------------------*/
 #if CLI_USE(HW_KEYS)
 
+/* 레이아웃이 몇 행인가 */
+static uint32_t keysLayoutRows(void)
+{
+  uint32_t rows = 0;
+
+  for (uint32_t i = 0; i < KEYS_LAYOUT_KEY_CNT; i++)
+  {
+    uint32_t r = keys_geo[i][1] / KEYS_GEO_UNIT + 1;
+    if (r > rows) rows = r;
+  }
+  return rows;
+}
+
+/*
+ * 실제 배치로 그린다. mark() 가 true 인 키만 채워 표시한다.
+ *
+ * 8x8 격자로는 매핑이 맞는지, 어느 키가 남았는지 알 수 없다. ESC 를 눌렀을 때
+ * ESC 자리가 채워져야 비로소 맞는 것이다.
+ */
+static void keysDrawLayout(bool (*mark)(uint16_t row, uint16_t col))
+{
+  uint32_t rows = keysLayoutRows();
+
+  for (uint32_t r = 0; r < rows; r++)
+  {
+    char line[KEYS_VIEW_W + 1];
+
+    memset(line, ' ', KEYS_VIEW_W);
+    line[KEYS_VIEW_W] = 0;
+
+    for (uint32_t i = 0; i < KEYS_LAYOUT_KEY_CNT; i++)
+    {
+      uint32_t x0, x1, w;
+      bool     on;
+
+      if (keys_geo[i][1] / KEYS_GEO_UNIT != r) continue;
+
+      /*
+       * ★ 폭을 따로 환산하면 안 된다. x0 과 w 를 각각 내림하면 오차가 두 번 생겨
+       *   행마다 오른쪽 끝이 한두 칸씩 어긋난다. 오른쪽 모서리를 직접 구해서 뺀다.
+       */
+      x0 = (keys_geo[i][0]) * KEYS_VIEW_UNIT / KEYS_GEO_UNIT;
+      x1 = (keys_geo[i][0] + keys_geo[i][2]) * KEYS_VIEW_UNIT / KEYS_GEO_UNIT;
+      w  = x1 - x0;
+      if (w < 3) w = 3;
+      if (x0 + w > KEYS_VIEW_W) continue;
+
+      on = mark(keys_geo[i][4], keys_geo[i][5]);
+
+      line[x0]         = '[';
+      line[x0 + w - 1] = ']';
+      for (uint32_t k = 1; k + 1 < w; k++) line[x0 + k] = on ? '#' : ' ';
+    }
+    cliPrintf("  %s\n", line);
+  }
+}
+
 static void keysPrintTable(void)
 {
   cliPrintf("      ");
@@ -938,6 +1030,13 @@ static void keysPrintTable(void)
 void cliKeys(cli_args_t *args)
 {
   bool ret = false;
+
+
+  /*
+   * 명령이 도는 동안 리포트를 막는다. 측정용으로 누른 키가 터미널에 입력되면
+   * CLI 가 끊겨 측정 자체가 안 된다. 나갈 때 되돌린다.
+   */
+  report_off = true;
 
 
   if (args->argc == 1 && args->isStr(0, "info"))
@@ -993,56 +1092,16 @@ void cliKeys(cli_args_t *args)
    */
   if (args->argc == 1 && args->isStr(0, "layout"))
   {
-    uint32_t rows = 0;
-
-    for (uint32_t i = 0; i < KEYS_LAYOUT_KEY_CNT; i++)
-    {
-      uint32_t r = keys_geo[i][1] / KEYS_GEO_UNIT + 1;
-      if (r > rows) rows = r;
-    }
-
     cliPrintf("%s  —  %d 키\n", KEYS_LAYOUT_NAME, KEYS_LAYOUT_KEY_CNT);
 
     while (cliKeepLoop())
     {
-      for (uint32_t r = 0; r < rows; r++)
-      {
-        char line[KEYS_VIEW_W + 1];
-
-        memset(line, ' ', KEYS_VIEW_W);
-        line[KEYS_VIEW_W] = 0;
-
-        for (uint32_t i = 0; i < KEYS_LAYOUT_KEY_CNT; i++)
-        {
-          uint32_t x0, x1, w;
-          bool     on;
-
-          if (keys_geo[i][1] / KEYS_GEO_UNIT != r) continue;
-
-          /*
-           * ★ 폭을 따로 환산하면 안 된다. x0 과 w 를 각각 내림하면 오차가 두 번
-           *   생겨 행마다 오른쪽 끝이 한두 칸씩 어긋난다. 오른쪽 모서리를 직접
-           *   구해서 빼면 인접 키가 빈틈없이 붙고 행 끝도 정확히 맞는다.
-           */
-          x0 = (keys_geo[i][0]) * KEYS_VIEW_UNIT / KEYS_GEO_UNIT;
-          x1 = (keys_geo[i][0] + keys_geo[i][2]) * KEYS_VIEW_UNIT / KEYS_GEO_UNIT;
-          w  = x1 - x0;
-          if (w < 3) w = 3;
-          if (x0 + w > KEYS_VIEW_W) continue;
-
-          on = keysGetPressed(keys_geo[i][4], keys_geo[i][5]);
-
-          line[x0]         = '[';
-          line[x0 + w - 1] = ']';
-          for (uint32_t k = 1; k + 1 < w; k++) line[x0 + k] = on ? '#' : ' ';
-        }
-        cliPrintf("  %s\n", line);
-      }
+      keysDrawLayout(keysGetPressed);
       keysUpdate();
-      cliMoveUp(rows);
+      cliMoveUp(keysLayoutRows());
       delay(30);
     }
-    cliMoveDown(rows);
+    cliMoveDown(keysLayoutRows());
     ret = true;
   }
 
@@ -1078,6 +1137,85 @@ void cliKeys(cli_args_t *args)
       delay(5);
     }
     cliPrintf("\n%d 개 기록\n", (int)n);
+    ret = true;
+  }
+
+  /*
+   * 보정 — 전 키를 끝까지 눌러 바닥값을 모은다.
+   *
+   * 기준값(무압)은 러닝 최대값이 늘 추적하지만, 바닥값은 실제로 끝까지 눌러야만
+   * 알 수 있다. 이 둘이 있어야 눌린 깊이를 mm 로 환산할 수 있다 (12편 래피드 트리거).
+   *
+   * 레이아웃 뷰로 진행 상황을 보여준다 — 어느 키가 남았는지 눈으로 보인다.
+   */
+  if (args->argc == 1 && args->isStr(0, "cal"))
+  {
+    uint32_t total = 0;
+    uint32_t done  = 0;
+    uint32_t rows;
+
+    for (uint32_t i = 0; i < KEYS_MAX; i++) cal_min_tmp[i] = 0xFFFF;
+    for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+    {
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++) if (keysIsPresent(st, c)) total++;
+    }
+
+    cliPrintf("모든 키를 끝까지 한 번씩 눌러주세요.\n");
+    cliPrintf("채워진 자리가 끝난 키입니다. Ctrl+C 로 중단.\n\n");
+    rows = keysLayoutRows();
+
+    while (cliKeepLoop())
+    {
+      keysUpdate();
+
+      done = 0;
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          uint32_t i = st * KEYS_CH_MAX + c;
+          uint16_t v;
+
+          if (keysIsPresent(st, c) == false) continue;
+
+          v = raw[st][c];
+          if (v < cal_min_tmp[i]) cal_min_tmp[i] = v;
+
+          if ((int32_t)base[st][c] - (int32_t)cal_min_tmp[i] >= KEYS_CAL_STROKE_MIN) done++;
+        }
+      }
+
+      keysDrawLayout(keysCalIsDone);
+      cliPrintf("  %d / %d 완료    \n", (int)done, (int)total);
+      cliMoveUp(rows + 1);
+
+      if (done >= total) break;
+      delay(30);
+    }
+    cliMoveDown(rows + 1);
+
+    if (done >= total && total > 0)
+    {
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          uint32_t i = st * KEYS_CH_MAX + c;
+
+          if (keysIsPresent(st, c) == false) continue;
+
+          cfg.key[i].cal_max = base[st][c];
+          cfg.key[i].cal_min = cal_min_tmp[i];
+          cfg.key[i].flags  |= 0x01;
+        }
+      }
+      cliPrintf("\n보정 완료 — 저장한다\n");
+      cliPrintf("save : %s  seq %d\n", keysCfgSave() ? "OK" : "E_", (int)cfg.seq);
+    }
+    else
+    {
+      cliPrintf("\n중단 — %d / %d 만 끝나서 저장하지 않는다\n", (int)done, (int)total);
+    }
     ret = true;
   }
 
@@ -1478,6 +1616,7 @@ void cliKeys(cli_args_t *args)
     cliPrintf("keys show      눌린 키 표시 (8x8 격자)\n");
     cliPrintf("keys layout    눌린 키 표시 (실제 배치)\n");
     cliPrintf("keys learn     매핑 측정 — 누를 때마다 \"s,ch\" 한 줄\n");
+    cliPrintf("keys cal       전 키 보정 (끝까지 눌러 바닥값 수집)\n");
     cliPrintf("keys cfg       저장된 설정 보기\n");
     cliPrintf("keys save      설정 저장\n");
     cliPrintf("keys load      설정 다시 읽기\n");

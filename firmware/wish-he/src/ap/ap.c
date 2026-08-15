@@ -45,6 +45,18 @@ static void updateKeyboard(void)
 
   keysUpdate();
 
+  /*
+   * keys 명령이 도는 동안에는 빈 리포트만 보낸다.
+   *
+   * 그냥 건너뛰면 직전에 눌려 있던 키가 호스트에 눌린 채로 남는다. 빈 리포트를
+   * 한 번 보내 전부 떼어둔 상태로 만든다 (같은 값이면 재전송되지 않는다).
+   */
+  if (keysIsReportEnabled() == false)
+  {
+    hidKbdSetReport(0, NULL, 0);
+    return;
+  }
+
   for (uint16_t row = 0; row < KEYS_STEP_MAX; row++)
   {
     uint16_t bits = keysGetRow(row);

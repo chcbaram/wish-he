@@ -60,6 +60,8 @@
  *   0xC0000 ~ 0x100000  우리 몫 (256KB)
  */
 #define _USE_HW_FLASH
+#define      HW_FLASH_SECTOR_SIZE   4096         /* 소거 단위 */
+#define      HW_FLASH_PAGE_SIZE     256          /* 기록 단위 */
 #define      HW_FLASH_USER_BEGIN    0x0C0000UL   /* 이 아래로는 쓰지 않는다 */
 #define      HW_FLASH_CAL_A         0x0C0000UL   /* 캘리브레이션 핑퐁 A */
 #define      HW_FLASH_CAL_B         0x0C1000UL   /* 캘리브레이션 핑퐁 B */
