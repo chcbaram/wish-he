@@ -168,6 +168,37 @@ void cliUsb(cli_args_t *args)
     ret = true;
   }
 
+  /*
+   * 리포트 전송 횟수를 조용한 상태에서 잰다.
+   *
+   * ★ 리포트는 "바뀔 때만" 나간다. 그래서 아무것도 안 누르면 0 이 정상이고,
+   *   키를 누르고 있어도 상태가 그대로면 0 이다. 이 값이 8000 이 아니라고 해서
+   *   느린 게 아니다 — 지연을 정하는 것은 폴링 주기(125us)이지 전송 횟수가 아니다.
+   */
+  if (args->argc == 1 && args->isStr(0, "rate"))
+  {
+    uint32_t sec = 3;
+    uint32_t c0, c1, t0, t1, r;
+
+    cliPrintf("%d 초간 잰다. 리포트는 상태가 바뀔 때만 나가므로\n", (int)sec);
+    cliPrintf("가만히 두면 0, 키를 눌렀다 떼면 그 횟수만큼 나온다.\n");
+    delay(200);
+
+    t0 = millis();
+    c0 = hidKbdGetSentCount();
+    while (millis() - t0 < sec * 1000)
+    {
+      /* 아무것도 찍지 않는다. 메인 루프는 계속 돈다. */
+    }
+    t1 = millis();
+    c1 = hidKbdGetSentCount();
+
+    r = (c1 - c0) * 1000 / (t1 - t0);
+    cliPrintf("KBD 리포트 : %d 개 / %d ms\n", (int)(c1 - c0), (int)(t1 - t0));
+    cliPrintf("             %d /s\n", (int)r);
+    ret = true;
+  }
+
   if (args->argc == 1 && args->isStr(0, "tx"))
   {
     static uint8_t buf[512];
@@ -261,6 +292,7 @@ void cliUsb(cli_args_t *args)
   if (ret == false)
   {
     cliPrintf("usb info\n");
+    cliPrintf("usb rate\n");
     cliPrintf("usb tx\n");
     cliPrintf("usb rx\n");
     cliPrintf("usb duplex\n");

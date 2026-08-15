@@ -212,8 +212,6 @@ static uint32_t adc0_buf[KEYS_SEQ_LEN];
 ATTR_PLACE_AT_NONCACHEABLE_BSS __attribute__((aligned(ADC_SOC_DMA_ADDR_ALIGNMENT)))
 static uint32_t adc1_buf[KEYS_SEQ_LEN];
 
-static volatile bool adc0_done = false;
-static volatile bool adc1_done = false;
 
 static uint16_t raw[KEYS_STEP_MAX][KEYS_CH_MAX];    /* 12비트 — 판정·표시는 전부 이걸 쓴다 */
 static uint16_t base[KEYS_STEP_MAX][KEYS_CH_MAX];   /* 무압 기준값 (러닝 최대) */
@@ -238,33 +236,27 @@ static void cliKeys(cli_args_t *args);
 
 
 /*---------------------------------------------------------------------------
- *  ISR — 시퀀스 완료만 알린다
+ *  완료 대기
  *---------------------------------------------------------------------------*/
-void isr_adc0(void)
+
+/*
+ * ★ 인터럽트를 쓰지 않는다.
+ *
+ *   처음에는 ADC 완료 인터럽트로 플래그를 세우고 스캔 루프가 그걸 스핀으로 기다렸다.
+ *   그런데 어차피 기다릴 거면 상태 레지스터를 직접 보면 된다 — 인터럽트가 하는 일이
+ *   플래그 하나 세우는 것뿐이었다.
+ *
+ *   인터럽트 부하가 만만치 않았다. 8스텝 x ADC 2개 x 초당 15,000 스캔이면
+ *   초당 24만 번이다. 그 ISR 들이 USB 완료 콜백을 밀어내서 다음 마이크로프레임(125us)
+ *   안에 재무장하지 못했고, 리포트가 8000/s 가 아니라 6000/s 로 떨어졌다.
+ */
+static inline bool keysSeqDone(ADC16_Type *ptr)
 {
-  uint32_t sts = adc16_get_status_flags(HPM_ADC0);
+  if ((adc16_get_status_flags(ptr) & ADC16_INT_STS_SEQ_CMPT_MASK) == 0) return false;
 
-  if (sts & ADC16_INT_STS_SEQ_CMPT_MASK)
-  {
-    adc16_clear_status_flags(HPM_ADC0, ADC16_INT_STS_SEQ_CMPT_MASK);
-    adc0_done = true;
-  }
+  adc16_clear_status_flags(ptr, ADC16_INT_STS_SEQ_CMPT_MASK);
+  return true;
 }
-SDK_DECLARE_EXT_ISR_M(IRQn_ADC0, isr_adc0)
-
-void isr_adc1(void)
-{
-  uint32_t sts = adc16_get_status_flags(HPM_ADC1);
-
-  if (sts & ADC16_INT_STS_SEQ_CMPT_MASK)
-  {
-    adc16_clear_status_flags(HPM_ADC1, ADC16_INT_STS_SEQ_CMPT_MASK);
-    adc1_done = true;
-  }
-}
-SDK_DECLARE_EXT_ISR_M(IRQn_ADC1, isr_adc1)
-
-
 
 
 /*---------------------------------------------------------------------------
@@ -358,7 +350,8 @@ static bool keysInitAdc(ADC16_Type *ptr, const uint8_t *seq_ch, uint32_t *buf)
   dma_cfg.stop_en             = false;
   if (adc16_init_seq_dma(ptr, &dma_cfg) != status_success) return false;
 
-  adc16_enable_interrupts(ptr, ADC16_INT_STS_SEQ_CMPT_MASK);
+  /* 완료는 폴링으로 본다. 인터럽트는 켜지 않는다. */
+  adc16_clear_status_flags(ptr, ADC16_INT_STS_SEQ_CMPT_MASK);
 
   return true;
 }
@@ -377,16 +370,6 @@ bool keysInit(void)
 
   if (keysInitAdc(HPM_ADC0, adc0_seq_ch, adc0_buf) == false) ret = false;
   if (keysInitAdc(HPM_ADC1, adc1_seq_ch, adc1_buf) == false) ret = false;
-
-  /*
-   * ★ USB 보다 낮게 둔다. 리포트가 스캔에 밀리면 8kHz 폴링을 놓친다.
-   *   (USB 는 usbBegin() 에서 2로 잡는다. 값이 작을수록 높은 우선순위가 아니라
-   *    HPM PLIC 은 값이 클수록 높으므로 USB=2 > ADC=1 이다.)
-   */
-  intc_set_irq_priority(IRQn_ADC0, 1);
-  intc_set_irq_priority(IRQn_ADC1, 1);
-  intc_m_enable_irq(IRQn_ADC0);
-  intc_m_enable_irq(IRQn_ADC1);
 
   is_init = ret;
 
@@ -424,13 +407,18 @@ static inline void keysSettle(void)
   }
 }
 
-/* 완료 플래그를 스핀으로 기다린다. 걸리면 false. */
+/* 두 ADC 의 시퀀스 완료를 폴링으로 기다린다. 걸리면 false. */
 static inline bool keysWaitDone(void)
 {
+  bool     d0 = false;
+  bool     d1 = false;
   uint32_t spin = 0;
 
-  while (!(adc0_done && adc1_done))
+  while (!(d0 && d1))
   {
+    if (!d0) d0 = keysSeqDone(HPM_ADC0);
+    if (!d1) d1 = keysSeqDone(HPM_ADC1);
+
     if (++spin > KEYS_WAIT_LIMIT)
     {
       timeout_cnt++;
@@ -538,8 +526,6 @@ bool keysUpdate(void)
     gpio_write_port(HPM_GPIO0, KEYS_MUX_GPIO_PORT, mux_addr[step]);
     keysSettle();
 
-    adc0_done = false;
-    adc1_done = false;
     adc16_trigger_seq_by_sw(HPM_ADC0);
     adc16_trigger_seq_by_sw(HPM_ADC1);
 
@@ -1223,9 +1209,8 @@ void cliKeys(cli_args_t *args)
   /* 진단 — 시퀀스가 실제로 도는지, 어떤 인터럽트 비트가 서는지 본다 */
   if (args->argc == 1 && args->isStr(0, "adc"))
   {
-    struct { const char *name; ADC16_Type *ptr; volatile bool *done; uint32_t *buf; }
-    tbl[2] = { {"ADC0", HPM_ADC0, &adc0_done, adc0_buf},
-               {"ADC1", HPM_ADC1, &adc1_done, adc1_buf} };
+    struct { const char *name; ADC16_Type *ptr; uint32_t *buf; }
+    tbl[2] = { {"ADC0", HPM_ADC0, adc0_buf}, {"ADC1", HPM_ADC1, adc1_buf} };
 
     for (uint32_t n = 0; n < 2; n++)
     {
@@ -1237,7 +1222,7 @@ void cliKeys(cli_args_t *args)
       cliPrintf("  INT_EN   : 0x%08X\n", (unsigned)tbl[n].ptr->INT_EN);
       cliPrintf("  INT_STS  : 0x%08X\n", (unsigned)adc16_get_status_flags(tbl[n].ptr));
 
-      *tbl[n].done = false;
+      adc16_clear_status_flags(tbl[n].ptr, ADC16_INT_STS_SEQ_CMPT_MASK);
       for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++) tbl[n].buf[i] = 0xDEADBEEF;
 
       adc16_trigger_seq_by_sw(tbl[n].ptr);
@@ -1249,7 +1234,6 @@ void cliKeys(cli_args_t *args)
       }
 
       cliPrintf("  트리거 후 INT_STS : 0x%08X (spin %d)\n", (unsigned)sts, (int)spin);
-      cliPrintf("  ISR done flag     : %d\n", *tbl[n].done);
       cliPrintf("  DMA 버퍼          : ");
       for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++) cliPrintf("0x%08X ", (unsigned)tbl[n].buf[i]);
       cliPrintf("\n");
