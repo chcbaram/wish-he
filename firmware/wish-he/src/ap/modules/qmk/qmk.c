@@ -49,6 +49,22 @@ static volatile uint32_t task_us_max  = 0;
 static volatile uint32_t task_us_sum  = 0;
 static volatile uint32_t task_us_cnt  = 0;
 
+/*
+ * ★ 최대치 하나로는 아무것도 못 정한다.
+ *
+ *   max 308us 를 보고도 대응을 못 골랐다. 180만 번 중 3번이면 부팅 잡음이고
+ *   5000번이면 구조 문제인데, 최대치는 그 둘을 구분해 주지 않는다. 그래서
+ *   "폴링 주기를 넘긴 횟수"를 같이 센다.
+ *
+ *   125us = 8kHz 마이크로프레임. 이걸 넘긴 회차는 리포트가 한 프레임 늦는다.
+ */
+#define QMK_OVER_US   125
+static volatile uint32_t task_over_cnt = 0;
+
+/* 넘긴 순간이 언제였나 — 부팅 직후만인지 계속인지 가른다 */
+static volatile uint32_t task_over_ms_first = 0;
+static volatile uint32_t task_over_ms_last  = 0;
+
 
 /* CLI 만 먼저 등록한다. QMK 를 켜기 전에도 `qmk start` 를 칠 수 있어야 한다. */
 bool qmkCliInit(void)
@@ -109,6 +125,13 @@ void qmkUpdate(void)
   task_us_sum += dt;
   task_us_cnt++;
 
+  if (dt > QMK_OVER_US)
+  {
+    if (task_over_cnt == 0) task_over_ms_first = millis();
+    task_over_ms_last = millis();
+    task_over_cnt++;
+  }
+
   eeprom_task();
 }
 
@@ -135,7 +158,9 @@ static void cliQmk(cli_args_t *args)
               (int)eepromGetFlushCount(), (unsigned)eepromGetDirtyMask());
     cliPrintf("keyboard_task : last %d us, avg %d us, max %d us  (n=%d)\n",
               (int)task_us_last, (int)avg, (int)task_us_max, (int)task_us_cnt);
-    cliPrintf("               (max 가 125us 를 넘으면 폴링을 놓친다)\n");
+    cliPrintf("  %dus 초과   : %d 회  (첫 %d ms, 마지막 %d ms, 지금 %d ms)\n",
+              QMK_OVER_US, (int)task_over_cnt,
+              (int)task_over_ms_first, (int)task_over_ms_last, (int)millis());
     /*
      * 매직 스왑이 켜져 있으면 매트릭스도 키맵도 맞는데 나가는 코드만 달라진다.
      * 한 번 당했으니 늘 보이게 둔다.
@@ -214,10 +239,13 @@ static void cliQmk(cli_args_t *args)
 
   if (args->argc == 1 && args->isStr(0, "reset"))
   {
-    task_us_last = 0;
-    task_us_max  = 0;
-    task_us_sum  = 0;
-    task_us_cnt  = 0;
+    task_us_last  = 0;
+    task_us_max   = 0;
+    task_us_sum   = 0;
+    task_us_cnt   = 0;
+    task_over_cnt = 0;
+    task_over_ms_first = 0;
+    task_over_ms_last  = 0;
     cliPrintf("통계 리셋\n");
     ret = true;
   }

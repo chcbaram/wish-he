@@ -315,6 +315,17 @@ static uint16_t base[KEYS_STEP_MAX][KEYS_CH_MAX];   /* 무압 기준값 (러닝 
 static uint16_t pressed[KEYS_STEP_MAX];             /* 행별 눌림 비트마스크 */
 static bool     is_calibrated = false;
 static uint32_t scan_time_us = 0;
+
+/*
+ * 스캔 주기가 고른지 본다.
+ *
+ * 13편의 드리프트 분산과 래피드 트리거는 둘 다 "판정이 일정 주기로 온다"를 깔고
+ * 있다. 평균만 보면 고른지 알 수 없어서 최대·초과 횟수를 같이 센다.
+ */
+#define KEYS_SCAN_OVER_US   60          /* 정상 28us 의 두 배 */
+static uint32_t scan_us_max   = 0;
+static uint32_t scan_over_cnt = 0;
+static uint32_t scan_cnt      = 0;
 static bool     is_init      = false;
 static uint32_t timeout_cnt  = 0;
 static uint32_t cal_time_ms  = 0;
@@ -710,8 +721,31 @@ ATTR_RAMFUNC bool keysUpdate(void)
     drift_due = true;
   }
 
+  /*
+   * ★ 처리를 변환 대기 안으로 숨긴다.
+   *
+   *   변환은 스텝당 2.96us 인데 그동안 CPU 는 회전만 했고, 다 기다린 뒤에야 0.93us 를
+   *   처리했다. 스텝 N 을 트리거해 놓고 그 대기 시간에 스텝 N-1 을 처리하면 처리
+   *   시간이 통째로 숨는다.
+   *
+   *     전    [설정][변환 대기 2.96us      ][처리 0.93us]  x 8
+   *     후    [설정][변환 2.96us | N-1 처리 ]              x 8
+   *
+   *   DMA 버퍼는 다음 트리거가 덮어쓰므로 결과를 한 번 떠 놓아야 한다 (8워드).
+   *   그 복사 비용이 숨기는 시간보다 훨씬 싸다.
+   *
+   *   ADC 설정도 잡음도 건드리지 않는다 — 순서만 바꾼다.
+   */
+  uint32_t snap[KEYS_CH_MAX];
+  uint32_t hold     = 0;        /* 처리 대기 중인 스텝 */
+  bool     has_hold = false;
+
   for (uint32_t step = 0; step < KEYS_STEP_MAX; step++)
   {
+    /*
+     * 주소는 직전 반복 끝에서 이미 걸어 뒀다. 같은 값을 다시 쓰는 셈이지만 80ns 고,
+     * 타임아웃으로 루프를 중간에 빠져나갔을 때 다음 스캔이 제자리를 찾는다.
+     */
     gpio_write_port(HPM_GPIO0, KEYS_MUX_GPIO_PORT, mux_addr[step]);
     keysSettle();
 
@@ -721,26 +755,44 @@ ATTR_RAMFUNC bool keysUpdate(void)
     adc16_trigger_seq_by_sw(HPM_ADC0);
     adc16_trigger_seq_by_sw(HPM_ADC1);
 
+    /* ── 여기부터 변환이 끝날 때까지가 공짜 시간이다 ── */
+    if (has_hold)
+    {
+      for (uint32_t i = 0; i < KEYS_CH_MAX; i++) keysFilter(hold, i, snap[i]);
+      if (is_calibrated) keysTrack(hold);
+    }
+
     /* DMA 기록이 곧 변환 완료다 — 한 번만 기다린다 */
     if (keysWaitDma() == false)
     {
-      ret = false;
+      ret      = false;
+      has_hold = false;      /* 이번 값은 못 믿는다 */
       break;
     }
 
-    /* ★ 다음 주소를 결과 읽기 전에 — 세틀링을 결과 처리와 겹친다 */
+    /* ★ 다음 주소를 결과 뜨기 전에 — 세틀링이 복사와 겹친다 */
     gpio_write_port(HPM_GPIO0, KEYS_MUX_GPIO_PORT, mux_addr[step + 1]);
 
     for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++)
     {
-      keysFilter(step, i,                adc0_buf[i]);
-      keysFilter(step, KEYS_SEQ_LEN + i, adc1_buf[i]);
+      snap[i]               = adc0_buf[i];
+      snap[KEYS_SEQ_LEN + i] = adc1_buf[i];
     }
+    hold     = step;
+    has_hold = true;
+  }
 
-    if (is_calibrated) keysTrack(step);
+  /* 마지막 스텝은 숨길 대기 시간이 없다 */
+  if (has_hold)
+  {
+    for (uint32_t i = 0; i < KEYS_CH_MAX; i++) keysFilter(hold, i, snap[i]);
+    if (is_calibrated) keysTrack(hold);
   }
 
   scan_time_us = micros() - t_begin;
+  scan_cnt++;
+  if (scan_time_us > scan_us_max)      scan_us_max = scan_time_us;
+  if (scan_time_us > KEYS_SCAN_OVER_US) scan_over_cnt++;
 
   return ret;
 }
@@ -1253,7 +1305,9 @@ void cliKeys(cli_args_t *args)
     cliPrintf("\nlayout      : %s  %d 키\n", KEYS_LAYOUT_NAME, KEYS_LAYOUT_KEY_CNT);
     cliPrintf("calibrated  : %d  (%d + %d scan, %d ms)\n",
               is_calibrated, KEYS_CAL_DISCARD, KEYS_CAL_SAMPLES, (int)cal_time_ms);
-    cliPrintf("scan        : %d us\n", (int)scan_time_us);
+    cliPrintf("scan        : %d us  (max %d, %dus 초과 %d / %d 회)\n",
+              (int)scan_time_us, (int)scan_us_max,
+              KEYS_SCAN_OVER_US, (int)scan_over_cnt, (int)scan_cnt);
     cliPrintf("timeout     : %d\n", (int)timeout_cnt);
     ret = true;
   }
