@@ -202,6 +202,15 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  *
  * 스트로크의 30% 에서 눌림, 19% 에서 해제. 둘 사이 간격이 히스테리시스다.
  */
+/*
+ * ★ 이제 판정에 쓰이지 않는다.
+ *
+ *   8편에 실측으로 정한 값이고 오래 기본값 노릇을 했다. 지금은 설정(0.01mm)을
+ *   키별 스트로크로 풀어 만든 thr[] 이 판정을 맡는다 — VIA 슬라이더가 판정에
+ *   닿게 하려면 그래야 했다. 근거를 남기려고 값만 둔다.
+ *
+ *     250 * 3 = 750 카운트 ~= 1.20mm,  156 * 3 = 468 ~= 0.75mm
+ */
 #define KEYS_PRESS_LEVEL        (250 * KEYS_ACC_CNT)
 #define KEYS_RELEASE_LEVEL      (156 * KEYS_ACC_CNT)
 
@@ -334,8 +343,22 @@ static const keys_switch_t keys_switch[] =
  *   쓰기는 사용자가 명시할 때만 (keys save). 부팅 중 플래시를 쓰다 실패하면
  *   어디로 갈지 설계가 어려워지고, 실제로 그것 때문에 한 번 브릭을 만들었다.
  */
+/*
+ * cfg.rt_flags
+ *
+ *   KEYS_RT_CONT — 연속 RT.
+ *
+ *     보통 RT 는 입력지점 아래에서만 살아 있다. 키가 그 위로 돌아오면 풀리고,
+ *     다시 입력지점을 넘어야 붙는다. 연속 RT 는 전 구간에서 계속 살려 둔다 —
+ *     얕게 톡톡 치는 구간에서도 방향 반전만으로 입력·해제가 난다.
+ *     상용 메뉴의 "연속 RT 활성화 / 키 입력 중 연속적 사용 설정" 이 이것이다.
+ */
+#define KEYS_RT_ON         (1U << 0)
+#define KEYS_RT_BOTTOM     (1U << 1)
+#define KEYS_RT_CONT       (1U << 2)
+
 #define KEYS_CFG_MAGIC     0x4746434BUL   /* 'KCFG' */
-#define KEYS_CFG_VERSION   2      /* 2: 누적 도입으로 눈금이 3배 — 옛 보정값은 버린다 */
+#define KEYS_CFG_VERSION   3      /* 2: 누적으로 눈금 3배  3: 래피드 트리거 항목 */
 
 typedef struct
 {
@@ -353,11 +376,51 @@ typedef struct
   uint16_t length;       /* 이 구조체 전체 크기 — 버전이 올라가도 읽을 수 있게 */
   uint32_t seq;          /* 핑퐁 선택 기준. 큰 쪽이 최신 */
 
-  uint16_t press_um;     /* 입력지점  0.01mm */
-  uint16_t release_um;   /* 해제지점  0.01mm */
-  uint16_t rt_um;        /* 재입력    0.01mm */
+  uint16_t press_um;     /* 입력지점    0.01mm — 절대 위치 */
+  uint16_t release_um;   /* 해제지점    0.01mm — 절대 위치 */
+
+  /*
+   * 래피드 트리거 — 절대 위치가 아니라 "방향이 바뀐 뒤 얼마나 움직였나"로 판정한다.
+   *
+   * ★ 누름과 해제를 따로 둔다.
+   *
+   *   하나로 묶는 구현이 많지만 게임에서는 비대칭이 유리한 경우가 실제로 있다
+   *   (빠르게 떼고 천천히 누르기). 상용도 pressTravel 과 releaseStroke 를 나눠 둔다.
+   *   UI 에서는 "고급" 뒤에 숨겨 하나처럼 보이게 할 수 있으니, 필드는 지금 넣어
+   *   나중에 버전을 또 올리며 재보정을 요구하지 않게 한다.
+   */
+  uint16_t rt_press_um;   /* 되눌림 반응 행정  0.01mm */
+  uint16_t rt_release_um; /* 되뗌   반응 행정  0.01mm */
+
+  /*
+   * 바닥 보호 — 바닥에서 이만큼 안쪽에서는 RT 해제를 끈다.
+   *
+   *   RT 해제는 "가장 깊었던 지점에서 얼마나 올라왔나"로 판정한다. 바닥까지 눌러
+   *   붙잡고 있으면 그 기준점이 바닥에 고정되는데, 손가락은 누르는 동안에도
+   *   0.1~0.3mm 씩 미세하게 풀린다. 그 이완만으로 해제가 나가 키가 툭툭 끊긴다.
+   *   자석이 가장 가까운 구간에서 홀 출력이 평평해지는 것도 겹친다.
+   *
+   *   일반 모드에서는 해제 지점이 절대값이라 바닥에서 멀어 안 생긴다. RT 특유의
+   *   문제다. 잡음 때문이 아니다 — 0.1mm 는 9 sigma 라 잡음은 못 넘는다.
+   */
+  uint16_t bottom_um;    /* 바닥 보호 구간  0.01mm */
+
+  /*
+   * 데드존 — 쉬는 위치 근처에서 이만큼은 아예 안 본다.
+   *
+   *   ★ 바닥 보호와 다른 물건이다. 이쪽은 **위**다.
+   *
+   *     데드존     진동·공차로 값이 흔들려도 우발적 입력이 안 나가게 막는다
+   *     바닥 보호   끝까지 눌러 붙잡을 때 손가락 이완으로 RT 해제가 나가는 걸 막는다
+   *
+   *   상용 제품도 탭을 따로 둔다 ("진동, 오차등으로 인한 우발적 입력 방지 거리").
+   *   기본값 0 이다 — 우리 기준값이 키마다 러닝 최대로 따라가므로 평소에는 필요
+   *   없고, 진동이 있는 환경에서 사용자가 올린다.
+   */
+  uint16_t dead_um;      /* 데드존  0.01mm */
+
   uint8_t  sw_type_def;  /* 기본 스위치 종류 */
-  uint8_t  rsv;
+  uint8_t  rt_flags;     /* bit0 = RT 켬, bit1 = 바닥 보호 켬 */
 
   keys_key_cfg_t key[KEYS_MAX];
 
@@ -396,6 +459,47 @@ static volatile uint32_t adc1_buf[KEYS_SEQ_LEN];
 static uint16_t acc_hist[KEYS_STEP_MAX][KEYS_CH_MAX][KEYS_ACC_CNT];
 static uint16_t acc_sum[KEYS_STEP_MAX][KEYS_CH_MAX];
 static uint32_t acc_idx = 0;
+
+/*
+ * 키별 임계값 — 카운트 단위로 미리 풀어 둔다.
+ *
+ * 설정은 0.01mm 인데 판정은 카운트로 한다. 환산에는 키별 스트로크가 필요해서
+ * 나눗셈이 들어가는데, 그걸 35kHz x 64셀 루프 안에서 할 수는 없다. 설정이나
+ * 보정이 바뀔 때만 다시 만든다.
+ */
+typedef struct
+{
+  uint16_t press;        /* 입력지점 (깊이 카운트) */
+  uint16_t release;      /* 해제지점 */
+  uint16_t rt_press;     /* RT 재입력 반응 행정 */
+  uint16_t rt_release;   /* RT 입력 해제 반응 행정 */
+  uint16_t bottom_lo;    /* 이 깊이 이상이면 바닥 보호 구간 */
+  uint16_t dead;         /* 이 깊이 미만은 아예 안 본다 */
+} keys_thr_t;
+
+static keys_thr_t thr[KEYS_MAX];
+
+static void            keysThrRebuild(void);
+static uint16_t        keysStrokeCnt(uint32_t i);
+static inline uint8_t  keysSwType(uint32_t i);
+
+/*
+ * RT 반응 행정의 하한 (카운트).
+ *
+ *   실측 잡음 p-p 가 40 이다. 반응 행정이 그보다 작으면 RT 가 잡음을 방향 반전으로
+ *   읽어 키가 제멋대로 눌렸다 떼진다. 잡음의 1.5배를 하한으로 둔다 — 0.096mm 쯤이라
+ *   상용 기본값(0.1mm)과도 맞는다.
+ */
+#define KEYS_RT_MIN_CNT    60
+
+/*
+ * RT 판정용 상태.
+ *
+ *   peak    눌린 동안은 가장 깊었던 지점, 떼진 동안은 가장 얕았던 지점
+ *   rt_arm  RT 가 걸려 있는가 (연속 RT 가 아니면 입력지점 위로 돌아올 때 풀린다)
+ */
+static uint16_t peak[KEYS_STEP_MAX][KEYS_CH_MAX];
+static uint16_t rt_arm[KEYS_STEP_MAX];
 
 static uint16_t raw[KEYS_STEP_MAX][KEYS_CH_MAX];    /* 누적합(0~12285) — 판정·표시는 전부 이걸 쓴다 */
 static uint16_t base[KEYS_STEP_MAX][KEYS_CH_MAX];   /* 무압 기준값 (러닝 최대) */
@@ -632,6 +736,7 @@ bool keysInit(void)
    * 없거나 깨졌으면 기본값으로 계속 간다 — 여기서 멈추면 복구가 막힌다.
    */
   is_cfg_loaded = keysCfgLoad();
+  keysThrRebuild();          /* 설정을 읽었으니 임계값을 푼다 */
 
   if (ret)
   {
@@ -741,16 +846,70 @@ static inline void keysFilter(uint32_t step, uint32_t ch, uint32_t packed)
  *   - 온도 드리프트 -> 위로 새면 즉시, 아래로 새면 천천히 따라간다
  *   - 개체 편차     -> 셀마다 제 기준을 갖는다
  */
+/*
+ * 설정(0.01mm)을 키별 카운트로 풀어 둔다.
+ *
+ * ★ 이걸 넣기 전까지 판정은 전역 상수(KEYS_PRESS_LEVEL 등)를 썼다.
+ *   VIA 입력지점 슬라이더가 EEPROM 만 바꾸고 판정에는 닿지 않았다는 뜻이다.
+ *
+ * 환산에 키별 스트로크가 필요해 나눗셈이 들어간다. 35kHz x 64셀 루프 안에서는 못
+ * 하므로 설정·보정이 바뀔 때만 다시 만든다.
+ */
+static void keysThrRebuild(void)
+{
+  for (uint32_t i = 0; i < KEYS_MAX; i++)
+  {
+    uint32_t stroke = keysStrokeCnt(i);
+    uint32_t travel = keys_switch[keysSwType(i)].travel_um;
+    keys_thr_t *t   = &thr[i];
+
+    if (travel == 0) travel = 400;
+
+    /* um -> 카운트. um 400, stroke 2700 이라도 32비트 안이다. */
+    #define UM2CNT(um)  ((uint16_t)(((uint32_t)(um) * stroke) / travel))
+
+    t->press      = UM2CNT(cfg.press_um);
+    t->release    = UM2CNT(cfg.release_um);
+    t->rt_press   = UM2CNT(cfg.rt_press_um);
+    t->rt_release = UM2CNT(cfg.rt_release_um);
+    t->dead       = UM2CNT(cfg.dead_um);
+
+    /* 바닥 보호는 "바닥에서 이만큼 안쪽" 이므로 깊이 기준으로 뒤집는다 */
+    {
+      uint32_t b = UM2CNT(cfg.bottom_um);
+      t->bottom_lo = (uint16_t)((stroke > b) ? (stroke - b) : 0);
+    }
+    #undef UM2CNT
+
+    /*
+     * 최소 폭을 지킨다.
+     *
+     *   반응 행정이 잡음보다 작으면 RT 가 잡음을 방향 반전으로 읽는다. 실측 잡음
+     *   p-p 가 40 이므로 그 위로 올린다. 사용자가 0 으로 내려도 여기서 막힌다.
+     */
+    if (t->rt_press   < KEYS_RT_MIN_CNT) t->rt_press   = KEYS_RT_MIN_CNT;
+    if (t->rt_release < KEYS_RT_MIN_CNT) t->rt_release = KEYS_RT_MIN_CNT;
+
+    /* 해제가 입력보다 깊으면 눌린 채로 굳는다 */
+    if (t->release >= t->press && t->press > 0) t->release = (uint16_t)(t->press - 1);
+  }
+}
+
 ATTR_RAMFUNC static void keysTrack(uint32_t step)
 {
   bool do_drift = drift_due;
+  bool rt_on    = (cfg.rt_flags & KEYS_RT_ON)     != 0;
+  bool rt_cont  = (cfg.rt_flags & KEYS_RT_CONT)   != 0;
+  bool bot_on   = (cfg.rt_flags & KEYS_RT_BOTTOM) != 0;
 
   for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
   {
     /* 스위치가 없는 자리는 판정하지 않는다. 기준값 추적은 그대로 둬도 무해하다. */
     if ((keys_present[step] & (1U << c)) == 0) continue;
 
+    const keys_thr_t *t = &thr[step * KEYS_CH_MAX + c];
     uint16_t v = raw[step][c];
+    uint16_t bit = (uint16_t)(1U << c);
     int32_t  d;
 
     /*
@@ -758,7 +917,7 @@ ATTR_RAMFUNC static void keysTrack(uint32_t step)
      *
      * ★ 무조건 즉시 갱신하면 기준값이 노이즈 꼭대기를 붙잡는다. 그런데 그 기회는
      *   스캔 속도에 비례하는 반면 드리프트 보정은 시간 기준이라, 스캔이 빨라질수록
-     *   (CLI 20회/초 -> 메인 루프 26000회/초) 균형점이 위로 밀려 편차가 커진다.
+     *   균형점이 위로 밀려 편차가 커진다.
      *
      *   그래서 큰 변화(진짜 해제)만 즉시 반영하고, 노이즈 수준의 잔파도는 드리프트와
      *   같은 시간 기준으로 올린다. 위아래가 대칭이 되어 스캔 속도와 무관해진다.
@@ -769,23 +928,83 @@ ATTR_RAMFUNC static void keysTrack(uint32_t step)
       else if (do_drift)                                   base[step][c] += KEYS_DRIFT_STEP;
     }
 
-    d = (int32_t)base[step][c] - (int32_t)v;    /* 누를수록 커진다 */
+    d = (int32_t)base[step][c] - (int32_t)v;    /* 깊이 — 누를수록 커진다 */
 
     /*
-     * 노이즈 범위 안에 머무는 셀만 기준값을 한 칸 내린다.
+     * 노이즈 범위 안에 머무는 셀만 기준값을 한 걸음 내린다.
      * 눌려 있는 셀은 d 가 밴드를 넘어서 영향받지 않는다.
      */
     if (do_drift && d > KEYS_DRIFT_STEP && d < KEYS_DRIFT_BAND)
       base[step][c] -= KEYS_DRIFT_STEP;
 
-    /* 히스테리시스 — 임계값 부근에서 떨리지 않게 */
-    if (pressed[step] & (1U << c))
+    /*
+     * 데드존 — 쉬는 위치 근처는 아예 안 본다.
+     *
+     * 여기 있는 동안은 완전히 뗀 것으로 보고 RT 도 푼다. 그래야 진동으로 값이
+     * 흔들려도 RT 가 "방향이 바뀌었다"고 읽지 않는다.
+     */
+    if (d < (int32_t)t->dead)
     {
-      if (d < KEYS_RELEASE_LEVEL) pressed[step] &= ~(1U << c);
+      d = 0;
+      rt_arm[step] &= (uint16_t)~bit;
+    }
+
+    if (pressed[step] & bit)
+    {
+      /* 눌린 동안에는 가장 깊었던 지점을 좇는다 */
+      if ((uint16_t)d > peak[step][c]) peak[step][c] = (uint16_t)d;
+
+      /*
+       * RT 입력 해제 — 가장 깊었던 지점에서 이만큼 올라오면 뗀 것으로 본다.
+       *
+       * ★ 바닥 근처에서는 끈다.
+       *   바닥까지 눌러 붙잡으면 기준점이 바닥에 고정되는데 손가락은 누르는 동안에도
+       *   미세하게 풀린다. 그 이완만으로 해제가 나가 키가 툭툭 끊긴다.
+       */
+      bool in_bottom = bot_on && ((uint16_t)d >= t->bottom_lo);
+
+      if (rt_on && !in_bottom &&
+          (int32_t)peak[step][c] - d >= (int32_t)t->rt_release)
+      {
+        pressed[step] &= (uint16_t)~bit;
+        peak[step][c]  = (uint16_t)d;
+      }
+      else if (d < (int32_t)t->release)         /* 절대 해제지점 */
+      {
+        pressed[step] &= (uint16_t)~bit;
+        peak[step][c]  = (uint16_t)d;
+      }
     }
     else
     {
-      if (d > KEYS_PRESS_LEVEL)   pressed[step] |=  (1U << c);
+      /* 떼진 동안에는 가장 얕았던 지점을 좇는다 */
+      if ((uint16_t)d < peak[step][c]) peak[step][c] = (uint16_t)d;
+
+      /*
+       * RT 재입력 — 가장 얕았던 지점에서 이만큼 내려가면 다시 누른 것으로 본다.
+       *
+       * 연속 RT 가 아니면 입력지점 위로 올라온 순간 RT 가 풀린다 (rt_arm). 그때는
+       * 다시 입력지점을 넘어야 붙는다.
+       */
+      bool rt_ok = rt_on && (rt_cont || (rt_arm[step] & bit));
+
+      if (rt_ok && d - (int32_t)peak[step][c] >= (int32_t)t->rt_press)
+      {
+        pressed[step] |= bit;
+        peak[step][c]  = (uint16_t)d;
+        rt_arm[step]  |= bit;
+      }
+      else if (d > (int32_t)t->press)           /* 절대 입력지점 */
+      {
+        pressed[step] |= bit;
+        peak[step][c]  = (uint16_t)d;
+        rt_arm[step]  |= bit;
+      }
+      else if (d < (int32_t)t->release)
+      {
+        /* 입력지점 아래로 완전히 돌아왔다 — 연속 RT 가 아니면 여기서 푼다 */
+        rt_arm[step] &= (uint16_t)~bit;
+      }
     }
   }
 }
@@ -973,6 +1192,7 @@ bool keysCalibrate(void)
 
   memset(pressed,   0, sizeof(pressed));
   is_calibrated = true;
+  keysThrRebuild();          /* 키별 스트로크가 바뀌었다 */
 
   return true;
 }
@@ -1077,9 +1297,22 @@ static void keysCfgDefault(void)
   cfg.seq         = 0;
 
   /* 상용 웹툴의 "처음 사용자용" 프리셋과 같은 값 */
-  cfg.press_um    = 100;    /* 1.00mm */
-  cfg.release_um  = 50;     /* 0.50mm */
-  cfg.rt_um       = 50;     /* 0.50mm */
+  cfg.press_um      = 100;   /* 1.00mm */
+  cfg.release_um    = 50;    /* 0.50mm */
+
+  /*
+   * 래피드 트리거는 **꺼진 채로** 시작한다.
+   *
+   *   보통 키보드로 먼저 완성한다는 게 이 펌웨어의 순서다. RT 는 켜는 순간 타이핑
+   *   느낌이 크게 달라지므로 사용자가 고르게 둔다. 값만 미리 상용 기본값으로 채워
+   *   켜자마자 쓸 만하게 한다.
+   */
+  cfg.rt_press_um   = 50;    /* 0.50mm */
+  cfg.rt_release_um = 50;    /* 0.50mm */
+  cfg.bottom_um     = 10;    /* 0.10mm — 상용 기본값 */
+  cfg.dead_um       = 0;     /* 상용도 기본 0 */
+  cfg.rt_flags      = KEYS_RT_BOTTOM;   /* 바닥 보호만 켜 둔다 (RT 는 꺼짐) */
+
   cfg.sw_type_def = 0;
 
   for (uint32_t i = 0; i < KEYS_MAX; i++)
@@ -1236,6 +1469,8 @@ void keysSetPressUm(uint16_t um)
 
   /* 해제지점이 입력지점보다 깊으면 키가 눌린 채로 남는다 */
   if (cfg.release_um >= cfg.press_um) cfg.release_um = (uint16_t)(cfg.press_um - 1);
+
+  keysThrRebuild();
 }
 
 void keysSetReleaseUm(uint16_t um)
@@ -1243,6 +1478,8 @@ void keysSetReleaseUm(uint16_t um)
   if (um == 0) um = 1;
   if (um >= cfg.press_um) um = (uint16_t)(cfg.press_um - 1);
   cfg.release_um = um;
+
+  keysThrRebuild();
 }
 
 void keysSetSwitchType(uint8_t type)
@@ -1251,6 +1488,48 @@ void keysSetSwitchType(uint8_t type)
 
   cfg.sw_type_def = type;
   for (uint32_t i = 0; i < KEYS_MAX; i++) cfg.key[i].sw_type = type;
+
+  keysThrRebuild();
+}
+
+
+/*---------------------------------------------------------------------------
+ *  래피드 트리거 설정
+ *
+ *  전부 0.01mm 단위다. 값을 바꾸면 임계값 표를 즉시 다시 만들어 다음 스캔부터
+ *  반영된다 — 저장(keys save)과는 별개다.
+ *---------------------------------------------------------------------------*/
+uint16_t keysGetRtPressUm(void)   { return cfg.rt_press_um; }
+uint16_t keysGetRtReleaseUm(void) { return cfg.rt_release_um; }
+uint16_t keysGetBottomUm(void)    { return cfg.bottom_um; }
+uint16_t keysGetDeadUm(void)      { return cfg.dead_um; }
+uint8_t  keysGetRtFlags(void)     { return cfg.rt_flags; }
+
+static uint16_t keysClampUm(uint16_t um)
+{
+  uint16_t travel = keys_switch[keysSwType(0)].travel_um;
+
+  return (um > travel) ? travel : um;
+}
+
+void keysSetRtPressUm(uint16_t um)   { cfg.rt_press_um   = keysClampUm(um); keysThrRebuild(); }
+void keysSetRtReleaseUm(uint16_t um) { cfg.rt_release_um = keysClampUm(um); keysThrRebuild(); }
+void keysSetBottomUm(uint16_t um)    { cfg.bottom_um     = keysClampUm(um); keysThrRebuild(); }
+void keysSetDeadUm(uint16_t um)      { cfg.dead_um       = keysClampUm(um); keysThrRebuild(); }
+
+void keysSetRtFlags(uint8_t flags)
+{
+  cfg.rt_flags = flags & (KEYS_RT_ON | KEYS_RT_BOTTOM | KEYS_RT_CONT);
+
+  /*
+   * RT 를 끄거나 켤 때 상태를 초기화한다. 안 그러면 직전 peak 이 남아
+   * 켜자마자 엉뚱한 판정이 한 번 난다.
+   */
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    rt_arm[st] = 0;
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++) peak[st][c] = 0;
+  }
 }
 
 /* 물리 배치 한 항목 {x, y, w, h, row, col} — 1/4 키유닛. 웹 도구가 이걸로 그린다. */
@@ -1398,6 +1677,58 @@ void cliKeys(cli_args_t *args)
     }
   }
 
+
+  /*
+   * 래피드 트리거 조작.
+   *
+   *   keys rt                        상태 보기
+   *   keys rt on|off                 RT 켜고 끄기
+   *   keys rt cont|bottom on|off     연속 RT / 바닥 보호
+   *   keys rt press|release|bottom|dead <0.01mm>
+   */
+  if (args->argc >= 1 && args->isStr(0, "rt"))
+  {
+    uint8_t f = keysGetRtFlags();
+
+    if (args->argc == 2 && (args->isStr(1, "on") || args->isStr(1, "off")))
+    {
+      keysSetRtFlags(args->isStr(1, "on") ? (uint8_t)(f | KEYS_RT_ON)
+                                          : (uint8_t)(f & ~KEYS_RT_ON));
+    }
+    else if (args->argc == 3 && (args->isStr(1, "cont") || args->isStr(1, "bottom"))
+                             && (args->isStr(2, "on") || args->isStr(2, "off")))
+    {
+      uint8_t bit = args->isStr(1, "cont") ? KEYS_RT_CONT : KEYS_RT_BOTTOM;
+
+      keysSetRtFlags(args->isStr(2, "on") ? (uint8_t)(f | bit) : (uint8_t)(f & ~bit));
+    }
+    else if (args->argc == 3)
+    {
+      uint16_t um = (uint16_t)args->getData(2);
+
+      if      (args->isStr(1, "press"))   keysSetRtPressUm(um);
+      else if (args->isStr(1, "release")) keysSetRtReleaseUm(um);
+      else if (args->isStr(1, "bottom"))  keysSetBottomUm(um);
+      else if (args->isStr(1, "dead"))    keysSetDeadUm(um);
+    }
+
+    f = keysGetRtFlags();
+    cliPrintf("RT        : %s   연속 %s   바닥 보호 %s\n",
+              (f & KEYS_RT_ON)     ? "켬" : "끔",
+              (f & KEYS_RT_CONT)   ? "켬" : "끔",
+              (f & KEYS_RT_BOTTOM) ? "켬" : "끔");
+    cliPrintf("재입력    : %d.%02d mm  (%d 카운트)\n",
+              keysGetRtPressUm() / 100, keysGetRtPressUm() % 100, thr[0].rt_press);
+    cliPrintf("입력 해제 : %d.%02d mm  (%d 카운트)\n",
+              keysGetRtReleaseUm() / 100, keysGetRtReleaseUm() % 100, thr[0].rt_release);
+    cliPrintf("바닥 보호 : %d.%02d mm  (깊이 %d 이상이면 RT 해제 끔)\n",
+              keysGetBottomUm() / 100, keysGetBottomUm() % 100, thr[0].bottom_lo);
+    cliPrintf("데드존    : %d.%02d mm  (%d 카운트)\n",
+              keysGetDeadUm() / 100, keysGetDeadUm() % 100, thr[0].dead);
+    cliPrintf("입력지점  : %d 카운트,  해제지점 %d 카운트  (0번 키)\n",
+              thr[0].press, thr[0].release);
+    ret = true;
+  }
 
   if (args->argc == 1 && args->isStr(0, "info"))
   {
@@ -1643,7 +1974,14 @@ void cliKeys(cli_args_t *args)
     cliPrintf("loaded      : %d  (seq %d)\n", is_cfg_loaded, (int)cfg.seq);
     cliPrintf("press       : %d.%02d mm\n", cfg.press_um / 100, cfg.press_um % 100);
     cliPrintf("release     : %d.%02d mm\n", cfg.release_um / 100, cfg.release_um % 100);
-    cliPrintf("rapid       : %d.%02d mm\n", cfg.rt_um / 100, cfg.rt_um % 100);
+    cliPrintf("rapid       : %s  되눌림 %d.%02d mm / 되뗌 %d.%02d mm\n",
+              (cfg.rt_flags & KEYS_RT_ON) ? "켬" : "끔",
+              cfg.rt_press_um / 100,   cfg.rt_press_um % 100,
+              cfg.rt_release_um / 100, cfg.rt_release_um % 100);
+    cliPrintf("바닥 보호   : %s  %d.%02d mm\n",
+              (cfg.rt_flags & KEYS_RT_BOTTOM) ? "켬" : "끔",
+              cfg.bottom_um / 100, cfg.bottom_um % 100);
+    cliPrintf("데드존      : %d.%02d mm\n", cfg.dead_um / 100, cfg.dead_um % 100);
     cliPrintf("switch      : %d (%s, %d.%02d mm)\n", cfg.sw_type_def,
               keys_switch[cfg.sw_type_def].name,
               keys_switch[cfg.sw_type_def].travel_um / 100,
@@ -1892,8 +2230,9 @@ void cliKeys(cli_args_t *args)
     int8_t   slot_s[KEYS_BAR_SLOTS];
     int8_t   slot_c[KEYS_BAR_SLOTS];
     uint32_t slot_ms[KEYS_BAR_SLOTS];
-    uint32_t press_x = KEYS_PRESS_LEVEL * KEYS_BAR_W / KEYS_BAR_FULL;
-    uint32_t rel_x   = KEYS_RELEASE_LEVEL * KEYS_BAR_W / KEYS_BAR_FULL;
+    /* 표시도 실제 판정값을 쓴다 — 0번 키 기준 (키별로 조금씩 다르다) */
+    uint32_t press_x = thr[0].press   * KEYS_BAR_W / KEYS_BAR_FULL;
+    uint32_t rel_x   = thr[0].release * KEYS_BAR_W / KEYS_BAR_FULL;
 
     for (uint32_t i = 0; i < KEYS_BAR_SLOTS; i++)
     {
@@ -1901,7 +2240,7 @@ void cliKeys(cli_args_t *args)
     }
 
     cliPrintf("눌린 깊이. ':' 해제 임계 %d, '|' 누름 임계 %d, 전체 %d\n\n",
-              KEYS_RELEASE_LEVEL, KEYS_PRESS_LEVEL, KEYS_BAR_FULL);
+              thr[0].release, thr[0].press, KEYS_BAR_FULL);
 
     while (cliKeepLoop())
     {
@@ -2189,6 +2528,7 @@ void cliKeys(cli_args_t *args)
     cliPrintf("keys dump\n");
     cliPrintf("keys raw\n");
     cliPrintf("keys time\n");
+    cliPrintf("keys rt        래피드 트리거 (on/off, cont, bottom, press, release, dead)\n");
   }
 
   /* ★ 반드시 되돌린다. 안 그러면 keys 명령을 한 번 쓴 뒤로 키보드가 죽는다. */

@@ -80,6 +80,18 @@ void     keysSetPressUm(uint16_t um);
 void     keysSetReleaseUm(uint16_t um);
 void     keysSetSwitchType(uint8_t type);
 
+/* 래피드 트리거 — 전부 0.01mm. 플래그는 keys.c 의 KEYS_RT_* */
+uint16_t keysGetRtPressUm(void);
+uint16_t keysGetRtReleaseUm(void);
+uint16_t keysGetBottomUm(void);
+uint16_t keysGetDeadUm(void);
+uint8_t  keysGetRtFlags(void);
+void     keysSetRtPressUm(uint16_t um);
+void     keysSetRtReleaseUm(uint16_t um);
+void     keysSetBottomUm(uint16_t um);
+void     keysSetDeadUm(uint16_t um);
+void     keysSetRtFlags(uint8_t flags);
+
 /* 물리 배치 — {x, y, w, h, row, col} 6바이트, 1/4 키유닛. 웹 도구가 JSON 없이 그린다. */
 uint32_t       keysGetLayoutCount(void);
 const uint8_t *keysGetLayoutEntry(uint32_t idx);
