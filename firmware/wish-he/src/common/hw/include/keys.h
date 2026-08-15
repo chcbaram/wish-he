@@ -25,7 +25,7 @@ bool     keysUpdate(void);
 /* 직전 스캔의 원시값. step = MUX 스텝, ch = ADC 채널 */
 uint16_t keysGetRaw(uint8_t step, uint8_t ch);
 
-/* 직전 스캔 한 바퀴에 걸린 시간 (us). 11편 예산 계산의 근거가 된다. */
+/* 직전 스캔 한 바퀴에 걸린 시간 (us). 12편 예산 계산의 근거가 된다. */
 uint32_t keysGetScanTime(void);
 
 /*
@@ -58,6 +58,19 @@ uint16_t keysGetRow(uint16_t row);
 
 uint16_t keysGetBase(uint8_t step, uint8_t ch);
 int32_t  keysGetDelta(uint8_t step, uint8_t ch);
+
+/*
+ * mm 환산 — 라이브 트래킹과 13편(래피드 트리거)이 쓴다. 단위는 0.01mm.
+ *
+ * 깊이의 영점은 살아 있는 기준값이고, 기울기만 보정에서 온다. 보정하지 않은 키도
+ * 스위치 종류표의 공칭값으로 환산되므로 항상 값이 나온다.
+ */
+uint16_t keysGetTravelUm(uint16_t row, uint16_t col);   /* 그 키의 전 행정 */
+uint16_t keysGetDepthUm(uint16_t row, uint16_t col);    /* 지금 눌린 깊이 */
+
+/* 물리 배치 — {x, y, w, h, row, col} 6바이트, 1/4 키유닛. 웹 도구가 JSON 없이 그린다. */
+uint32_t       keysGetLayoutCount(void);
+const uint8_t *keysGetLayoutEntry(uint32_t idx);
 
 
 #endif

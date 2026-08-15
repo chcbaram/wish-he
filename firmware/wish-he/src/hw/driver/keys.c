@@ -228,18 +228,24 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  * 저장해두고(기본 3), 설정은 mm 단위로 다룬다.
  *
  * travel_um 은 0.01mm 단위다 (400 = 4.00mm).
+ *
+ * stroke_cnt 는 그 행정에 해당하는 ADC 카운트(12비트)다. 보정하지 않은 키를 mm 로
+ * 환산하려면 이게 있어야 한다 — 카운트만으로는 몇 mm 인지 알 수 없기 때문이다.
+ * 값의 근거는 8편의 실측이다: 61키 보정에서 최소 757 / 최대 893 / 평균 836.
+ * 그래서 4.0mm 자리에 836 을 넣고 나머지는 행정에 비례시켰다.
  */
 typedef struct
 {
   const char *name;
   uint16_t    travel_um;
+  uint16_t    stroke_cnt;   /* 미보정 키의 mm 환산 기준 (12비트 카운트) */
 } keys_switch_t;
 
 static const keys_switch_t keys_switch[] =
 {
-  { "generic 4.0mm", 400 },   /* 0 — 기본값. 실제 스위치가 정해지면 채운다 */
-  { "generic 3.5mm", 350 },   /* 1 */
-  { "generic 3.0mm", 300 },   /* 2 */
+  { "generic 4.0mm", 400, 836 },   /* 0 — 기본값. 실제 스위치가 정해지면 채운다 */
+  { "generic 3.5mm", 350, 731 },   /* 1 */
+  { "generic 3.0mm", 300, 627 },   /* 2 */
 };
 
 #define KEYS_SWITCH_CNT   (sizeof(keys_switch) / sizeof(keys_switch[0]))
@@ -937,25 +943,87 @@ static bool keysCfgSave(void)
   return true;
 }
 
-/* 그 키의 스트로크 — 보정했으면 실측, 아니면 종류표의 공칭값 */
+/* 그 키에 배정된 스위치 종류 인덱스 (범위를 벗어나면 0) */
+static inline uint8_t keysSwType(uint32_t i)
+{
+  uint8_t t = cfg.key[i].sw_type;
+  return (t < KEYS_SWITCH_CNT) ? t : 0;
+}
+
+/*
+ * 그 키의 물리 행정 (0.01mm).
+ *
+ * 보정 여부와 무관하다 — 보정은 "몇 카운트가 그 행정인가"를 정할 뿐, 스위치가
+ * 몇 mm 짜리인지를 바꾸지 않는다.
+ */
 uint16_t keysGetTravelUm(uint16_t row, uint16_t col)
 {
   uint32_t i = row * KEYS_CH_MAX + col;
-  uint8_t  t;
 
   if (i >= KEYS_MAX) return 0;
 
+  return keys_switch[keysSwType(i)].travel_um;
+}
+
+/*
+ * 그 키의 전 행정에 해당하는 카운트.
+ *
+ * 보정했으면 실측(cal_max - cal_min), 아니면 종류표의 공칭값이다. 보정값이 있어도
+ * 너무 작으면 (스위치가 덜 눌린 채 저장된 경우) 공칭값으로 돌아간다.
+ */
+static uint16_t keysStrokeCnt(uint32_t i)
+{
   if (cfg.key[i].flags & 0x01)
   {
-    /* 실측 스트로크를 um 으로 환산하려면 종류표의 공칭 스트로크에 비례시킨다 */
-    t = cfg.key[i].sw_type;
-    if (t >= KEYS_SWITCH_CNT) t = 0;
-    return keys_switch[t].travel_um;
+    int32_t s = (int32_t)cfg.key[i].cal_max - (int32_t)cfg.key[i].cal_min;
+
+    if (s >= KEYS_CAL_STROKE_MIN) return (uint16_t)s;
   }
 
-  t = cfg.key[i].sw_type;
-  if (t >= KEYS_SWITCH_CNT) t = 0;
-  return keys_switch[t].travel_um;
+  return keys_switch[keysSwType(i)].stroke_cnt;
+}
+
+/*
+ * 지금 눌려 있는 깊이 (0.01mm). 0 = 안 눌림.
+ *
+ * ★ 영점은 저장된 cal_max 가 아니라 살아 있는 기준값(base)을 쓴다.
+ *
+ *   base 는 러닝 최대값이라 온도·자세로 생기는 드리프트를 계속 따라간다. 보정
+ *   당시의 cal_max 를 영점으로 쓰면 몇 시간 뒤에는 안 눌러도 0 이 아니게 된다.
+ *   보정에서 가져오는 것은 "몇 카운트가 전 행정인가"(기울기)뿐이다.
+ */
+uint16_t keysGetDepthUm(uint16_t row, uint16_t col)
+{
+  uint32_t i = row * KEYS_CH_MAX + col;
+  int32_t  d;
+  uint32_t travel;
+  uint32_t stroke;
+
+  if (i >= KEYS_MAX)          return 0;
+  if (is_calibrated == false) return 0;
+
+  d = (int32_t)base[row][col] - (int32_t)raw[row][col];   /* 누를수록 양수 */
+  if (d <= 0) return 0;
+
+  travel = keys_switch[keysSwType(i)].travel_um;
+  stroke = keysStrokeCnt(i);
+  if (stroke == 0) return 0;
+
+  d = (int32_t)(((uint32_t)d * travel) / stroke);
+
+  return (uint16_t)((d > (int32_t)travel) ? travel : d);
+}
+
+/* 물리 배치 한 항목 {x, y, w, h, row, col} — 1/4 키유닛. 웹 도구가 이걸로 그린다. */
+uint32_t keysGetLayoutCount(void)
+{
+  return KEYS_LAYOUT_KEY_CNT;
+}
+
+const uint8_t *keysGetLayoutEntry(uint32_t idx)
+{
+  if (idx >= KEYS_LAYOUT_KEY_CNT) return NULL;
+  return keys_geo[idx];
 }
 
 
@@ -1197,7 +1265,7 @@ void cliKeys(cli_args_t *args)
    * 보정 — 전 키를 끝까지 눌러 바닥값을 모은다.
    *
    * 기준값(무압)은 러닝 최대값이 늘 추적하지만, 바닥값은 실제로 끝까지 눌러야만
-   * 알 수 있다. 이 둘이 있어야 눌린 깊이를 mm 로 환산할 수 있다 (12편 래피드 트리거).
+   * 알 수 있다. 이 둘이 있어야 눌린 깊이를 mm 로 환산할 수 있다 (13편 래피드 트리거).
    *
    * 레이아웃 뷰로 진행 상황을 보여준다 — 어느 키가 남았는지 눈으로 보인다.
    */

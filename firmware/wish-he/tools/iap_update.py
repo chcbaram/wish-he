@@ -221,7 +221,10 @@ IAP_USAGE_PAGE = 0xFF53          # 부트로더의 64바이트 업데이트 채�
 APP_USAGE_PAGE = 0xFF60          # 앱의 32바이트 설정 채널 (raw HID)
 
 APP_REPORT_LEN = 32
-APP_CMD_BOOT   = 0x02            # 부트로더로 점프
+
+# ★ VIA 의 id_bootloader_jump 와 같은 자리다.
+#   예전에는 0x02 였는데 VIA 의 id_get_keyboard_value 와 겹쳐서 옮겼다.
+APP_CMD_BOOT   = 0x0B
 APP_RESP_OK    = 0x00
 
 # ★ 0xFF60 은 VIA 를 쓰는 키보드가 다 같이 쓰는 페이지다. 이걸로만 고르면 책상에

@@ -57,6 +57,22 @@
       "presentation": { "clear": true }
     },
     {
+      "label": "keys-track",
+      "detail": "라이브 트래킹 — 눌린 깊이를 실제 배치대로. Ctrl+C 로 끝낸다.",
+      "type": "shell",
+      "command": "python3 tools/he_track.py",
+      "problemMatcher": [],
+      "presentation": { "clear": true }
+    },
+    {
+      "label": "keys-track-rate",
+      "detail": "라이브 트래킹 스냅샷/초만 측정",
+      "type": "shell",
+      "command": "python3 tools/he_track.py --rate",
+      "problemMatcher": [],
+      "presentation": { "clear": true }
+    },
+    {
       "label": "flash-jtag",
       "detail": "JTAG(FT2232 + HPMicro OpenOCD)로 0x80020000 에 기록. 앱이 죽었을 때.",
       "type": "shell",

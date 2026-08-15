@@ -159,6 +159,8 @@ void cliUsb(cli_args_t *args)
       cliPrintf("USB Baud    : %d      \n", (int)cdcGetBaud());
       cliPrintf("HID Ready   : %d      \n", hidIfIsConfigured());
       cliPrintf("HID Rx      : %d      \n", (int)hidIfGetRxCount());
+      cliPrintf("HID Track   : %d  (%d 프레임)\n",
+                hidIfIsTracking(), (int)hidIfGetTrackCount());
       cliPrintf("KBD Ready   : %d      \n", hidKbdIsConfigured());
       cliPrintf("KBD Report  : %d /s   \n", (int)rate);
       cliMoveUp(9);
