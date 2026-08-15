@@ -82,7 +82,6 @@ static void updateKeyboard(void)
 
 void update(void const *arg)
 {
-  resetBootAlive();     /* 일정 시간 살아남으면 이번 부팅을 성공으로 표시 */
   updateLED();
   updateKeyboard();
   usbUpdate();          /* HID 로 들어온 부트/리셋 요청 처리 */

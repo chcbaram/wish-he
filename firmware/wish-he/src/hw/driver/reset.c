@@ -23,7 +23,6 @@
 #include "hpm_ppor_drv.h"
 #include "hpm_interrupt.h"
 #include "hpm_l1c_drv.h"
-#include "hpm5361_it.h"
 
 
 #if CLI_USE(HW_RESET)
@@ -50,74 +49,6 @@ static void cliReset(cli_args_t *args);
 #define NOR_CFG_OPTION0       0x00000006U   /* 120MHz */
 #define NOR_CFG_OPTION1       0x00001000U   /* 2번 핀그룹 (PX00~PX07) */
 
-
-/*
- * 부팅 안전망 시험 플래그. .noinit 이라 리셋해도 남는다.
- * 안전망이 부트로더로 떨어뜨릴 때 같이 지워야 무한 반복이 안 된다.
- */
-static __attribute__((section(".noinit"))) struct
-{
-  uint32_t magic;
-  uint32_t on;
-} hang_test;
-
-#define HANG_TEST_MAGIC   0x48414E47UL   /* 'HANG' */
-
-bool resetGetHangTest(void)
-{
-  return (hang_test.magic == HANG_TEST_MAGIC) && (hang_test.on != 0);
-}
-
-void resetSetHangTest(bool on)
-{
-  hang_test.magic = HANG_TEST_MAGIC;
-  hang_test.on    = on ? 1 : 0;
-}
-
-/*
- * 부팅 안전망.
- *
- * 부팅 도중 멈추는 펌웨어를 구우면 USB 가 안 올라와 복구가 막힌다. 시도 횟수를
- * .noinit 에 세고, 한계를 넘으면 더 진행하지 않고 부트로더로 떨어진다.
- *
- * 여기서 멈추는 게 요점이다 — 아래쪽 초기화(스캔·USB·플래시)에서 죽고 있으므로
- * 같은 길을 또 가면 또 죽는다. 부트로더로 가면 USB 로 되구울 수 있다.
- *
- * 하드폴트도 같은 그물에 걸린다. exception_handler 가 리셋하므로 반복되면 카운트가
- * 쌓인다. 일회성이라면 메인 루프가 살아남아 카운트가 지워진다.
- */
-static void resetBootGuard(void)
-{
-  itBootMarkStart();
-
-  if (itBootGetFailCount() > HW_BOOT_FAIL_LIMIT)
-  {
-    logPrintf("[E_] 부팅 %d회 연속 실패 — 부트로더로 간다\n", (int)itBootGetFailCount());
-    resetSetHangTest(false);        /* 시험 중이었다면 여기서 푼다 */
-    resetToBoot();                  /* 돌아오지 않는다 */
-  }
-
-  /* 안전망 자체를 시험하려고 일부러 멈추는 자리 */
-  if (resetGetHangTest())
-  {
-    logPrintf("[  ] hang test — 여기서 멈춘다 (시도 %d)\n", (int)itBootGetFailCount());
-    while (1)
-    {
-    }
-  }
-}
-
-/* 메인 루프가 일정 시간 살아남으면 이번 부팅을 성공으로 본다. */
-void resetBootAlive(void)
-{
-  static bool marked = false;
-
-  if (marked)                   return;
-  if (millis() < HW_BOOT_OK_MS) return;
-
-  itBootMarkOk();
-  marked = true;
-}
 
 static bool     is_init    = false;
 static uint32_t reset_bits = 0;
@@ -224,8 +155,6 @@ static bool resetWriteBootFlag(uint32_t data)
 
 bool resetInit(void)
 {
-  resetBootGuard();     /* ★ 맨 앞. 연속 실패가 쌓였으면 여기서 부트로더로 빠진다 */
-
   reset_bits = ppor_reset_get_flags(HPM_PPOR);
   ppor_reset_clear_flags(HPM_PPOR, reset_bits);
 
@@ -356,33 +285,9 @@ void cliReset(cli_args_t *args)
     ret = true;
   }
 
-  /*
-   * 부팅 안전망 시험 — 다음 부팅부터 hwInit() 초반에서 일부러 멈춘다.
-   *
-   * .noinit 플래그라 리셋해도 남는다. HW_BOOT_FAIL_LIMIT 만큼 연속으로 멈추면
-   * 안전망이 부트로더로 떨어뜨려야 한다. 그러면 USB 로 되구울 수 있다.
-   */
-  if (args->argc == 1 && args->isStr(0, "hang"))
-  {
-    resetSetHangTest(true);
-    cliPrintf("다음 부팅부터 초기화 중 멈춘다.\n");
-    cliPrintf("%d회 연속 실패하면 부트로더로 떨어져야 한다.\n", HW_BOOT_FAIL_LIMIT);
-    delay(300);
-    resetToReset();
-    ret = true;
-  }
-
-  if (args->argc == 1 && args->isStr(0, "info"))
-  {
-    cliPrintf("boot fail   : %d\n", (int)itBootGetFailCount());
-    cliPrintf("hang test   : %d\n", resetGetHangTest());
-    ret = true;
-  }
-
   if (ret == false)
   {
     cliPrintf("reset info\n");
-    cliPrintf("reset hang     부팅 안전망 시험 (일부러 멈춘다)\n");
     cliPrintf("reset boot\n");
     cliPrintf("reset reset\n");
   }

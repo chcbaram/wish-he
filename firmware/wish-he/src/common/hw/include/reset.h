@@ -28,13 +28,6 @@ extern "C" {
 bool resetInit(void);
 void resetLog(void);
 void resetToBoot(void);
-
-/* 메인 루프에서 주기적으로 부른다. 살아 있으면 이번 부팅을 성공으로 표시한다. */
-void resetBootAlive(void);
-
-/* 부팅 안전망 시험 — 다음 부팅에서 일부러 멈추게 한다 (.noinit) */
-bool resetGetHangTest(void);
-void resetSetHangTest(bool on);
 void resetToReset(void);
 
 uint32_t resetGetBits(void);
