@@ -119,6 +119,7 @@ static uint32_t hidCmdArgLen(uint8_t cmd)
   {
     case HID_CMD_LAYOUT: return 1;   /* 시작 인덱스 */
     case HID_CMD_TRACK:  return 1;   /* on/off */
+    case HID_CMD_KEYCFG: return 2;   /* get/set + 키 인덱스 */
     default:             return 0;
   }
 }
@@ -176,6 +177,25 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
      * 응답에 전체 개수를 안 싣는 대신, 끝을 넘겨 물으면 개수 0 이 온다. 호스트는
      * 0 이 올 때까지 인덱스를 늘리면 된다.
      */
+    case HID_CMD_KEYCFG:
+    {
+      uint32_t idx = p_rx[2];
+
+      if (p_rx[1] == HID_KEYCFG_SET)
+      {
+        /*
+         * ISR 이라 플래시는 건드리지 않는다. RAM 설정만 바꾸고 즉시 판정에 반영된다 —
+         * 저장은 VIA 의 save 명령이 따로 한다.
+         */
+        keysSetKeyCfg(idx, &p_rx[HID_KEYCFG_OFF], HID_EP_MPS - HID_KEYCFG_OFF);
+      }
+      else
+      {
+        keysGetKeyCfg(idx, &p_tx[HID_KEYCFG_OFF], HID_EP_MPS - HID_KEYCFG_OFF);
+      }
+      return true;
+    }
+
     case HID_CMD_LAYOUT:
     {
       uint32_t start = p_rx[1];

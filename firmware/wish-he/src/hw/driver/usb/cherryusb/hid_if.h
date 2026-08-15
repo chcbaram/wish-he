@@ -36,6 +36,22 @@ extern "C" {
  */
 #define HID_CMD_BOOT              0x0B    /* VIA id_bootloader_jump 와 같은 자리 */
 
+/*
+ * 키별 설정 — VIA 커스텀 채널로는 못 하는 것.
+ *
+ *   VIA 는 [채널, 값 ID] 두 바이트뿐이라 키 인덱스를 실을 자리가 없다. 그래서
+ *   그쪽은 전역(= 모두 선택)만 다루고, 키를 골라 설정하는 것은 이 명령으로 한다.
+ *
+ *     읽기  [0] C5  [1] 00  [2] idx           -> 같은 머리 + 값 19바이트
+ *     쓰기  [0] C5  [1] 01  [2] idx  [3..] 값 -> 머리만 에코
+ *
+ *   idx 가 키 수를 넘으면 전 키에 적용한다 — "모두 선택"이 왕복 한 번이 된다.
+ */
+#define HID_CMD_KEYCFG            0xC5
+#define HID_KEYCFG_GET            0x00
+#define HID_KEYCFG_SET            0x01
+#define HID_KEYCFG_OFF            3       /* 값이 시작하는 자리 */
+
 #define HID_CMD_INFO              0xC0    /* 보드 정보 */
 #define HID_CMD_RESET             0xC1    /* 그냥 리셋 */
 #define HID_CMD_LAYOUT            0xC2    /* 물리 배치 읽기 — 페이지 방식 */

@@ -1600,6 +1600,100 @@ uint16_t keysGetDepthUm(uint16_t row, uint16_t col)
  * 값을 바꾸는 것과 저장은 따로다 — 바꾸면 즉시 반영되지만 전원을 끄면 사라진다.
  * 플래시 쓰기는 XIP 를 멈추므로 사용자가 명시할 때만 한다.
  */
+static uint16_t keysClampUm(uint16_t um)
+{
+  uint16_t travel = keys_switch[keysSwType(0)].travel_um;
+
+  return (um > travel) ? travel : um;
+}
+
+/*
+ * 키 하나의 설정을 바이트로 싣고 내린다.
+ *
+ * ★ 왜 VIA 커스텀 채널이 아니라 따로 만드나.
+ *
+ *   VIA 는 [채널, 값 ID] 두 바이트뿐이라 키 인덱스를 실을 자리가 없다. 그래서 그쪽은
+ *   전역(= 모두 선택)만 다루고, 키를 골라 설정하는 것은 이 통로로 한다.
+ *
+ * 배치 (리틀엔디안, 0.01mm)
+ *
+ *   [0..1]   입력지점        [2..3]   해제지점
+ *   [4..5]   RT 재입력       [6..7]   RT 입력 해제
+ *   [8..9]   바닥 보호       [10..11] 데드존
+ *   [12]     rt_flags        [13]     스위치 종류
+ *   [14..15] 스트로크 카운트  [16..17] 전 행정      [18] flags(bit0 보정됨)
+ *
+ *   뒤 다섯 바이트는 읽기 전용이다 — 쓰기에서는 무시한다. 호스트가 키마다 mm 를
+ *   그리려면 그 키의 스트로크와 행정을 알아야 하는데, 보정 여부에 따라 값이 달라서
+ *   호스트가 계산할 수 없다.
+ */
+#define KEYS_KEYCFG_WR_LEN   14      /* 쓰기에서 읽는 바이트 수 */
+#define KEYS_KEYCFG_RD_LEN   19      /* 읽기가 채우는 바이트 수 */
+
+static void keysPut16(uint8_t *p, uint16_t v)
+{
+  p[0] = (uint8_t)(v & 0xFF);
+  p[1] = (uint8_t)(v >> 8);
+}
+
+static uint16_t keysGet16(const uint8_t *p)
+{
+  return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+}
+
+uint32_t keysGetKeyCfg(uint32_t idx, uint8_t *p_buf, uint32_t len)
+{
+  const keys_key_cfg_t *k;
+
+  if (idx >= KEYS_MAX || len < KEYS_KEYCFG_RD_LEN) return 0;
+  k = &cfg.key[idx];
+
+  keysPut16(&p_buf[0],  k->press_um);
+  keysPut16(&p_buf[2],  k->release_um);
+  keysPut16(&p_buf[4],  k->rt_press_um);
+  keysPut16(&p_buf[6],  k->rt_release_um);
+  keysPut16(&p_buf[8],  k->bottom_um);
+  keysPut16(&p_buf[10], k->dead_um);
+  p_buf[12] = k->rt_flags;
+  p_buf[13] = keysSwType(idx);
+  keysPut16(&p_buf[14], keysStrokeCnt(idx));
+  keysPut16(&p_buf[16], keys_switch[keysSwType(idx)].travel_um);
+  p_buf[18] = k->flags;
+
+  return KEYS_KEYCFG_RD_LEN;
+}
+
+/* idx 가 KEYS_MAX 이상이면 전 키에 적용한다 — "모두 선택"을 한 번에 보낸다 */
+bool keysSetKeyCfg(uint32_t idx, const uint8_t *p_buf, uint32_t len)
+{
+  uint32_t first = (idx < KEYS_MAX) ? idx : 0;
+  uint32_t last  = (idx < KEYS_MAX) ? idx : (KEYS_MAX - 1);
+
+  if (len < KEYS_KEYCFG_WR_LEN) return false;
+
+  for (uint32_t i = first; i <= last; i++)
+  {
+    keys_key_cfg_t *k = &cfg.key[i];
+
+    k->press_um      = keysClampUm(keysGet16(&p_buf[0]));
+    k->release_um    = keysClampUm(keysGet16(&p_buf[2]));
+    k->rt_press_um   = keysClampUm(keysGet16(&p_buf[4]));
+    k->rt_release_um = keysClampUm(keysGet16(&p_buf[6]));
+    k->bottom_um     = keysClampUm(keysGet16(&p_buf[8]));
+    k->dead_um       = keysClampUm(keysGet16(&p_buf[10]));
+    k->rt_flags      = p_buf[12] & (KEYS_RT_ON | KEYS_RT_BOTTOM | KEYS_RT_CONT);
+
+    if (p_buf[13] < KEYS_SWITCH_CNT) k->sw_type = p_buf[13];
+
+    /* 눌린 채로 굳지 않게 — 표를 만들 때도 막지만 저장값 자체를 바로잡는다 */
+    if (k->release_um >= k->press_um && k->press_um > 0)
+      k->release_um = (uint16_t)(k->press_um - 1);
+  }
+
+  keysThrRebuild();
+  return true;
+}
+
 bool keysSave(void)
 {
   return keysCfgSave();
@@ -1670,13 +1764,6 @@ uint16_t keysGetRtReleaseUm(void) { return cfg.rt_release_um; }
 uint16_t keysGetBottomUm(void)    { return cfg.bottom_um; }
 uint16_t keysGetDeadUm(void)      { return cfg.dead_um; }
 uint8_t  keysGetRtFlags(void)     { return cfg.rt_flags; }
-
-static uint16_t keysClampUm(uint16_t um)
-{
-  uint16_t travel = keys_switch[keysSwType(0)].travel_um;
-
-  return (um > travel) ? travel : um;
-}
 
 void keysSetRtPressUm(uint16_t um)   { cfg.rt_press_um   = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }
 void keysSetRtReleaseUm(uint16_t um) { cfg.rt_release_um = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }

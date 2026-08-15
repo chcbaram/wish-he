@@ -83,6 +83,13 @@ void     keysSetSwitchType(uint8_t type);
 /* 설정을 플래시에 남긴다. 바꾸는 것과 저장은 따로다. */
 bool     keysSave(void);
 
+/*
+ * 키별 설정을 바이트로. 배치는 keys.c 주석 참고.
+ * keysSetKeyCfg 는 idx 가 범위를 벗어나면 전 키에 적용한다.
+ */
+uint32_t keysGetKeyCfg(uint32_t idx, uint8_t *p_buf, uint32_t len);
+bool     keysSetKeyCfg(uint32_t idx, const uint8_t *p_buf, uint32_t len);
+
 /* 스위치 종류표. 앞 GenericCount 개가 일반형이고 나머지가 제원을 아는 제품이다. */
 uint32_t    keysGetSwitchCount(void);
 uint32_t    keysGetSwitchGenericCount(void);
