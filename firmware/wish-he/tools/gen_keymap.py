@@ -32,7 +32,6 @@ KLE_PATH = ROOT / "json" / "wish60-he-kle.json"
 VIA_PATH = ROOT / "json" / "wish60-he-via.json"
 HDR_PATH = ROOT / "src" / "hw" / "driver" / "keys_layout.h"
 
-NAME = "WISH60-HE"
 VID, PID = "0x0483", "0x5304"
 ROWS, COLS = 8, 8
 
@@ -52,6 +51,30 @@ def load_kle():
 def rows_of(kle):
     """메타데이터 객체를 건너뛰고 행 배열만."""
     return [r for r in kle if isinstance(r, list)]
+
+
+def name_of(kle):
+    for it in kle:
+        if isinstance(it, dict) and it.get("name"):
+            return it["name"]
+    return "WISH60-HE"
+
+
+def options_of(kle):
+    """
+    VIA 레이아웃 옵션을 모은다.
+
+    범례가 "addr\n\n\n<옵션>,<선택>" 이면 그 키는 해당 선택일 때만 쓰인다.
+    소켓 자체는 셋 다 PCB 에 있으므로 present 마스크에는 전부 넣는다 —
+    스위치가 안 꽂힌 자리는 자석이 없어 임계값을 넘지 못하므로 유령 입력이 없다.
+    """
+    out = {}
+    for _, _, legend in iter_keys(kle):
+        if "\n\n\n" in legend:
+            addr, sel = legend.split("\n\n\n")
+            opt, choice = sel.split(",")
+            out.setdefault(int(opt), {}).setdefault(int(choice), []).append(addr)
+    return out
 
 
 def iter_keys(kle):
@@ -81,6 +104,14 @@ def dump_grid(kle):
             line += f" {used[(s, c)]:>2d}  " if (s, c) in used else "  .  "
         print(line)
     print(f"\n  쓰는 셀 {len(used)} / {ROWS * COLS}   (여유 {ROWS * COLS - len(used)})")
+    free = sorted({(s, c) for s in range(ROWS) for c in range(COLS)} - set(used))
+    if free:
+        print("  안 쓰는 셀 : " + ", ".join(f"{s},{c}" for s, c in free))
+
+    opts = options_of(kle)
+    for opt in sorted(opts):
+        parts = "   ".join(f"{ch} = [{' '.join(a)}]" for ch, a in sorted(opts[opt].items()))
+        print(f"  레이아웃 옵션 {opt} : {parts}")
 
 
 def cmd_apply(learn_file):
@@ -136,7 +167,7 @@ def cmd_gen():
 
     # ── VIA JSON
     via = {
-        "name": NAME,
+        "name": name_of(kle),
         "vendorId": VID,
         "productId": PID,
         "matrix": {"rows": ROWS, "cols": COLS},
@@ -162,7 +193,7 @@ def cmd_gen():
         "#ifndef KEYS_LAYOUT_H_",
         "#define KEYS_LAYOUT_H_",
         "",
-        f'#define KEYS_LAYOUT_NAME      "{NAME}"',
+        f'#define KEYS_LAYOUT_NAME      "{name_of(kle)}"',
         f"#define KEYS_LAYOUT_ROWS      {ROWS}",
         f"#define KEYS_LAYOUT_COLS      {COLS}",
         f"#define KEYS_LAYOUT_KEY_CNT   {len(keys)}",
