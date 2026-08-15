@@ -60,6 +60,12 @@ static void updateKeyboard(void)
       kc = keysGetKeycode(row, col);
       if (kc == 0) continue;                        /* 배정 안 된 자리 */
 
+      /*
+       * 0xF0 부터는 펌웨어 내부 키코드다 (FN 등). HID Usage 가 아니라서 리포트에
+       * 실으면 엉뚱한 키가 눌린 것으로 보인다. 레이어 처리는 10편(VIA)에서 붙인다.
+       */
+      if (kc >= 0xF0) continue;
+
       if (kc >= 0xE0 && kc <= 0xE7)
       {
         modifier |= (uint8_t)(1U << (kc - 0xE0));   /* 모디파이어는 [0] 바이트 비트 */

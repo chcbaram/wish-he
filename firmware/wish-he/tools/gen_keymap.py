@@ -78,6 +78,12 @@ KC = {
     "SLSH": 0x38, "CAPS": 0x39,
     "LCTL": 0xE0, "LSFT": 0xE1, "LALT": 0xE2, "LGUI": 0xE3,
     "RCTL": 0xE4, "RSFT": 0xE5, "RALT": 0xE6, "RGUI": 0xE7,
+
+    # ── 펌웨어 내부 키코드 (HID Usage 가 아니다)
+    #
+    # HID 키보드 usage 는 0x00~0xE7 까지만 쓴다. 0xF0 부터는 비어 있으므로 레이어
+    # 같은 펌웨어 내부 동작에 쓴다. 리포트에는 실리지 않는다.
+    "FN": 0xF0,
 }
 
 # 행별 기본 배치. 행의 실제 키 수가 더 많으면 나머지는 NO 로 채운다.
@@ -85,7 +91,7 @@ DEFAULT_ROWS = [
     ["ESC", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "MINS", "EQL", "BSPC"],
     ["TAB", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "LBRC", "RBRC", "BSLS"],
     ["CAPS", "A", "S", "D", "F", "G", "H", "J", "K", "L", "SCLN", "QUOT", "ENT"],
-    ["LSFT", "Z", "X", "C", "V", "B", "N", "M", "COMM", "DOT", "SLSH", "RSFT"],
+    ["LSFT", "Z", "X", "C", "V", "B", "N", "M", "COMM", "DOT", "SLSH", "RSFT", "FN"],
     ["LCTL", "LGUI", "LALT", "SPC", "RALT", "RGUI", "RCTL"],
 ]
 LEARN_RE = re.compile(r"#(\d+)\s+(\d+),(\d+)")
