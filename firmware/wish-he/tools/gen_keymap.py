@@ -50,7 +50,7 @@ def set_board(name):
     CMake 가 keyboards/${HW_KEYBOARD} 를 인클루드 경로에 넣으므로 펌웨어는
     #include "layout.h" 한 줄이면 된다.
     """
-    global KLE_PATH, VIA_PATH, HDR_PATH, KEYMAP_PATH, LAYOUT_PATH, LABELS_PATH
+    global KLE_PATH, VIA_PATH, HDR_PATH, KEYMAP_PATH, LAYOUT_PATH, LABELS_PATH, MENUS_PATH
     d = BOARDS / name
     if not d.is_dir():
         have = sorted(p.name for p in BOARDS.iterdir() if p.is_dir()) if BOARDS.is_dir() else []
@@ -61,6 +61,7 @@ def set_board(name):
     KEYMAP_PATH = d / "keymap.c"        # QMK 키맵   (생성물)
     LAYOUT_PATH = d / "layout_qmk.h"    # QMK LAYOUT 매크로 (생성물)
     LABELS_PATH = d / "labels.json"     # 레이아웃 옵션 이름 (손으로 쓴다, 선택)
+    MENUS_PATH  = d / "menus.json"      # VIA 커스텀 메뉴   (손으로 쓴다, 선택)
 
 ADDR_RE = re.compile(r"^(\d+),(\d+)$")
 
@@ -277,6 +278,14 @@ def cmd_gen():
         "matrix": {"rows": ROWS, "cols": COLS},
         "layouts": layouts,
     }
+
+    # 커스텀 메뉴 — 있으면 그대로 싣는다. VIA 가 이걸 보고 설정 UI 를 그린다.
+    if MENUS_PATH.exists():
+        menus = json.loads(MENUS_PATH.read_text()).get("menus")
+        if menus:
+            via["menus"] = menus
+            print(f"메뉴 {len(menus)}개 : "
+                  + ", ".join(m.get("label", "?") for m in menus))
     VIA_PATH.write_text(json.dumps(via, indent=2, ensure_ascii=False) + "\n")
     print(f"생성: {VIA_PATH.relative_to(ROOT)}")
 

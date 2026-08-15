@@ -6,8 +6,14 @@
  *
  *   호스트 -> 장치 (OUT, 32 B)      장치 -> 호스트 (IN, 32 B)
  *     [0]    명령                     [0]    명령 에코
- *     [1..]  인자                     [1]    상태 (0 = OK)
- *                                     [2..]  응답
+ *     [1..]  인자                     [1..]  인자 에코
+ *                                     [..]   그 뒤부터 응답
+ *
+ * ★ 인자를 그대로 되돌려줘야 한다.
+ *
+ *   VIA 클라이언트는 응답이 `[명령, ...인자]` 로 시작하는지 검사하고, 아니면
+ *   "Receiving incorrect response for command" 로 버린다. 처음에는 [1] 에 상태
+ *   바이트를 넣었다가 그 검사에 걸렸다. 상태는 뺐다 — 실패는 무응답으로 드러난다.
  *
  * ★ 리셋은 콜백(ISR) 안에서 하지 않는다. 응답 IN 전송이 호스트에게 실제로 나가기 전에
  *   리셋해버리면 도구 쪽에서는 그냥 장치가 사라진 것으로 보인다. 그리고 부트 플래그
@@ -102,6 +108,22 @@ static struct usbd_interface hid_intf;
  *---------------------------------------------------------------------------*/
 
 /*
+ * 명령별 인자 길이 (명령 바이트 제외).
+ *
+ * 응답에서 인자 뒤가 곧 페이로드 자리다. 실패할 수 있는 명령이 생기면 그 첫
+ * 바이트를 상태로 쓰면 된다 — 지금 명령들은 실패할 여지가 없어 안 쓴다.
+ */
+static uint32_t hidCmdArgLen(uint8_t cmd)
+{
+  switch (cmd)
+  {
+    case HID_CMD_LAYOUT: return 1;   /* 시작 인덱스 */
+    case HID_CMD_TRACK:  return 1;   /* on/off */
+    default:             return 0;
+  }
+}
+
+/*
  * ISR 컨텍스트. 플래시나 긴 작업은 여기서 하지 않는다.
  *
  * 우리가 아는 명령이면 응답을 채우고 true 를 준다. 모르면 false — 부른 쪽이
@@ -111,9 +133,14 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
 {
   uint8_t cmd = p_rx[0];
 
+  /*
+   * 인자를 되돌리고 그 뒤는 지운다.
+   *
+   * 통째로 memcpy 하면 호스트가 보낸 쓰레기가 응답 꼬리에 섞여 나와 디버깅할 때
+   * 헷갈린다. 명령마다 인자 길이가 정해져 있으므로 딱 그만큼만 에코한다.
+   */
   memset(p_tx, 0, HID_EP_MPS);
-  p_tx[0] = cmd;
-  p_tx[1] = HID_RESP_OK;
+  memcpy(p_tx, p_rx, hidCmdArgLen(cmd) + 1);
 
   switch (cmd)
   {
@@ -122,9 +149,9 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
       const char *p_name = _DEF_BOARD_NAME;
       uint32_t    i;
 
-      for (i = 0; i < (HID_EP_MPS - 3) && p_name[i] != 0; i++)
+      for (i = 0; i < (HID_EP_MPS - 2) && p_name[i] != 0; i++)
       {
-        p_tx[2 + i] = (uint8_t)p_name[i];
+        p_tx[1 + i] = (uint8_t)p_name[i];
       }
       break;
     }
@@ -143,8 +170,8 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
      * 물리 배치 읽기 — 페이지 방식.
      *
      *   OUT [1] = 시작 인덱스
-     *   IN  [2] = 시작 인덱스   [3] = 이 응답의 개수
-     *       [4..] = {x, y, w, h, row, col} x 개수
+     *   IN  [1] = 시작 인덱스(에코)   [2] = 이 응답의 개수
+     *       [3..] = {x, y, w, h, row, col} x 개수
      *
      * 응답에 전체 개수를 안 싣는 대신, 끝을 넘겨 물으면 개수 0 이 온다. 호스트는
      * 0 이 올 때까지 인덱스를 늘리면 된다.
@@ -158,14 +185,13 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
       while (n < HID_LAYOUT_PER_FRAME && (start + n) < total)
       {
         const uint8_t *p_geo = keysGetLayoutEntry(start + n);
-        uint32_t       o     = HID_TRACK_HDR + n * HID_LAYOUT_ENTRY;
+        uint32_t       o     = HID_LAYOUT_OFF + n * HID_LAYOUT_ENTRY;
 
         for (uint32_t k = 0; k < HID_LAYOUT_ENTRY; k++) p_tx[o + k] = p_geo[k];
         n++;
       }
 
-      p_tx[2] = (uint8_t)start;
-      p_tx[3] = (uint8_t)n;
+      p_tx[2] = (uint8_t)n;
       break;
     }
 
@@ -173,7 +199,8 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
      * 라이브 트래킹 on/off.
      *
      *   OUT [1] = 1 시작 / 0 정지
-     *   IN  [2] = 전체 키 수   [3] = 프레임당 키 수   [4..5] = 전 행정(LE16, 0.01mm)
+     *   IN  [1] = 에코   [2] = 전체 키 수   [3] = 프레임당 키 수
+     *       [4..5] = 전 행정 (LE16, 0.01mm)
      *
      * 전 행정을 같이 주는 것은 호스트가 막대를 몇 mm 짜리로 그릴지 정하기 위해서다.
      * 스위치 종류가 바뀌면 따라가야 하므로 도구에 상수로 박으면 안 된다.

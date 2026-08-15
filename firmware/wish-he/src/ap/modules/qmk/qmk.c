@@ -23,6 +23,8 @@
 #include "log.h"
 #include "ap.h"
 
+extern void viaPortInit(void);   /* keyboards/<보드>/via_port.c */
+
 
 extern host_driver_t usb_driver;   /* port/driver_usb.c */
 
@@ -75,6 +77,9 @@ bool qmkInit(void)
 
   logPrintf("[  ] qmk 5 keyboard_init\n");
   keyboard_init();
+
+  /* 보드별 VIA 커스텀 메뉴 초기화 (있으면) — EEPROM 이 준비된 뒤여야 한다 */
+  viaPortInit();
 
   logPrintf("[  ] qmk 6 done\n");
 

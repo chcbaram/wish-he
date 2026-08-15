@@ -41,17 +41,13 @@ extern "C" {
 #define HID_CMD_LAYOUT            0xC2    /* 물리 배치 읽기 — 페이지 방식 */
 #define HID_CMD_TRACK             0xC3    /* 라이브 트래킹 on/off */
 
-/* 응답 상태 (IN 리포트 [1]) */
-#define HID_RESP_OK               0x00
-#define HID_RESP_UNKNOWN_CMD      0x01
-#define HID_RESP_FAIL             0x02
-
-/* 응답의 가변부가 시작하는 자리 */
-#define HID_TRACK_HDR             4
-
-/* 레이아웃 한 항목은 {x, y, w, h, row, col} 6바이트 */
+/*
+ * 레이아웃 응답 배치.
+ *   [0] 명령 에코  [1] 시작 인덱스 에코  [2] 개수  [3..] {x,y,w,h,row,col} x 개수
+ */
 #define HID_LAYOUT_ENTRY          6
-#define HID_LAYOUT_PER_FRAME      ((HID_EP_MPS - HID_TRACK_HDR) / HID_LAYOUT_ENTRY)
+#define HID_LAYOUT_OFF            3
+#define HID_LAYOUT_PER_FRAME      ((HID_EP_MPS - HID_LAYOUT_OFF) / HID_LAYOUT_ENTRY)
 
 
 /*

@@ -1014,6 +1014,43 @@ uint16_t keysGetDepthUm(uint16_t row, uint16_t col)
   return (uint16_t)((d > (int32_t)travel) ? travel : d);
 }
 
+/*---------------------------------------------------------------------------
+ *  설정 접근자 — VIA 커스텀 메뉴가 쓴다
+ *
+ *  값만 바꾸고 플래시에는 쓰지 않는다. 저장은 `keys save` 나 보정 완료처럼 사용자가
+ *  명시할 때만 한다 — VIA 슬라이더를 움직일 때마다 섹터를 지우면 수명이 남지 않는다.
+ *---------------------------------------------------------------------------*/
+uint16_t keysGetPressUm(void)     { return cfg.press_um; }
+uint16_t keysGetReleaseUm(void)   { return cfg.release_um; }
+uint8_t  keysGetSwitchType(void)  { return cfg.sw_type_def; }
+
+void keysSetPressUm(uint16_t um)
+{
+  uint16_t travel = keys_switch[keysSwType(0)].travel_um;
+
+  if (um == 0)      um = 1;
+  if (um > travel)  um = travel;
+  cfg.press_um = um;
+
+  /* 해제지점이 입력지점보다 깊으면 키가 눌린 채로 남는다 */
+  if (cfg.release_um >= cfg.press_um) cfg.release_um = (uint16_t)(cfg.press_um - 1);
+}
+
+void keysSetReleaseUm(uint16_t um)
+{
+  if (um == 0) um = 1;
+  if (um >= cfg.press_um) um = (uint16_t)(cfg.press_um - 1);
+  cfg.release_um = um;
+}
+
+void keysSetSwitchType(uint8_t type)
+{
+  if (type >= KEYS_SWITCH_CNT) return;
+
+  cfg.sw_type_def = type;
+  for (uint32_t i = 0; i < KEYS_MAX; i++) cfg.key[i].sw_type = type;
+}
+
 /* 물리 배치 한 항목 {x, y, w, h, row, col} — 1/4 키유닛. 웹 도구가 이걸로 그린다. */
 uint32_t keysGetLayoutCount(void)
 {

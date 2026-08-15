@@ -52,6 +52,11 @@ set(QMK_SRC_FILES
   ${QMK_ROOT}/quantum/process_keycode/process_magic.c   # NK_TOGG
 )
 
+# 보드별 VIA 커스텀 메뉴 처리 (있으면)
+if (EXISTS "${QMK_BOARD}/via_port.c")
+  list(APPEND QMK_SRC_FILES ${QMK_BOARD}/via_port.c)
+endif()
+
 file(GLOB QMK_SRC_GLOB CONFIGURE_DEPENDS
   ${QMK_ROOT}/quantum/logging/*.c
   ${QMK_ROOT}/quantum/send_string/*.c
@@ -85,3 +90,7 @@ add_compile_definitions(GRAVE_ESC_ENABLE)
 # NKRO 와 확장키는 IF1 (hid_exk_if.c) 로 나간다
 add_compile_definitions(NKRO_ENABLE)
 add_compile_definitions(EXTRAKEY_ENABLE)
+
+# Hold On Other Key Press 를 VIA 에서 켜고 끈다 -> per-key 콜백 경로가 필요하다
+add_compile_definitions(HOLD_ON_OTHER_KEY_PRESS)
+add_compile_definitions(HOLD_ON_OTHER_KEY_PRESS_PER_KEY)

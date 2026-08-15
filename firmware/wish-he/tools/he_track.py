@@ -71,6 +71,7 @@ class Device:
         return buf.raw[:n]
 
     def command(self, cmd, arg=0, timeout_ms=1000):
+        # 응답은 [명령, 인자, ...] 로 시작한다 (VIA 규약과 같다)
         """명령을 보내고 그 명령의 응답을 받는다."""
         self.write(bytes([cmd, arg]))
         deadline = time.time() + timeout_ms / 1000.0
@@ -91,11 +92,11 @@ def read_layout(dev):
     idx = 0
     while True:
         rsp = dev.command(CMD_LAYOUT, idx)
-        n = rsp[3]
+        n = rsp[2]
         if n == 0:
             break
         for k in range(n):
-            o = HDR + k * 6
+            o = 3 + k * 6
             x, y, w, h, row, col = rsp[o:o + 6]
             out.append({"x": x, "y": y, "w": w, "h": h, "row": row, "col": col})
         idx += n

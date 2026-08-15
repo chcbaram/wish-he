@@ -149,5 +149,35 @@
         "스플릿"
       ]
     ]
-  }
+  },
+  "menus": [
+    {
+      "label": "QMK",
+      "content": [
+        {
+          "label": "키 처리",
+          "content": [
+            {
+              "label": "Hold On Other Key Press",
+              "type": "toggle",
+              "content": [
+                "id_qmk_hold_okp",
+                14,
+                1
+              ]
+            },
+            {
+              "label": "NKRO (전체 키 롤오버)",
+              "type": "toggle",
+              "content": [
+                "id_qmk_nkro",
+                15,
+                1
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
 }

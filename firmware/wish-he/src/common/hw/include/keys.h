@@ -68,6 +68,18 @@ int32_t  keysGetDelta(uint8_t step, uint8_t ch);
 uint16_t keysGetTravelUm(uint16_t row, uint16_t col);   /* 그 키의 전 행정 */
 uint16_t keysGetDepthUm(uint16_t row, uint16_t col);    /* 지금 눌린 깊이 */
 
+/*
+ * 설정 — VIA 커스텀 메뉴가 읽고 쓴다. 단위는 0.01mm.
+ *
+ * 값만 바꾼다. 플래시 저장은 `keys save` 처럼 사용자가 명시할 때만 한다.
+ */
+uint16_t keysGetPressUm(void);
+uint16_t keysGetReleaseUm(void);
+uint8_t  keysGetSwitchType(void);
+void     keysSetPressUm(uint16_t um);
+void     keysSetReleaseUm(uint16_t um);
+void     keysSetSwitchType(uint8_t type);
+
 /* 물리 배치 — {x, y, w, h, row, col} 6바이트, 1/4 키유닛. 웹 도구가 JSON 없이 그린다. */
 uint32_t       keysGetLayoutCount(void);
 const uint8_t *keysGetLayoutEntry(uint32_t idx);
