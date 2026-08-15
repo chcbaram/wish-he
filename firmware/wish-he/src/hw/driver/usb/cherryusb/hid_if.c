@@ -94,6 +94,16 @@ static volatile uint8_t  pending_action = ACTION_NONE;
 static volatile uint32_t action_time    = 0;
 static volatile uint32_t rx_count       = 0;
 
+/*
+ * 우리가 모르는 명령은 QMK/VIA 로 넘긴다.
+ *
+ * OUT 콜백(ISR)에서 바로 부르면 안 된다 — VIA 명령은 EEPROM 을 건드린다.
+ * 그래서 복사만 해두고 hidIfUpdate() 가 메인 루프에서 실행한다.
+ */
+static hid_raw_recv_t    raw_recv    = NULL;
+static uint8_t           raw_pending_buf[HID_EP_MPS];
+static volatile bool     raw_pending = false;
+
 /* 라이브 트래킹 */
 static volatile bool     track_on    = false;
 static          uint32_t track_idx   = 0;   /* 다음 프레임의 첫 키 인덱스 */
@@ -108,8 +118,13 @@ static struct usbd_interface hid_intf;
  *  명령 처리
  *---------------------------------------------------------------------------*/
 
-/* ISR 컨텍스트. 플래시나 긴 작업은 여기서 하지 않는다. */
-static void hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
+/*
+ * ISR 컨텍스트. 플래시나 긴 작업은 여기서 하지 않는다.
+ *
+ * 우리가 아는 명령이면 응답을 채우고 true 를 준다. 모르면 false — 부른 쪽이
+ * QMK/VIA 로 넘긴다.
+ */
+static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
 {
   uint8_t cmd = p_rx[0];
 
@@ -193,10 +208,12 @@ static void hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
       break;
     }
 
+    /* 우리 명령이 아니다 — VIA 일 수 있으니 넘긴다 */
     default:
-      p_tx[1] = HID_RESP_UNKNOWN_CMD;
-      break;
+      return false;
   }
+
+  return true;
 }
 
 /*
@@ -258,9 +275,47 @@ static void hidTrackUpdate(void)
   restore_global_irq(mask);
 }
 
+/*
+ * VIA 응답을 보낸다. raw_hid_send() 가 부른다 — 메인 루프 컨텍스트다.
+ *
+ * 이미 전송이 걸려 있으면 빌 때까지 기다린다. 명령 응답은 트래킹 프레임과 달리
+ * 버리면 안 된다 — 호스트가 그 응답을 기다리고 있다.
+ */
+void hidIfSendRaw(const uint8_t *p_data, uint8_t length)
+{
+  uint32_t mask;
+  uint32_t timeout = millis();
+
+  if (is_configured == false || p_data == NULL) return;
+  if (length > HID_EP_MPS) length = HID_EP_MPS;
+
+  while (is_tx_busy)
+  {
+    if (millis() - timeout > 100) return;      /* 호스트가 안 가져간다 */
+  }
+
+  mask = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+  memset(tx_report, 0, HID_EP_MPS);
+  memcpy(tx_report, p_data, length);
+  is_tx_busy = true;
+  usbd_ep_start_write(HID_BUSID, HID_IN_EP, tx_report, HID_EP_MPS);
+  restore_global_irq(mask);
+}
+
+void hidIfSetRawReceiveFunc(hid_raw_recv_t func)
+{
+  raw_recv = func;
+}
+
 /* 메인 루프에서 부른다. 트래킹 프레임을 내보내고, 예약된 리셋을 실제로 수행한다. */
 void hidIfUpdate(void)
 {
+  if (raw_pending)
+  {
+    raw_pending = false;
+    if (raw_recv != NULL) raw_recv(raw_pending_buf, HID_EP_MPS);
+  }
+
   hidTrackUpdate();
 
   if (pending_action == ACTION_NONE) return;
@@ -300,12 +355,20 @@ static void hidOutCallback(uint8_t busid, uint8_t ep, uint32_t nbytes)
   if (nbytes > 0)
   {
     rx_count++;
-    hidCmdHandler(rx_report, tx_report);
 
-    if (is_tx_busy == false)
+    if (hidCmdHandler(rx_report, tx_report))
     {
-      is_tx_busy = true;
-      usbd_ep_start_write(busid, HID_IN_EP, tx_report, HID_EP_MPS);
+      if (is_tx_busy == false)
+      {
+        is_tx_busy = true;
+        usbd_ep_start_write(busid, HID_IN_EP, tx_report, HID_EP_MPS);
+      }
+    }
+    else if (raw_recv != NULL && raw_pending == false)
+    {
+      /* 모르는 명령 — 메인 루프로 미룬다. VIA 는 EEPROM 을 건드린다 */
+      memcpy(raw_pending_buf, rx_report, HID_EP_MPS);
+      raw_pending = true;
     }
   }
 

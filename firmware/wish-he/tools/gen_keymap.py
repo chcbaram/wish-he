@@ -50,14 +50,16 @@ def set_board(name):
     CMake 가 keyboards/${HW_KEYBOARD} 를 인클루드 경로에 넣으므로 펌웨어는
     #include "layout.h" 한 줄이면 된다.
     """
-    global KLE_PATH, VIA_PATH, HDR_PATH
+    global KLE_PATH, VIA_PATH, HDR_PATH, KEYMAP_PATH, LAYOUT_PATH
     d = BOARDS / name
     if not d.is_dir():
         have = sorted(p.name for p in BOARDS.iterdir() if p.is_dir()) if BOARDS.is_dir() else []
         sys.exit(f"[E_] 그런 보드가 없다: {name}\n     있는 것: {', '.join(have) or '없음'}")
-    KLE_PATH = d / "layout-kle.json"
-    VIA_PATH = d / "layout-via.json"
-    HDR_PATH = d / "layout.h"
+    KLE_PATH    = d / "layout-kle.json"
+    VIA_PATH    = d / "layout-via.json"
+    HDR_PATH    = d / "layout.h"
+    KEYMAP_PATH = d / "keymap.c"        # QMK 키맵   (생성물)
+    LAYOUT_PATH = d / "layout_qmk.h"    # QMK LAYOUT 매크로 (생성물)
 
 ADDR_RE = re.compile(r"^(\d+),(\d+)$")
 
@@ -354,7 +356,115 @@ def cmd_gen():
     HDR_PATH.parent.mkdir(parents=True, exist_ok=True)
     HDR_PATH.write_text("\n".join(L))
     print(f"생성: {HDR_PATH.relative_to(ROOT)}  ({len(keys)} 키)")
+
+    gen_qmk(kle, keys, names)
     dump_grid(kle)
+
+
+# ── QMK 쪽 생성물 ───────────────────────────────────────────────────────────
+#
+# QMK 의 기본 키코드(0x0000~0x00FF)는 HID Usage ID 와 값이 같다. 그래서 위에서 만든
+# 표를 그대로 쓸 수 있다. 예외는 우리가 내부용으로 잡은 0xF0(FN) 하나뿐인데,
+# QMK 에서는 레이어 전환이 따로 있으므로 MO(1) 로 바꾼다.
+QMK_SPECIAL = {"FN": "MO(1)"}
+
+
+def gen_qmk(kle, keys, names):
+    """
+    QMK 는 물리 배치 순서로 키를 적고(LAYOUT 매크로), 매크로가 그걸 매트릭스 자리로
+    흩뿌린다. 우리는 이미 물리 순서 -> (row, col) 표를 갖고 있으므로 그대로 만든다.
+    """
+    board = KLE_PATH.parent.name
+    guard = "LAYOUT_QMK_H_"
+    n     = len(keys)
+
+    # ── LAYOUT 매크로
+    #
+    # 인자는 물리 순서 k00, k01, ... 이고, 본문은 매트릭스 순서로 늘어놓는다.
+    # 자리가 없는 셀은 KC_NO 다 — 매트릭스가 8x8 인데 실재 키는 63개뿐이다.
+    cell = [["KC_NO"] * COLS for _ in range(ROWS)]
+    for i, (s, c) in enumerate(keys):
+        cell[s][c] = f"k{i:02d}"
+
+    L = [
+        "/*",
+        f" * layout_qmk.h  —  자동 생성. 직접 고치지 말 것.",
+        " *",
+        " *   생성 : tools/gen_keymap.py",
+        f" *   원본 : keyboards/{board}/{KLE_PATH.name}",
+        " *",
+        " * LAYOUT 은 물리 배치 순서로 받아 매트릭스 자리에 흩뿌린다.",
+        " * 스위치가 없는 셀은 KC_NO 로 채운다.",
+        " */",
+        f"#ifndef {guard}",
+        f"#define {guard}",
+        "",
+        "#define LAYOUT( \\",
+    ]
+    for i in range(0, n, 8):
+        tail = " \\" if i + 8 < n else " \\"
+        L.append("  " + ", ".join(f"k{j:02d}" for j in range(i, min(i + 8, n))) + "," + tail)
+    L[-1] = L[-1].replace(", \\", " \\").rstrip("\\ ").rstrip(",") + " \\"
+    L += ["  ) { \\"]
+    for s in range(ROWS):
+        L.append("    { " + ", ".join(cell[s][c] for c in range(COLS)) + " }, \\")
+    L += ["  }", "", f"#endif", ""]
+    LAYOUT_PATH.write_text("\n".join(L))
+    print(f"생성: {LAYOUT_PATH.relative_to(ROOT)}")
+
+    # ── keymap.c
+    #
+    # 레이어 0 은 위에서 만든 기본 배치 그대로. 레이어 1 은 FN 을 눌렀을 때의
+    # 자리인데, 지금은 F키·방향키만 얹고 나머지는 투명(KC_TRNS)으로 둔다.
+    order = []
+    for i, (s, c) in enumerate(keys):
+        nm = names[s][c] or "NO"
+        order.append(QMK_SPECIAL.get(nm, f"KC_{nm}"))
+
+    fn = fn_layer(kle, keys, names)
+
+    K = [
+        "/*",
+        " * keymap.c  —  자동 생성. 직접 고치지 말 것.",
+        " *",
+        " *   생성 : tools/gen_keymap.py",
+        f" *   원본 : keyboards/{board}/{KLE_PATH.name}",
+        " *",
+        " * 여기 값은 '공장 기본값'일 뿐이다. VIA 로 바꾼 키맵은 EEPROM 에 들어가고,",
+        " * dynamic_keymap 이 그쪽을 먼저 본다.",
+        " */",
+        '#include QMK_KEYBOARD_H',
+        "",
+        "const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {",
+    ]
+    for idx, layer in enumerate((order, fn)):
+        K.append(f"  [{idx}] = LAYOUT(")
+        for i in range(0, n, 8):
+            K.append("    " + ", ".join(layer[i:i + 8]) + ("," if i + 8 < n else ""))
+        K.append("  )," if idx == 0 else "  ),")
+    K += ["};", ""]
+    KEYMAP_PATH.write_text("\n".join(K))
+    print(f"생성: {KEYMAP_PATH.relative_to(ROOT)}  (레이어 2)")
+
+
+# FN 레이어에 얹을 것 — 숫자열은 F키, WASD 쪽은 방향키.
+FN_MAP = {
+    "ESC": "KC_GRV",
+    "1": "KC_F1", "2": "KC_F2", "3": "KC_F3", "4": "KC_F4", "5": "KC_F5", "6": "KC_F6",
+    "7": "KC_F7", "8": "KC_F8", "9": "KC_F9", "0": "KC_F10", "MINS": "KC_F11",
+    "EQL": "KC_F12", "BSPC": "KC_DEL",
+    "I": "KC_UP", "J": "KC_LEFT", "K": "KC_DOWN", "L": "KC_RGHT",
+    "H": "KC_HOME", "N": "KC_END", "Y": "KC_PGUP", "B": "KC_PGDN",
+}
+
+
+def fn_layer(kle, keys, names):
+    """FN 을 누른 동안의 자리. 정하지 않은 키는 투명 — 아래 레이어가 그대로 보인다."""
+    out = []
+    for s, c in keys:
+        nm = names[s][c] or "NO"
+        out.append(FN_MAP.get(nm, "KC_TRNS"))
+    return out
 
 
 def main():

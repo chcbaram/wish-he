@@ -23,6 +23,8 @@
 #include "hpm_ppor_drv.h"
 #include "hpm_interrupt.h"
 #include "hpm_csr_drv.h"
+#include "flash.h"
+#include "reset.h"
 
 #ifdef _USE_HW_SWTIMER
 #include "swtimer.h"
@@ -131,7 +133,21 @@ long exception_handler(long cause, long epc)
   /* 디버거가 붙어 있으면 여기서 멈춘다 */
   __asm volatile("ebreak");
 
-  ppor_sw_reset(HPM_PPOR, 10);
+  /*
+   * ★ 리셋을 걸면 안 된다.
+   *
+   *   원래는 ppor_sw_reset() 이었는데, 예외가 부팅 경로에서 나면 리셋 -> 다시 예외 ->
+   *   리셋의 무한 루프가 된다. 그 동안 USB 열거가 끝나지 않아 콘솔도 업데이트 채널도
+   *   못 뜬다 — 겉으로는 그냥 죽은 보드다.
+   *
+   *   부트로더로 넘기면 USB 업데이트 채널이 떠서 다시 구울 수 있다. 다만 플래시가
+   *   준비돼 있고 소거·기록 중이 아닐 때만이다 (syscalls.c 의 __assert_func 와 같은 이유).
+   *   못 넘어가면 멈춘다. 재시도도 리셋도 하지 않는다.
+   */
+  if (flashIsReady())
+  {
+    resetToBoot();
+  }
 
   while (1)
   {

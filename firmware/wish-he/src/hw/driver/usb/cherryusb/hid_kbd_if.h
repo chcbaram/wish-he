@@ -30,6 +30,12 @@ bool     hidKbdIsConfigured(void);
  */
 void     hidKbdSetReport(uint8_t modifier, const uint8_t *keys, uint32_t cnt);
 
+/* 8바이트 부트 리포트를 그대로. QMK 의 report_keyboard_t 배치와 같다. */
+void     hidKbdSetReportRaw(const uint8_t *p_report);
+
+/* 호스트가 켠 LED 비트 (Caps/Num/Scroll) */
+uint8_t  hidKbdGetLeds(void);
+
 uint32_t hidKbdGetSentCount(void);
 
 /*

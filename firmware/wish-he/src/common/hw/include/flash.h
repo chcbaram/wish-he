@@ -34,6 +34,9 @@ bool flashRead(uint32_t addr, uint8_t *p_data, uint32_t length);
 bool flashErase(uint32_t addr, uint32_t length);
 bool flashWrite(uint32_t addr, const uint8_t *p_data, uint32_t length);
 
+/* 부트로더 진입 같은 위험한 경로에서 "지금 플래시를 써도 되는가" 를 묻는다 */
+bool flashIsReady(void);
+
 /* 직전 실패 진단 — 어느 ROM API 에서 어떤 status 였는지 */
 uint32_t flashGetErrStep(void);
 uint32_t flashGetErrStatus(void);

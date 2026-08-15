@@ -65,7 +65,8 @@
 #define      HW_FLASH_USER_BEGIN    0x0C0000UL   /* 이 아래로는 쓰지 않는다 */
 #define      HW_FLASH_CAL_A         0x0C0000UL   /* 캘리브레이션 핑퐁 A */
 #define      HW_FLASH_CAL_B         0x0C1000UL   /* 캘리브레이션 핑퐁 B */
-#define      HW_FLASH_E2P_BEGIN     0x0C4000UL   /* VIA EEPROM (10편) */
+#define      HW_FLASH_E2P_BEGIN     0x0C4000UL   /* QMK/VIA EEPROM 이미지 */
+#define      HW_FLASH_E2P_SIZE      0x004000UL   /* 논리 16KB = 4섹터 */
 
 //-- USB (CDC)
 //

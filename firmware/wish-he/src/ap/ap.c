@@ -1,5 +1,5 @@
 #include "ap.h"
-#include "usb/cherryusb/hid_kbd_if.h"
+#include "qmk/qmk.h"
 
 
 
@@ -30,73 +30,49 @@ void updateLED(void)
 }
 
 /*
- * 스캔 결과를 부트 키보드 리포트로 옮긴다.
+ * 한 바퀴.
  *
- * 여기서는 섀도만 갱신하고 실제 전송은 USB 완료 콜백이 이어간다. 그래야 스캔 주기와
- * 리포트 주기가 분리되어, 스캔이 빠르든 느리든 호스트가 물어보는 125us 마다
- * "그 순간의 최신 상태"가 나간다.
+ * ★ 스캔과 키 처리를 갈라 둔다.
+ *
+ *   keysUpdate() 는 ADC 한 바퀴(38us)를 돌려 깊이를 갱신하고 눌림을 정한다.
+ *   qmkUpdate() 는 그 결과 비트마스크를 받아 키맵·레이어를 거쳐 리포트를 만든다.
+ *
+ *   둘의 주기가 달라도 된다는 게 요점이다. 나중에 래피드 트리거를 넣으면 판정은
+ *   스캔 주기에서 돌아야 하는데, QMK 루프가 느려져도 그쪽은 영향을 안 받는다.
  */
-static void updateKeyboard(void)
+/*
+ * QMK 기동.
+ *
+ * 이식 중에는 부팅 때 켜지 않고 `qmk start` 로만 켰다. qmkInit() 안에서 죽으면
+ * USB 가 통째로 안 올라와 부트로더 핀을 눌러야만 살아나기 때문이다. 지금은
+ * 동작이 확인돼서 부팅 때 켠다.
+ *
+ * `qmk start` 는 남겨둔다 — 앞으로 QMK 쪽을 건드리다 부팅이 막히면 다시
+ * 수동으로 돌릴 수 있게 하는 게 싸다.
+ */
+static bool is_qmk_on = false;
+
+bool apQmkStart(void)
 {
-  uint8_t  modifier = 0;
-  uint8_t  keys[KBD_ROLLOVER];
-  uint32_t cnt = 0;
+  if (is_qmk_on) return true;
 
+  is_qmk_on = qmkInit();
+  return is_qmk_on;
+}
 
-  keysUpdate();
-
-  /*
-   * keys 명령이 도는 동안에는 빈 리포트만 보낸다.
-   *
-   * 그냥 건너뛰면 직전에 눌려 있던 키가 호스트에 눌린 채로 남는다. 빈 리포트를
-   * 한 번 보내 전부 떼어둔 상태로 만든다 (같은 값이면 재전송되지 않는다).
-   */
-  if (keysIsReportEnabled() == false)
-  {
-    hidKbdSetReport(0, NULL, 0);
-    return;
-  }
-
-  for (uint16_t row = 0; row < KEYS_STEP_MAX; row++)
-  {
-    uint16_t bits = keysGetRow(row);
-
-    if (bits == 0) continue;
-
-    for (uint16_t col = 0; col < KEYS_CH_MAX; col++)
-    {
-      uint8_t kc;
-
-      if ((bits & (1U << col)) == 0) continue;
-
-      kc = keysGetKeycode(row, col);
-      if (kc == 0) continue;                        /* 배정 안 된 자리 */
-
-      /*
-       * 0xF0 부터는 펌웨어 내부 키코드다 (FN 등). HID Usage 가 아니라서 리포트에
-       * 실으면 엉뚱한 키가 눌린 것으로 보인다. 레이어 처리는 10편(VIA)에서 붙인다.
-       */
-      if (kc >= 0xF0) continue;
-
-      if (kc >= 0xE0 && kc <= 0xE7)
-      {
-        modifier |= (uint8_t)(1U << (kc - 0xE0));   /* 모디파이어는 [0] 바이트 비트 */
-      }
-      else if (cnt < KBD_ROLLOVER)
-      {
-        keys[cnt++] = kc;                           /* 6키 롤오버 */
-      }
-    }
-  }
-
-  hidKbdSetReport(modifier, keys, cnt);
+bool apQmkIsOn(void)
+{
+  return is_qmk_on;
 }
 
 void update(void const *arg)
 {
   updateLED();
-  updateKeyboard();
-  usbUpdate();          /* HID 로 들어온 부트/리셋 요청 처리 */
+
+  keysUpdate();                       /* ADC 스캔 + 눌림 판정 */
+  if (is_qmk_on) qmkUpdate();         /* 키맵 · 레이어 · 매크로 · VIA -> HID 리포트 */
+
+  usbUpdate();                        /* HID 로 들어온 부트/리셋/트래킹 요청 처리 */
 }
 
 void cliLoopIdle(void)
@@ -111,5 +87,6 @@ MODULE_DEF(ap)
 {
   .name     = "ap",
   .priority = MODULE_PRI_LOW,
+  .init     = qmkCliInit,
   .update   = update,
 };

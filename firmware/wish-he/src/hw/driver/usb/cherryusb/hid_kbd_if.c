@@ -168,11 +168,27 @@ static struct usbd_endpoint kbd_in_ep = { .ep_addr = KBD_IN_EP, .ep_cb = kbdInCa
  *
  *   그래서 "초당 리포트 수"는 목표가 아니다. 놀 때 0 이고 칠 때만 올라가는 게 맞다.
  */
-void hidKbdSetReport(uint8_t modifier, const uint8_t *keys, uint32_t cnt)
+void hidKbdSetReportRaw(const uint8_t *p_report)
 {
-  uint8_t  next[KBD_REPORT_LEN];
   uint32_t mask;
   bool     same = true;
+
+  for (uint32_t i = 0; i < KBD_REPORT_LEN; i++)
+  {
+    if (p_report[i] != shadow[i]) { same = false; break; }
+  }
+  if (same) return;
+
+  mask = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+  for (uint32_t i = 0; i < KBD_REPORT_LEN; i++) shadow[i] = p_report[i];
+  is_pending = true;
+  kbdArm();
+  restore_global_irq(mask);
+}
+
+void hidKbdSetReport(uint8_t modifier, const uint8_t *keys, uint32_t cnt)
+{
+  uint8_t next[KBD_REPORT_LEN];
 
   if (cnt > KBD_ROLLOVER) cnt = KBD_ROLLOVER;
 
@@ -183,17 +199,30 @@ void hidKbdSetReport(uint8_t modifier, const uint8_t *keys, uint32_t cnt)
     next[2 + i] = (i < cnt) ? keys[i] : 0;
   }
 
-  for (uint32_t i = 0; i < KBD_REPORT_LEN; i++)
-  {
-    if (next[i] != shadow[i]) { same = false; break; }
-  }
-  if (same) return;
+  hidKbdSetReportRaw(next);
+}
 
-  mask = disable_global_irq(CSR_MSTATUS_MIE_MASK);
-  for (uint32_t i = 0; i < KBD_REPORT_LEN; i++) shadow[i] = next[i];
-  is_pending = true;
-  kbdArm();
-  restore_global_irq(mask);
+/*
+ * 호스트가 보낸 LED 상태 (Caps/Num/Scroll).
+ *
+ * SET_REPORT(Output) 로 온다. CherryUSB 의 HID 클래스가 usbd_hid_set_report()
+ * 를 부르는데 기본 구현이 weak 라 여기서 받는다.
+ */
+static volatile uint8_t kbd_leds = 0;
+
+uint8_t hidKbdGetLeds(void)
+{
+  return kbd_leds;
+}
+
+void usbd_hid_set_report(uint8_t busid, uint8_t intf, uint8_t report_id,
+                         uint8_t report_type, uint8_t *report, uint32_t report_len)
+{
+  (void)busid;
+  (void)report_id;
+  (void)report_type;
+
+  if (intf == 0 && report_len > 0) kbd_leds = report[0];
 }
 
 void hidKbdEventHandler(uint8_t busid, uint8_t event)

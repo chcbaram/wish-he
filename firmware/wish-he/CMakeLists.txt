@@ -52,6 +52,9 @@ file(GLOB_RECURSE SRC_FILES_RECURSE CONFIGURE_DEPENDS
 # USB 스택별 글루는 재귀 glob 에서 빼고, 선택된 스택일 때만 USB_SRC_FILES 로 명시 추가한다.
 #
 set(EXCLUDE_PATHS
+  # QMK 는 트리 전체가 들어와 있지만 쓰는 파일만 골라 쓴다.
+  # 재귀 glob 에 걸리면 안 쓰는 기능까지 전부 딸려온다.
+  src/ap/modules/qmk
 )
 
 if(HW_USB_STACK EQUAL 0)
@@ -93,6 +96,9 @@ if(NOT DEFINED HW_KEYBOARD)
   set(HW_KEYBOARD wish60-he-7u)
 endif()
 message(STATUS "Keyboard: ${HW_KEYBOARD}")
+
+# QMK — 소스 목록(QMK_SRC_FILES)과 인클루드 경로(QMK_INC_DIR)를 채워준다
+include(src/ap/modules/qmk/CMakeLists.txt)
 
 set(HPM_SDK_DIR src/lib/hpm_sdk)
 
@@ -160,6 +166,7 @@ add_executable(${EXECUTABLE}
   ${SRC_FILES_RECURSE}
   ${SRC_FILES_SDK}
   ${USB_SRC_FILES}
+  ${QMK_SRC_FILES}
 )
 
 
@@ -193,6 +200,9 @@ target_include_directories(${EXECUTABLE} PRIVATE
 
   # USB (스택별 — 위 HW_USB_STACK 분기에서 설정)
   ${USB_INC_DIRS}
+
+  # QMK (src/ap/modules/qmk/CMakeLists.txt 에서 설정)
+  ${QMK_INC_DIR}
 )
 
 

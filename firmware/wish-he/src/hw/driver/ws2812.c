@@ -70,7 +70,20 @@ static void cliWs2812(cli_args_t *args);
 
 
 static bool     is_init = false;
-static uint8_t  frame_buf[WS2812_BUF_LEN];
+
+/*
+ * ★ 캐시라인(32B)에 맞춰야 한다.
+ *
+ *   DMA 가 직접 읽으므로 전송 전에 l1c_dc_writeback() 으로 밀어내는데, 그 API 는
+ *   시작 주소가 캐시라인 경계일 것을 assert 로 요구한다. 어긋나면 부팅 중에
+ *   assert 로 멈추고 USB 도 못 올라온다.
+ *
+ *   이 정렬을 명시하기 전까지는 **우연히 맞아서** 돌고 있었다. QMK 를 얹으며
+ *   .bss 가 16KB 늘자 이 버퍼가 밀렸고 곧바로 터졌다. 원인이 LED 와 상관없는
+ *   곳에서 왔기 때문에 찾는 데 JTAG 이 필요했다.
+ */
+static __attribute__((aligned(HPM_L1C_CACHELINE_SIZE)))
+uint8_t         frame_buf[HPM_L1C_CACHELINE_ALIGN_UP(WS2812_BUF_LEN)];
 static spi_control_config_t ctrl_config;
 static volatile bool is_busy = false;
 
@@ -250,8 +263,11 @@ bool ws2812Refresh(void)
   if (is_init != true)   return false;
   if (ws2812IsBusy())    return false;   /* 이전 프레임이 아직 나가는 중 */
 
-  /* DMA 는 캐시를 거치지 않는다. 버퍼를 메모리까지 밀어낸다. */
-  l1c_dc_writeback((uint32_t)frame_buf, WS2812_BUF_LEN);
+  /*
+   * DMA 는 캐시를 거치지 않는다. 버퍼를 메모리까지 밀어낸다.
+   * 주소는 정렬돼 있고(위 선언), 길이도 캐시라인 배수로 올려 마지막 줄까지 덮는다.
+   */
+  l1c_dc_writeback((uint32_t)frame_buf, HPM_L1C_CACHELINE_ALIGN_UP(WS2812_BUF_LEN));
 
   if (spi_setup_dma_transfer(WS2812_SPI, &ctrl_config,
                              NULL, NULL, WS2812_BUF_LEN, 0) != status_success)

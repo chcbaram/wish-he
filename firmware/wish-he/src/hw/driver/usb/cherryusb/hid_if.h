@@ -61,6 +61,18 @@ extern "C" {
 #define HID_LAYOUT_PER_FRAME      ((HID_EP_MPS - HID_TRACK_HDR) / HID_LAYOUT_ENTRY)
 
 
+/*
+ * 우리가 모르는 명령을 넘겨줄 곳 (QMK/VIA).
+ *
+ * ★ ISR 이 아니라 메인 루프에서 불린다. VIA 명령은 EEPROM 을 건드리므로 인터럽트
+ *   컨텍스트에서 돌리면 안 된다. 그래서 OUT 콜백은 복사만 하고 hidIfUpdate() 가
+ *   실행한다.
+ */
+typedef void (*hid_raw_recv_t)(uint8_t *p_data, uint8_t length);
+
+void     hidIfSetRawReceiveFunc(hid_raw_recv_t func);
+void     hidIfSendRaw(const uint8_t *p_data, uint8_t length);
+
 bool     hidIfInit(void);      /* 스택 등록. usbBegin() 에서만 */
 void     hidIfUpdate(void);
 void     hidIfEventHandler(uint8_t busid, uint8_t event);

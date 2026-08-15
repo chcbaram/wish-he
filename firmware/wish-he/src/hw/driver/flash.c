@@ -41,11 +41,29 @@
 static bool              is_init  = false;
 static volatile uint32_t err_step = 0;   /* 1=get_config 2=erase 3=program */
 static volatile uint32_t err_stat = 0;
+static volatile bool     is_busy  = false;   /* 소거·기록 진행 중 */
 
 #if CLI_USE(HW_FLASH)
 static void cliFlash(cli_args_t *args);
 #endif
 
+
+/*
+ * ★ 캐시 무효화는 주소와 크기가 **둘 다** 캐시라인 배수여야 한다.
+ *
+ *   SDK 의 l1c_dc_invalidate() 는 ASSERT_ADDR_SIZE 로 두 조건을 모두 본다.
+ *   주소만 내림하고 크기는 `length + 32` 로 넘기면, length 가 32 의 배수가 아닐 때
+ *   크기 쪽에서 걸린다 (예: 설정 레코드 536B -> 568, 568 % 32 = 24).
+ *
+ *   요청 구간을 덮는 캐시라인 경계까지 앞뒤로 늘려서 넘긴다.
+ */
+static void flashCacheInval(uint32_t xip_addr, uint32_t length)
+{
+  uint32_t start = HPM_L1C_CACHELINE_ALIGN_DOWN(xip_addr);
+  uint32_t end   = HPM_L1C_CACHELINE_ALIGN_UP(xip_addr + length);
+
+  l1c_dc_invalidate(start, end - start);
+}
 
 static void flashCfgOption(xpi_nor_config_option_t *p_opt)
 {
@@ -82,9 +100,8 @@ bool flashRead(uint32_t addr, uint8_t *p_data, uint32_t length)
 {
   if (p_data == NULL || length == 0) return false;
 
-  /* 함정 ③ — 캐시 라인 경계까지 넉넉히 무효화한다 */
-  l1c_dc_invalidate((FLASH_XIP_BASE + addr) & ~(HPM_L1C_CACHELINE_SIZE - 1),
-                    length + HPM_L1C_CACHELINE_SIZE);
+  /* 함정 ③ — 요청 구간을 덮는 캐시라인까지 무효화한다 */
+  flashCacheInval(FLASH_XIP_BASE + addr, length);
 
   memcpy(p_data, (const void *)(FLASH_XIP_BASE + addr), length);
 
@@ -103,6 +120,7 @@ bool flashErase(uint32_t addr, uint32_t length)
   flashCfgOption(&cfg_option);
 
   /* 함정 ② — 소거가 끝날 때까지 인터럽트를 막는다 */
+  is_busy = true;
   mask = disable_global_irq(CSR_MSTATUS_MIE_MASK);
 
   err_step = 1;
@@ -115,6 +133,7 @@ bool flashErase(uint32_t addr, uint32_t length)
   }
 
   restore_global_irq(mask);
+  is_busy = false;
 
   err_stat = status;
   if (status != status_success) return false;
@@ -135,6 +154,7 @@ bool flashWrite(uint32_t addr, const uint8_t *p_data, uint32_t length)
 
   flashCfgOption(&cfg_option);
 
+  is_busy = true;
   mask = disable_global_irq(CSR_MSTATUS_MIE_MASK);
 
   err_step = 1;
@@ -147,18 +167,25 @@ bool flashWrite(uint32_t addr, const uint8_t *p_data, uint32_t length)
   }
 
   restore_global_irq(mask);
+  is_busy = false;
 
   err_stat = status;
   if (status != status_success) return false;
 
   /* 함정 ③ — 방금 쓴 자리를 바로 읽을 수 있게 */
-  l1c_dc_invalidate((FLASH_XIP_BASE + addr) & ~(HPM_L1C_CACHELINE_SIZE - 1),
-                    length + HPM_L1C_CACHELINE_SIZE);
+  flashCacheInval(FLASH_XIP_BASE + addr, length);
 
   err_step = 0;
   return true;
 }
 
+/*
+ * 지금 플래시를 굽고 있는가.
+ *
+ * 예외·assert 핸들러가 "부트로더로 넘어가도 되는지" 판단하는 데 쓴다. 소거·기록
+ * 도중에 죽었다면 그 자리에서 또 플래시를 건드리면 안 된다.
+ */
+bool     flashIsReady(void)     { return is_init && !is_busy; }
 uint32_t flashGetErrStep(void)   { return err_step; }
 uint32_t flashGetErrStatus(void) { return err_stat; }
 
