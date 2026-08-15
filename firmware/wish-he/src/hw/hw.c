@@ -22,6 +22,7 @@ bool hwInit(void)
   cliInit();
   logInit();
   resetInit();
+  flashInit();
   swtimerInit();
   ledInit();
   ws2812Init();

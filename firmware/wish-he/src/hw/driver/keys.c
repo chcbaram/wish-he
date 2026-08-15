@@ -33,6 +33,8 @@
 
 /* keyboards/<모델>/layout.h — tools/gen_keymap.py 가 KLE 에서 생성한다 */
 #include "layout.h"
+#include "flash.h"
+#include "hpm_crc32.h"
 
 
 #define KEYS_SEQ_LEN        KEYS_CH_MAX_PER_ADC   /* ADC 하나가 훑는 채널 수 */
@@ -200,6 +202,71 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
 
 
 /*
+ * 스위치 종류표 — 펌웨어 상수.
+ *
+ * 보정을 안 해도 mm 환산이 되도록 공칭 스트로크를 갖고 있는다. 사용자가 보정하면
+ * 키별 실측값이 이걸 대신한다. 상용 보드도 같은 구조다 — 키마다 종류 인덱스를
+ * 저장해두고(기본 3), 설정은 mm 단위로 다룬다.
+ *
+ * travel_um 은 0.01mm 단위다 (400 = 4.00mm).
+ */
+typedef struct
+{
+  const char *name;
+  uint16_t    travel_um;
+} keys_switch_t;
+
+static const keys_switch_t keys_switch[] =
+{
+  { "generic 4.0mm", 400 },   /* 0 — 기본값. 실제 스위치가 정해지면 채운다 */
+  { "generic 3.5mm", 350 },   /* 1 */
+  { "generic 3.0mm", 300 },   /* 2 */
+};
+
+#define KEYS_SWITCH_CNT   (sizeof(keys_switch) / sizeof(keys_switch[0]))
+
+
+/*
+ * 저장 레코드.
+ *
+ * ★ 부팅 경로에서는 읽기만 한다. 읽기는 XIP 라 인터럽트를 막지 않으므로 안전하다.
+ *   쓰기는 사용자가 명시할 때만 (keys save). 부팅 중 플래시를 쓰다 실패하면
+ *   어디로 갈지 설계가 어려워지고, 실제로 그것 때문에 한 번 브릭을 만들었다.
+ */
+#define KEYS_CFG_MAGIC     0x4746434BUL   /* 'KCFG' */
+#define KEYS_CFG_VERSION   1
+
+typedef struct
+{
+  uint16_t cal_max;      /* 무압 실측 (0 = 미보정) */
+  uint16_t cal_min;      /* 바닥 실측 (0 = 미보정) */
+  uint8_t  sw_type;      /* 스위치 종류 인덱스 */
+  uint8_t  flags;        /* bit0 = 보정됨 */
+  uint8_t  rsv[2];
+} keys_key_cfg_t;
+
+typedef struct
+{
+  uint32_t magic;
+  uint16_t version;
+  uint16_t length;       /* 이 구조체 전체 크기 — 버전이 올라가도 읽을 수 있게 */
+  uint32_t seq;          /* 핑퐁 선택 기준. 큰 쪽이 최신 */
+
+  uint16_t press_um;     /* 입력지점  0.01mm */
+  uint16_t release_um;   /* 해제지점  0.01mm */
+  uint16_t rt_um;        /* 재입력    0.01mm */
+  uint8_t  sw_type_def;  /* 기본 스위치 종류 */
+  uint8_t  rsv;
+
+  keys_key_cfg_t key[KEYS_MAX];
+
+  uint32_t crc;          /* 이 필드 앞까지의 CRC32 */
+} keys_cfg_t;
+
+static keys_cfg_t cfg;
+
+
+/*
  * ADC 시퀀스 DMA 버퍼.
  *
  * ADC 가 직접 쓰므로 캐시에 걸리면 안 된다. .noncacheable.non_init 은 NOLOAD 라
@@ -222,9 +289,12 @@ static bool     is_init      = false;
 static uint32_t timeout_cnt  = 0;
 static uint32_t cal_time_ms  = 0;
 static uint32_t drift_ms     = 0;
+static bool     is_cfg_loaded = false;
 static bool     drift_due    = false;
 
 static void keysCalRejectOutlier(void);
+static bool keysCfgLoad(void);
+static bool keysCfgSave(void);
 static void keysTrack(uint32_t step);
 static inline void keysFilter(uint32_t step, uint32_t ch, uint32_t packed);
 
@@ -377,9 +447,14 @@ bool keysInit(void)
   cliAdd("keys", cliKeys);
 #endif
 
+  /*
+   * 저장된 설정을 읽는다. 읽기뿐이라 인터럽트를 막지 않아 부팅 경로에서 안전하다.
+   * 없거나 깨졌으면 기본값으로 계속 간다 — 여기서 멈추면 복구가 막힌다.
+   */
+  is_cfg_loaded = keysCfgLoad();
+
   if (ret)
   {
-    /* ★ 부팅 때 키를 누르고 있으면 그 값이 기준이 된다. 6편에서 이상치 걸러내기 */
     keysCalibrate();
   }
 
@@ -691,6 +766,124 @@ bool keysGetPressed(uint16_t row, uint16_t col)
   return (pressed[row] & (1U << col)) != 0;
 }
 
+/*---------------------------------------------------------------------------
+ *  설정 저장 — 핑퐁 2섹터
+ *---------------------------------------------------------------------------*/
+
+static uint32_t keysCfgCrc(const keys_cfg_t *p)
+{
+  return crc32((const uint8_t *)p, (uint32_t)(sizeof(keys_cfg_t) - sizeof(uint32_t)));
+}
+
+static bool keysCfgValid(const keys_cfg_t *p)
+{
+  if (p->magic   != KEYS_CFG_MAGIC)     return false;
+  if (p->version != KEYS_CFG_VERSION)   return false;
+  if (p->length  != sizeof(keys_cfg_t)) return false;
+
+  return (p->crc == keysCfgCrc(p));
+}
+
+static void keysCfgDefault(void)
+{
+  memset(&cfg, 0, sizeof(cfg));
+
+  cfg.magic       = KEYS_CFG_MAGIC;
+  cfg.version     = KEYS_CFG_VERSION;
+  cfg.length      = sizeof(keys_cfg_t);
+  cfg.seq         = 0;
+
+  /* 상용 웹툴의 "처음 사용자용" 프리셋과 같은 값 */
+  cfg.press_um    = 100;    /* 1.00mm */
+  cfg.release_um  = 50;     /* 0.50mm */
+  cfg.rt_um       = 50;     /* 0.50mm */
+  cfg.sw_type_def = 0;
+
+  for (uint32_t i = 0; i < KEYS_MAX; i++)
+  {
+    cfg.key[i].sw_type = cfg.sw_type_def;
+  }
+}
+
+/*
+ * 두 슬롯을 읽어 유효하면서 seq 가 큰 쪽을 쓴다.
+ * 둘 다 못 쓰면 기본값으로 간다 — 여기서 멈추면 안 된다.
+ */
+static bool keysCfgLoad(void)
+{
+  keys_cfg_t tmp;
+  bool       found = false;
+
+  keysCfgDefault();
+
+  for (uint32_t i = 0; i < 2; i++)
+  {
+    uint32_t addr = (i == 0) ? HW_FLASH_CAL_A : HW_FLASH_CAL_B;
+
+    if (flashRead(addr, (uint8_t *)&tmp, sizeof(tmp)) == false) continue;
+    if (keysCfgValid(&tmp) == false)                            continue;
+
+    if (found == false || tmp.seq > cfg.seq)
+    {
+      memcpy(&cfg, &tmp, sizeof(cfg));
+      found = true;
+    }
+  }
+
+  return found;
+}
+
+/*
+ * 오래된 쪽 슬롯에 쓴다. 쓰다 죽어도 다른 쪽이 남아 있어 이전 설정으로 돌아간다.
+ * 소거 1ms + 기록이라 USB 가 느끼지 못한다.
+ */
+static bool keysCfgSave(void)
+{
+  keys_cfg_t tmp;
+  uint32_t   addr = HW_FLASH_CAL_A;
+  uint32_t   seq_a = 0;
+
+  if (flashRead(HW_FLASH_CAL_A, (uint8_t *)&tmp, sizeof(tmp)) && keysCfgValid(&tmp))
+  {
+    seq_a = tmp.seq;
+    addr  = HW_FLASH_CAL_B;      /* A 가 유효하면 B 에 쓴다 */
+  }
+  if (flashRead(HW_FLASH_CAL_B, (uint8_t *)&tmp, sizeof(tmp)) && keysCfgValid(&tmp))
+  {
+    if (tmp.seq >= seq_a) addr = HW_FLASH_CAL_A;   /* B 가 더 최신이면 A 에 */
+  }
+
+  cfg.seq++;
+  cfg.crc = keysCfgCrc(&cfg);
+
+  if (flashErase(addr, FLASH_SECTOR_SIZE) == false)                       return false;
+  if (flashWrite(addr, (const uint8_t *)&cfg, sizeof(cfg)) == false)       return false;
+
+  return true;
+}
+
+/* 그 키의 스트로크 — 보정했으면 실측, 아니면 종류표의 공칭값 */
+uint16_t keysGetTravelUm(uint16_t row, uint16_t col)
+{
+  uint32_t i = row * KEYS_CH_MAX + col;
+  uint8_t  t;
+
+  if (i >= KEYS_MAX) return 0;
+
+  if (cfg.key[i].flags & 0x01)
+  {
+    /* 실측 스트로크를 um 으로 환산하려면 종류표의 공칭 스트로크에 비례시킨다 */
+    t = cfg.key[i].sw_type;
+    if (t >= KEYS_SWITCH_CNT) t = 0;
+    return keys_switch[t].travel_um;
+  }
+
+  t = cfg.key[i].sw_type;
+  if (t >= KEYS_SWITCH_CNT) t = 0;
+  return keys_switch[t].travel_um;
+}
+
+
 /* 키맵은 keyboards/<모델>/layout.h 에 있다. 표를 밖으로 내보내지 않고 조회만 준다. */
 uint8_t keysGetKeycode(uint16_t row, uint16_t col)
 {
@@ -885,6 +1078,43 @@ void cliKeys(cli_args_t *args)
       delay(5);
     }
     cliPrintf("\n%d 개 기록\n", (int)n);
+    ret = true;
+  }
+
+  if (args->argc == 1 && args->isStr(0, "cfg"))
+  {
+    uint32_t n_cal = 0;
+
+    for (uint32_t i = 0; i < KEYS_MAX; i++) if (cfg.key[i].flags & 1) n_cal++;
+
+    cliPrintf("loaded      : %d  (seq %d)\n", is_cfg_loaded, (int)cfg.seq);
+    cliPrintf("press       : %d.%02d mm\n", cfg.press_um / 100, cfg.press_um % 100);
+    cliPrintf("release     : %d.%02d mm\n", cfg.release_um / 100, cfg.release_um % 100);
+    cliPrintf("rapid       : %d.%02d mm\n", cfg.rt_um / 100, cfg.rt_um % 100);
+    cliPrintf("switch      : %d (%s, %d.%02d mm)\n", cfg.sw_type_def,
+              keys_switch[cfg.sw_type_def].name,
+              keys_switch[cfg.sw_type_def].travel_um / 100,
+              keys_switch[cfg.sw_type_def].travel_um % 100);
+    cliPrintf("calibrated  : %d / %d 키\n", (int)n_cal, KEYS_MAX);
+    cliPrintf("record      : %d B\n", (int)sizeof(keys_cfg_t));
+    ret = true;
+  }
+
+  if (args->argc == 1 && args->isStr(0, "save"))
+  {
+    uint32_t t = millis();
+    bool     ok = keysCfgSave();
+
+    cliPrintf("save : %s  seq %d  (%d ms)\n", ok ? "OK" : "E_",
+              (int)cfg.seq, (int)(millis() - t));
+    ret = true;
+  }
+
+  if (args->argc == 1 && args->isStr(0, "load"))
+  {
+    bool ok = keysCfgLoad();
+
+    cliPrintf("load : %s  seq %d\n", ok ? "OK" : "없음(기본값)", (int)cfg.seq);
     ret = true;
   }
 
@@ -1248,6 +1478,9 @@ void cliKeys(cli_args_t *args)
     cliPrintf("keys show      눌린 키 표시 (8x8 격자)\n");
     cliPrintf("keys layout    눌린 키 표시 (실제 배치)\n");
     cliPrintf("keys learn     매핑 측정 — 누를 때마다 \"s,ch\" 한 줄\n");
+    cliPrintf("keys cfg       저장된 설정 보기\n");
+    cliPrintf("keys save      설정 저장\n");
+    cliPrintf("keys load      설정 다시 읽기\n");
     cliPrintf("keys base\n");
     cliPrintf("keys map\n");
     cliPrintf("keys bar       눌린 깊이를 막대로 (최대 6개)\n");

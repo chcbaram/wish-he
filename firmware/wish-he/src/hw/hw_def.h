@@ -51,6 +51,20 @@
 #define      HW_UART_CH_CLI         HW_UART_CH_DEBUG
 
 
+/*
+ * 내장 플래시 (XPI NOR 1MB).
+ *
+ *   0x00000 ~ 0x20000   부트로더·예약      건드리면 안 됨
+ *   0x20000 ~ 0x80000   본 펌웨어
+ *   0x80000 ~ 0xC0000   상용 EEPROM (e2p)  ★ 벤더 데이터. 건드리면 안 됨
+ *   0xC0000 ~ 0x100000  우리 몫 (256KB)
+ */
+#define _USE_HW_FLASH
+#define      HW_FLASH_USER_BEGIN    0x0C0000UL   /* 이 아래로는 쓰지 않는다 */
+#define      HW_FLASH_CAL_A         0x0C0000UL   /* 캘리브레이션 핑퐁 A */
+#define      HW_FLASH_CAL_B         0x0C1000UL   /* 캘리브레이션 핑퐁 B */
+#define      HW_FLASH_E2P_BEGIN     0x0C4000UL   /* VIA EEPROM (10편) */
+
 //-- USB (CDC)
 //
 #define _USE_HW_USB
@@ -90,6 +104,7 @@
 #define _USE_CLI_HW_RESET           1
 #define _USE_CLI_HW_WS2812          1
 #define _USE_CLI_HW_KEYS            1
+#define _USE_CLI_HW_FLASH           1
 #define _USE_CLI_HW_UART            1
 #define _USE_CLI_HW_USB             1
 
