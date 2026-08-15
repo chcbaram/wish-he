@@ -59,7 +59,7 @@ static const uint8_t mux_addr[KEYS_STEP_MAX + 1] =
 static const uint8_t adc0_seq_ch[KEYS_SEQ_LEN] = { 15, 14, 12,  8 };  /* PB07 PB06 PB04 PB00 */
 static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB05 PB01 PB02 */
 
-/* 아날로그로 잡을 패드. 실제 등록은 8개지만 상용 보드와 같이 16개 전부를 잡는다. */
+/* 아날로그로 잡을 패드. 실제 등록은 8개지만 16개 전부를 잡아 둔다. */
 #define KEYS_ANALOG_PAD_FIRST   IOC_PAD_PB00
 #define KEYS_ANALOG_PAD_CNT     16
 
@@ -89,8 +89,7 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  *
  * ★ 왜 더하나. 잡음이 sqrt(N) 배로만 커지기 때문이다.
  *
- *   표본 3개를 더하면 신호는 3배, 잡음은 sqrt(3)=1.73 배가 된다. 상용 보드가 쓰는
- *   방법이다.
+ *   표본 3개를 더하면 신호는 3배, 잡음은 sqrt(3)=1.73 배가 된다.
  *
  *   ★ 실측은 1.31 배였다 — 이론의 1.73 배가 아니다.
  *
@@ -112,18 +111,17 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  *
  *   방향 반전 판정이 잡음을 따라갈 확률이 그만큼 준다.
  *
- * ★ 상용과 다른 점 — 우리는 이동합을 쓴다.
+ * ★ 블록이 아니라 이동합이다.
  *
- *   상용은 3개를 모아 한 번 판정한다 (40kHz 스캔 -> 13.4kHz 판정). 우리는 스캔이
- *   35kHz 라 최근 3개의 합을 매 스캔 갱신해도 부담이 없다. 판정 횟수를 잃지 않고
- *   같은 sqrt(3) 을 얻는다.
+ *   3개를 모아 한 번씩 판정하면 판정 주기가 1/3 로 떨어진다. 스캔이 35kHz 라
+ *   최근 3개의 합을 매 스캔 갱신해도 부담이 없으므로, 판정 횟수를 잃지 않고 같은
+ *   sqrt(3) 을 얻는다.
  *
- *     상용    [1 2 3] 판정   [4 5 6] 판정
- *     우리    [1 2 3] 판정 / [2 3 4] 판정 / [3 4 5] 판정 ...
+ *     블록    [1 2 3] 판정   [4 5 6] 판정
+ *     이동합  [1 2 3] 판정 / [2 3 4] 판정 / [3 4 5] 판정 ...
  *
  *   대가는 이동평균의 군지연 1샘플 = 28us 다. 6편에서 IIR 을 버린 이유(63% 에
- *   152us, 90% 에 342us)와는 자릿수가 다르고, 상용도 3개를 모으므로 같은 지연을
- *   이미 받아들이고 있다.
+ *   152us, 90% 에 342us)와는 자릿수가 다르다.
  */
 #define KEYS_ACC_CNT            3
 
@@ -136,7 +134,7 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  *
  * ★ keysInit() 은 usbInit() 앞에 있다. 여기 쓰는 시간이 그대로 USB 열거 지연이 된다.
  *   38us 스캔 기준으로 1024+128 회면 약 44ms — 체감되지 않는다.
- *   상용 보드는 10000회(약 380ms)를 쓰지만, 우리는 러닝 최대값 추적이 계속 보정하므로
+ *   더 길게 잡는 구현도 있지만, 우리는 러닝 최대값 추적이 계속 보정하므로
  *   씨앗값의 정밀도에 그만큼 기대지 않는다. 더 올리려면 이 숫자만 키우면 된다.
  */
 #define KEYS_CAL_DISCARD        128
@@ -193,12 +191,12 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  *
  *   왜 버리는가 — 실측 노이즈 p-p 가 16비트로 약 200 이다. 하위 4비트(16)는 그보다
  *   한참 작아서 정보가 없다. 12비트로 내리면 테이블이 절반이 되고 상수가 읽히며,
- *   8편 EEPROM 저장량도 절반이 된다. 상용 보드도 같은 이유로 >>4 를 한다.
+ *   8편 EEPROM 저장량도 절반이 된다.
  *
  * 실측 (12비트 환산)
  *   기준값(무압)      약 2500 ~ 2880    (셀 간 편차 약 360)
  *   풀 스트로크       약 838            (누르면 값이 내려간다)
- *   무압 노이즈 p-p   약 12   (= ±6)    상용의 데드밴드 ±7 과 같은 자리
+ *   무압 노이즈 p-p   약 12   (= ±6)
  *
  * 스트로크의 30% 에서 눌림, 19% 에서 해제. 둘 사이 간격이 히스테리시스다.
  */
@@ -289,7 +287,7 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  *   기준값 추적이 노이즈 꼭대기를 붙잡는 걸 막는다는 목적도 그대로 달성된다.
  *   밴드 안쪽 움직임은 출력에 아예 반영되지 않아 추적기가 노이즈를 보지 못한다.
  *
- *   상용 보드가 쓰는 값과 같다 (12비트 영역에서 ±7). 실측 노이즈 ±6 바로 위다.
+ *   12비트 영역에서 ±7 이다. 실측 노이즈 ±6 바로 위다.
  */
 /*
  * ★ 여기만 3배가 아니다.
@@ -309,8 +307,7 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  * 스위치 종류표 — 펌웨어 상수.
  *
  * 보정을 안 해도 mm 환산이 되도록 공칭 스트로크를 갖고 있는다. 사용자가 보정하면
- * 키별 실측값이 이걸 대신한다. 상용 보드도 같은 구조다 — 키마다 종류 인덱스를
- * 저장해두고(기본 3), 설정은 mm 단위로 다룬다.
+ * 키별 실측값이 이걸 대신한다. 키마다 종류 인덱스를 저장해두고 설정은 mm 로 다룬다.
  *
  * travel_um 은 0.01mm 단위다 (400 = 4.00mm).
  *
@@ -351,23 +348,53 @@ static const keys_switch_t keys_switch[] =
  *     보통 RT 는 입력지점 아래에서만 살아 있다. 키가 그 위로 돌아오면 풀리고,
  *     다시 입력지점을 넘어야 붙는다. 연속 RT 는 전 구간에서 계속 살려 둔다 —
  *     얕게 톡톡 치는 구간에서도 방향 반전만으로 입력·해제가 난다.
- *     상용 메뉴의 "연속 RT 활성화 / 키 입력 중 연속적 사용 설정" 이 이것이다.
  */
 #define KEYS_RT_ON         (1U << 0)
 #define KEYS_RT_BOTTOM     (1U << 1)
 #define KEYS_RT_CONT       (1U << 2)
 
 #define KEYS_CFG_MAGIC     0x4746434BUL   /* 'KCFG' */
-#define KEYS_CFG_VERSION   3      /* 2: 누적으로 눈금 3배  3: 래피드 트리거 항목 */
+/*
+ * 2: 누적으로 눈금 3배   3: 래피드 트리거 항목   4: 전 항목을 키별로
+ *
+ * ★ 4 를 마지막으로 삼는다. 올릴 때마다 사용자 보정값이 버려지므로 앞으로 필요할
+ *   자리를 keys_key_cfg_t 에 미리 잡아 뒀다.
+ */
+#define KEYS_CFG_VERSION   4
 
+/*
+ * 키 하나의 설정.
+ *
+ * ★ 키별이 기본이다. 전역은 "모두 선택"일 뿐이다.
+ *
+   *   키를 골라 설정하는 화면에서는 "모두 선택"이 곧 전역이다. 전역 설정이라는
+ *   개념을 따로 두면 키별 값과 어느 쪽이 이기는지가 계속 문제가 된다.
+ *
+ *   그래서 판정은 언제나 이 구조체를 본다. 아래 cfg 의 전역 필드는 (a) 새 설정을
+ *   만들 때의 기본값이고 (b) VIA 가 전역으로 읽고 쓸 때 64키에 뿌리는 값이다.
+ *
+ * ★ 자리를 넉넉히 잡아 둔다.
+ *
+ *   버전을 올릴 때마다 사용자 보정값이 버려진다. 이미 두 번 그랬다. 지금 필요한
+ *   값을 전부 넣어 두어 다음 기능 때 또 올리지 않게 한다.
+ */
 typedef struct
 {
-  uint16_t cal_max;      /* 무압 실측 (0 = 미보정) */
-  uint16_t cal_min;      /* 바닥 실측 (0 = 미보정) */
-  uint8_t  sw_type;      /* 스위치 종류 인덱스 */
-  uint8_t  flags;        /* bit0 = 보정됨 */
-  uint8_t  rsv[2];
-} keys_key_cfg_t;
+  uint16_t cal_max;        /* 무압 실측 (0 = 미보정) */
+  uint16_t cal_min;        /* 바닥 실측 (0 = 미보정) */
+
+  uint16_t press_um;       /* 입력지점        0.01mm */
+  uint16_t release_um;     /* 해제지점        0.01mm */
+  uint16_t rt_press_um;    /* RT 재입력       0.01mm */
+  uint16_t rt_release_um;  /* RT 입력 해제    0.01mm */
+  uint16_t bottom_um;      /* 바닥 보호       0.01mm */
+  uint16_t dead_um;        /* 데드존          0.01mm */
+
+  uint8_t  sw_type;        /* 스위치 종류 인덱스 */
+  uint8_t  flags;          /* bit0 = 보정됨 */
+  uint8_t  rt_flags;       /* KEYS_RT_* */
+  uint8_t  rsv[5];
+} keys_key_cfg_t;          /* 24 바이트 x 64 키 = 1536 B */
 
 typedef struct
 {
@@ -385,7 +412,7 @@ typedef struct
    * ★ 누름과 해제를 따로 둔다.
    *
    *   하나로 묶는 구현이 많지만 게임에서는 비대칭이 유리한 경우가 실제로 있다
-   *   (빠르게 떼고 천천히 누르기). 상용도 pressTravel 과 releaseStroke 를 나눠 둔다.
+   *   (빠르게 떼고 천천히 누르기).
    *   UI 에서는 "고급" 뒤에 숨겨 하나처럼 보이게 할 수 있으니, 필드는 지금 넣어
    *   나중에 버전을 또 올리며 재보정을 요구하지 않게 한다.
    */
@@ -413,7 +440,6 @@ typedef struct
    *     데드존     진동·공차로 값이 흔들려도 우발적 입력이 안 나가게 막는다
    *     바닥 보호   끝까지 눌러 붙잡을 때 손가락 이완으로 RT 해제가 나가는 걸 막는다
    *
-   *   상용 제품도 탭을 따로 둔다 ("진동, 오차등으로 인한 우발적 입력 방지 거리").
    *   기본값 0 이다 — 우리 기준값이 키마다 러닝 최대로 따라가므로 평소에는 필요
    *   없고, 진동이 있는 환경에서 사용자가 올린다.
    */
@@ -475,11 +501,13 @@ typedef struct
   uint16_t rt_release;   /* RT 입력 해제 반응 행정 */
   uint16_t bottom_lo;    /* 이 깊이 이상이면 바닥 보호 구간 */
   uint16_t dead;         /* 이 깊이 미만은 아예 안 본다 */
+  uint8_t  rt_flags;     /* 키별 KEYS_RT_* */
 } keys_thr_t;
 
 static keys_thr_t thr[KEYS_MAX];
 
 static void            keysThrRebuild(void);
+static void            keysCfgFanout(void);
 static uint16_t        keysStrokeCnt(uint32_t i);
 static inline uint8_t  keysSwType(uint32_t i);
 
@@ -488,7 +516,7 @@ static inline uint8_t  keysSwType(uint32_t i);
  *
  *   실측 잡음 p-p 가 40 이다. 반응 행정이 그보다 작으면 RT 가 잡음을 방향 반전으로
  *   읽어 키가 제멋대로 눌렸다 떼진다. 잡음의 1.5배를 하한으로 둔다 — 0.096mm 쯤이라
- *   상용 기본값(0.1mm)과도 맞는다.
+ *   0.096mm 쯤이다.
  */
 #define KEYS_RT_MIN_CNT    60
 
@@ -891,6 +919,7 @@ static void keysThrRebuild(void)
 {
   for (uint32_t i = 0; i < KEYS_MAX; i++)
   {
+    const keys_key_cfg_t *k = &cfg.key[i];
     uint32_t stroke = keysStrokeCnt(i);
     uint32_t travel = keys_switch[keysSwType(i)].travel_um;
     keys_thr_t *t   = &thr[i];
@@ -900,15 +929,16 @@ static void keysThrRebuild(void)
     /* um -> 카운트. um 400, stroke 2700 이라도 32비트 안이다. */
     #define UM2CNT(um)  ((uint16_t)(((uint32_t)(um) * stroke) / travel))
 
-    t->press      = UM2CNT(cfg.press_um);
-    t->release    = UM2CNT(cfg.release_um);
-    t->rt_press   = UM2CNT(cfg.rt_press_um);
-    t->rt_release = UM2CNT(cfg.rt_release_um);
-    t->dead       = UM2CNT(cfg.dead_um);
+    t->press      = UM2CNT(k->press_um);
+    t->release    = UM2CNT(k->release_um);
+    t->rt_press   = UM2CNT(k->rt_press_um);
+    t->rt_release = UM2CNT(k->rt_release_um);
+    t->dead       = UM2CNT(k->dead_um);
+    t->rt_flags   = k->rt_flags;
 
     /* 바닥 보호는 "바닥에서 이만큼 안쪽" 이므로 깊이 기준으로 뒤집는다 */
     {
-      uint32_t b = UM2CNT(cfg.bottom_um);
+      uint32_t b = UM2CNT(k->bottom_um);
       t->bottom_lo = (uint16_t)((stroke > b) ? (stroke - b) : 0);
     }
     #undef UM2CNT
@@ -930,9 +960,6 @@ static void keysThrRebuild(void)
 ATTR_RAMFUNC static void keysTrack(uint32_t step)
 {
   bool do_drift = drift_due;
-  bool rt_on    = (cfg.rt_flags & KEYS_RT_ON)     != 0;
-  bool rt_cont  = (cfg.rt_flags & KEYS_RT_CONT)   != 0;
-  bool bot_on   = (cfg.rt_flags & KEYS_RT_BOTTOM) != 0;
 
   for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
   {
@@ -940,6 +967,9 @@ ATTR_RAMFUNC static void keysTrack(uint32_t step)
     if ((keys_present[step] & (1U << c)) == 0) continue;
 
     const keys_thr_t *t = &thr[step * KEYS_CH_MAX + c];
+    bool     rt_on   = (t->rt_flags & KEYS_RT_ON)     != 0;
+    bool     rt_cont = (t->rt_flags & KEYS_RT_CONT)   != 0;
+    bool     bot_on  = (t->rt_flags & KEYS_RT_BOTTOM) != 0;
     uint16_t v = raw[step][c];
     uint16_t bit = (uint16_t)(1U << c);
     int32_t  d;
@@ -1352,7 +1382,7 @@ static void keysCfgDefault(void)
   cfg.length      = sizeof(keys_cfg_t);
   cfg.seq         = 0;
 
-  /* 상용 웹툴의 "처음 사용자용" 프리셋과 같은 값 */
+  /* 입문용 기본값 */
   cfg.press_um      = 100;   /* 1.00mm */
   cfg.release_um    = 50;    /* 0.50mm */
 
@@ -1360,13 +1390,13 @@ static void keysCfgDefault(void)
    * 래피드 트리거는 **꺼진 채로** 시작한다.
    *
    *   보통 키보드로 먼저 완성한다는 게 이 펌웨어의 순서다. RT 는 켜는 순간 타이핑
-   *   느낌이 크게 달라지므로 사용자가 고르게 둔다. 값만 미리 상용 기본값으로 채워
+   *   느낌이 크게 달라지므로 사용자가 고르게 둔다. 값만 미리 채워 두어
    *   켜자마자 쓸 만하게 한다.
    */
   cfg.rt_press_um   = 50;    /* 0.50mm */
   cfg.rt_release_um = 50;    /* 0.50mm */
-  cfg.bottom_um     = 10;    /* 0.10mm — 상용 기본값 */
-  cfg.dead_um       = 0;     /* 상용도 기본 0 */
+  cfg.bottom_um     = 10;    /* 0.10mm */
+  cfg.dead_um       = 0;
   cfg.rt_flags      = KEYS_RT_BOTTOM;   /* 바닥 보호만 켜 둔다 (RT 는 꺼짐) */
 
   cfg.sw_type_def = 0;
@@ -1374,6 +1404,29 @@ static void keysCfgDefault(void)
   for (uint32_t i = 0; i < KEYS_MAX; i++)
   {
     cfg.key[i].sw_type = cfg.sw_type_def;
+  }
+  keysCfgFanout();
+}
+
+/*
+ * 전역 값을 64키 전부에 뿌린다 — "모두 선택"에 해당한다.
+ *
+ * 판정은 언제나 키별 값을 보므로, 전역 설정을 바꾼다는 건 곧 전 키를 바꾼다는 뜻이다.
+ * 키별로 다르게 두는 것은 VIA 에서 키를 골라 설정할 때 생긴다.
+ */
+static void keysCfgFanout(void)
+{
+  for (uint32_t i = 0; i < KEYS_MAX; i++)
+  {
+    keys_key_cfg_t *k = &cfg.key[i];
+
+    k->press_um      = cfg.press_um;
+    k->release_um    = cfg.release_um;
+    k->rt_press_um   = cfg.rt_press_um;
+    k->rt_release_um = cfg.rt_release_um;
+    k->bottom_um     = cfg.bottom_um;
+    k->dead_um       = cfg.dead_um;
+    k->rt_flags      = cfg.rt_flags;
   }
 }
 
@@ -1526,6 +1579,7 @@ void keysSetPressUm(uint16_t um)
   /* 해제지점이 입력지점보다 깊으면 키가 눌린 채로 남는다 */
   if (cfg.release_um >= cfg.press_um) cfg.release_um = (uint16_t)(cfg.press_um - 1);
 
+  keysCfgFanout();
   keysThrRebuild();
 }
 
@@ -1535,6 +1589,7 @@ void keysSetReleaseUm(uint16_t um)
   if (um >= cfg.press_um) um = (uint16_t)(cfg.press_um - 1);
   cfg.release_um = um;
 
+  keysCfgFanout();
   keysThrRebuild();
 }
 
@@ -1568,14 +1623,16 @@ static uint16_t keysClampUm(uint16_t um)
   return (um > travel) ? travel : um;
 }
 
-void keysSetRtPressUm(uint16_t um)   { cfg.rt_press_um   = keysClampUm(um); keysThrRebuild(); }
-void keysSetRtReleaseUm(uint16_t um) { cfg.rt_release_um = keysClampUm(um); keysThrRebuild(); }
-void keysSetBottomUm(uint16_t um)    { cfg.bottom_um     = keysClampUm(um); keysThrRebuild(); }
-void keysSetDeadUm(uint16_t um)      { cfg.dead_um       = keysClampUm(um); keysThrRebuild(); }
+void keysSetRtPressUm(uint16_t um)   { cfg.rt_press_um   = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }
+void keysSetRtReleaseUm(uint16_t um) { cfg.rt_release_um = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }
+void keysSetBottomUm(uint16_t um)    { cfg.bottom_um     = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }
+void keysSetDeadUm(uint16_t um)      { cfg.dead_um       = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }
 
 void keysSetRtFlags(uint8_t flags)
 {
   cfg.rt_flags = flags & (KEYS_RT_ON | KEYS_RT_BOTTOM | KEYS_RT_CONT);
+  keysCfgFanout();
+  keysThrRebuild();
 
   /*
    * RT 를 끄거나 켤 때 상태를 초기화한다. 안 그러면 직전 peak 이 남아
