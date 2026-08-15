@@ -50,7 +50,7 @@ def set_board(name):
     CMake 가 keyboards/${HW_KEYBOARD} 를 인클루드 경로에 넣으므로 펌웨어는
     #include "layout.h" 한 줄이면 된다.
     """
-    global KLE_PATH, VIA_PATH, HDR_PATH, KEYMAP_PATH, LAYOUT_PATH
+    global KLE_PATH, VIA_PATH, HDR_PATH, KEYMAP_PATH, LAYOUT_PATH, LABELS_PATH
     d = BOARDS / name
     if not d.is_dir():
         have = sorted(p.name for p in BOARDS.iterdir() if p.is_dir()) if BOARDS.is_dir() else []
@@ -60,6 +60,7 @@ def set_board(name):
     HDR_PATH    = d / "layout.h"
     KEYMAP_PATH = d / "keymap.c"        # QMK 키맵   (생성물)
     LAYOUT_PATH = d / "layout_qmk.h"    # QMK LAYOUT 매크로 (생성물)
+    LABELS_PATH = d / "labels.json"     # 레이아웃 옵션 이름 (손으로 쓴다, 선택)
 
 ADDR_RE = re.compile(r"^(\d+),(\d+)$")
 
@@ -253,13 +254,28 @@ def cmd_gen():
     if dup:
         sys.exit(f"[E_] 같은 셀이 여러 키에 배정됐다: {dup}")
 
-    # ── VIA JSON
+    # ── VIA JSON (v3 정의)
+    #
+    # 레이아웃 옵션이 있으면 labels 가 있어야 VIA 가 선택지를 그린다. 이름은 사람이
+    # 정하는 것이라 보드 폴더의 labels.json 에서 읽고, 없으면 자리표시자를 낸다.
+    layouts = {"keymap": rows_of(kle)}
+    opts = options_of(kle)
+    if opts:
+        labels = None
+        if LABELS_PATH.exists():
+            labels = json.loads(LABELS_PATH.read_text()).get("labels")
+        if labels is None:
+            labels = [[f"옵션 {o}"] + [f"선택 {c}" for c in sorted(opts[o])]
+                      for o in sorted(opts)]
+            print(f"[  ] {LABELS_PATH.relative_to(ROOT)} 가 없어 자리표시자를 넣었다")
+        layouts["labels"] = labels
+
     via = {
         "name": name_of(kle),
         "vendorId": VID,
         "productId": PID,
         "matrix": {"rows": ROWS, "cols": COLS},
-        "layouts": {"keymap": rows_of(kle)},
+        "layouts": layouts,
     }
     VIA_PATH.write_text(json.dumps(via, indent=2, ensure_ascii=False) + "\n")
     print(f"생성: {VIA_PATH.relative_to(ROOT)}")
