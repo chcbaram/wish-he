@@ -248,10 +248,15 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length)
       break;
 
     /*
-     * 저장은 따로 하지 않는다. set 할 때 이미 EEPROM 에 반영했고, 플래시 기록은
-     * 지연 플러시가 알아서 모아 쓴다 (port/platforms/eeprom.c).
+     * ★ HE 설정은 여기서 저장해야 한다.
+     *
+     *   QMK 쪽 값(hold_okp · nkro)은 set 할 때 이미 EEPROM 에 넣었고 지연 플러시가
+     *   모아 쓴다. 그래서 한동안 이 명령을 아무것도 안 하게 두었는데, HE 설정은
+     *   QMK EEPROM 이 아니라 keys.c 의 자체 플래시 레코드에 산다. 그 결과 웹에서
+     *   바꾼 입력지점·RT 값이 전원을 끄면 전부 사라졌다.
      */
     case id_custom_save:
+      keysSave();
       return;
 
     default:

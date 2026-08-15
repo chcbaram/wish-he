@@ -80,6 +80,9 @@ void     keysSetPressUm(uint16_t um);
 void     keysSetReleaseUm(uint16_t um);
 void     keysSetSwitchType(uint8_t type);
 
+/* 설정을 플래시에 남긴다. 바꾸는 것과 저장은 따로다. */
+bool     keysSave(void);
+
 /* 스위치 종류표. 앞 GenericCount 개가 일반형이고 나머지가 제원을 아는 제품이다. */
 uint32_t    keysGetSwitchCount(void);
 uint32_t    keysGetSwitchGenericCount(void);

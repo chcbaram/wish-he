@@ -1594,6 +1594,17 @@ uint16_t keysGetDepthUm(uint16_t row, uint16_t col)
  *  값만 바꾸고 플래시에는 쓰지 않는다. 저장은 `keys save` 나 보정 완료처럼 사용자가
  *  명시할 때만 한다 — VIA 슬라이더를 움직일 때마다 섹터를 지우면 수명이 남지 않는다.
  *---------------------------------------------------------------------------*/
+/*
+ * 설정을 플래시에 남긴다.
+ *
+ * 값을 바꾸는 것과 저장은 따로다 — 바꾸면 즉시 반영되지만 전원을 끄면 사라진다.
+ * 플래시 쓰기는 XIP 를 멈추므로 사용자가 명시할 때만 한다.
+ */
+bool keysSave(void)
+{
+  return keysCfgSave();
+}
+
 uint16_t keysGetPressUm(void)     { return cfg.press_um; }
 uint16_t keysGetReleaseUm(void)   { return cfg.release_um; }
 uint8_t  keysGetSwitchType(void)  { return cfg.sw_type_def; }
