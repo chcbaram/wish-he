@@ -177,6 +177,60 @@ add_executable(${EXECUTABLE}
 )
 
 
+# ★ 보드 config.h 를 모든 C 파일 맨 앞에 강제로 넣는다.
+#
+#   QMK 상류 빌드가 하는 일(-include config.h)을 우리가 빼먹고 있었다. 그 결과
+#   config.h 는 host.h 를 타고 **늦게** 들어왔고, 그전에 eeconfig.h 가 먼저 처리된
+#   번역 단위에서는
+#
+#     #ifndef EECONFIG_USER_DATA_SIZE
+#     #    define EECONFIG_USER_DATA_SIZE 0
+#
+#   가 0 으로 확정돼 버렸다. 같은 매크로가 파일마다 0 이기도 512 이기도 했다는 뜻이고,
+#   EECONFIG_SIZE 와 사용자 영역 주소가 번역 단위마다 어긋난다. -Werror 를 켜고서야
+#   드러났다 (config.h 가 재정의로 보였다).
+#
+#   ASM 에는 넣지 않는다.
+#
+target_compile_options(${EXECUTABLE} PRIVATE
+  $<$<COMPILE_LANGUAGE:C>:-include$<SEMICOLON>config.h>
+)
+
+set(HW_OUR_SRC ${SRC_FILES} ${SRC_FILES_RECURSE} ${USB_SRC_FILES})
+
+# 보드별 파일도 우리 것이다. QMK 소스 목록에 얹혀 있을 뿐이다.
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/keyboards/${HW_KEYBOARD}/via_port.c")
+  list(APPEND HW_OUR_SRC
+       ${CMAKE_CURRENT_SOURCE_DIR}/keyboards/${HW_KEYBOARD}/via_port.c)
+endif()
+
+# 우리가 쓴 파일만 경고를 오류로 올린다.
+#
+#   왜 필요한가. 이런 줄을 하루 종일 쫓은 적이 있다.
+#
+#     void eeconfig_update_keymap(uint16_t val);   /* 값을 받는다 */
+#     eeconfig_update_keymap(&keymap_config);      /* 포인터를 넘겼다 */
+#
+#   포인터가 16비트로 잘려 설정 전체로 저장됐고 하필 QMK 매직 스왑 비트에 걸렸다.
+#   매트릭스도 키맵도 정의 JSON 도 전부 정상인데 나가는 키코드만 달랐다 — 눈으로
+#   볼 수 있는 곳에는 단서가 없었다. **컴파일러는 이미 경고하고 있었다**
+#   (-Wint-conversion, 기본 켜짐). QMK 와 SDK 가 쏟아내는 경고에 묻혔을 뿐이다.
+#
+#   그래서 범위를 우리 것으로 좁힌다. QMK 와 HPM SDK 는 우리가 고칠 물건이 아니고,
+#   거기까지 올리면 다시 무시하게 된다 — 무시되는 경고는 없는 것과 같다.
+#
+#   -Wextra 는 넣지 않았다. src/common 은 다른 프로젝트와 공유하는 틀이라
+#   sign-compare 만 여덟 군데 나오는데, 그걸 고치면 원본과 갈라진다. 잡으려던
+#   종류(포인터를 정수 자리에 넘기기)는 -Wall 로 이미 잡힌다.
+#
+#   ★ 새 경고가 나면 끄지 말고 고칠 것. 못 고칠 사정이 있으면 그 파일만
+#     빼고 이유를 여기 남긴다.
+#
+set_source_files_properties(${HW_OUR_SRC} PROPERTIES COMPILE_OPTIONS
+  "-Wall;-Werror"
+)
+
+
 
 target_include_directories(${EXECUTABLE} PRIVATE
   keyboards/${HW_KEYBOARD}

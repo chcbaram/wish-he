@@ -400,13 +400,15 @@ static void cliKeys(cli_args_t *args);
  *   초당 24만 번이다. 그 ISR 들이 USB 완료 콜백을 밀어내서 다음 마이크로프레임(125us)
  *   안에 재무장하지 못했고, 리포트가 8000/s 가 아니라 6000/s 로 떨어졌다.
  */
-static inline bool keysSeqDone(ADC16_Type *ptr)
-{
-  if ((adc16_get_status_flags(ptr) & ADC16_INT_STS_SEQ_CMPT_MASK) == 0) return false;
-
-  adc16_clear_status_flags(ptr, ADC16_INT_STS_SEQ_CMPT_MASK);
-  return true;
-}
+/*
+ * ★ SEQ_CMPT 폴링도 걷어냈다.
+ *
+ *   한동안 "SEQ_CMPT 를 기다린 뒤 DMA 칸이 채워지길 기다린다"로 두 번 기다렸는데,
+ *   DMA 기록은 변환이 끝나야 일어난다 — 뒤엣것이 앞엣것을 이미 포함한다.
+ *   두 번 기다리는 값이 스캔 1회에 4.5us 였다.
+ *
+ *   플래그는 이제 아무도 보지 않으므로 지우지도 않는다. `keys adc` 진단만 읽는다.
+ */
 
 
 /*---------------------------------------------------------------------------
@@ -605,27 +607,6 @@ static inline bool keysWaitDma(void)
   return true;
 }
 
-/* 두 ADC 의 시퀀스 완료를 폴링으로 기다린다. 걸리면 false. */
-static inline bool keysWaitDone(void)
-{
-  bool     d0 = false;
-  bool     d1 = false;
-  uint32_t spin = 0;
-
-  while (!(d0 && d1))
-  {
-    if (!d0) d0 = keysSeqDone(HPM_ADC0);
-    if (!d1) d1 = keysSeqDone(HPM_ADC1);
-
-    if (++spin > KEYS_WAIT_LIMIT)
-    {
-      timeout_cnt++;
-      return false;
-    }
-  }
-  return true;
-}
-
 /*
  * 데드밴드 필터.
  *
@@ -740,13 +721,7 @@ ATTR_RAMFUNC bool keysUpdate(void)
     adc16_trigger_seq_by_sw(HPM_ADC0);
     adc16_trigger_seq_by_sw(HPM_ADC1);
 
-    if (keysWaitDone() == false)
-    {
-      ret = false;
-      break;
-    }
-
-    /* 변환이 끝난 것과 버퍼에 앉은 것은 다르다 */
+    /* DMA 기록이 곧 변환 완료다 — 한 번만 기다린다 */
     if (keysWaitDma() == false)
     {
       ret = false;
@@ -1907,9 +1882,10 @@ void cliKeys(cli_args_t *args)
 
           if (mode >= 1)
           {
+            keysDmaArm();
             adc16_trigger_seq_by_sw(HPM_ADC0);
             adc16_trigger_seq_by_sw(HPM_ADC1);
-            if (keysWaitDone() == false) break;
+            if (keysWaitDma() == false) break;
             gpio_write_port(HPM_GPIO0, KEYS_MUX_GPIO_PORT, mux_addr[step + 1]);
           }
 

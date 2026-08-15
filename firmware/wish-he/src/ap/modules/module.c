@@ -41,7 +41,8 @@ bool moduleBegin(void)
 
   logPrintf("[  ] moduleBegin()\n");
 
-  for (int pri = MODULE_PRI_HIGH; pri < MODULE_PRI_MAX; pri++)
+  /* pri 를 int 로 돌리면 열거형과의 비교가 부호가 달라진다 */
+  for (ModulePriority_t pri = MODULE_PRI_HIGH; pri < MODULE_PRI_MAX; pri++)
   {
     for (int i = 0; i < info.count; i++)
     {

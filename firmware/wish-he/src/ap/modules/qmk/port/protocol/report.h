@@ -224,7 +224,7 @@ typedef struct {
     uint16_t y;
 } PACKED report_digitizer_t;
 
-#if JOYSTICK_AXIS_RESOLUTION > 8
+#if defined(JOYSTICK_AXIS_RESOLUTION) && JOYSTICK_AXIS_RESOLUTION > 8
 typedef int16_t joystick_axis_t;
 #else
 typedef int8_t joystick_axis_t;
@@ -234,11 +234,11 @@ typedef struct {
 #ifdef JOYSTICK_SHARED_EP
     uint8_t report_id;
 #endif
-#if JOYSTICK_AXIS_COUNT > 0
+#if defined(JOYSTICK_AXIS_COUNT) && JOYSTICK_AXIS_COUNT > 0
     joystick_axis_t axes[JOYSTICK_AXIS_COUNT];
 #endif
 
-#if JOYSTICK_BUTTON_COUNT > 0
+#if defined(JOYSTICK_BUTTON_COUNT) && JOYSTICK_BUTTON_COUNT > 0
     uint8_t buttons[(JOYSTICK_BUTTON_COUNT - 1) / 8 + 1];
 #endif
 } PACKED report_joystick_t;
