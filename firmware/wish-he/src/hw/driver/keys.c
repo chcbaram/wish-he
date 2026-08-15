@@ -118,14 +118,21 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  * 이 덕에 키를 누른 채 부팅해도 손을 떼는 순간 기준값이 제자리를 찾는다.
  */
 /*
- * ★ 드리프트 밴드는 "해제 상태로 볼 수 있는 범위" 여야 한다.
+ * 드리프트 보정.
  *
- *   기준값은 러닝 최대값이라 노이즈 꼭대기에 걸린다 -> 평상시 편차가 노이즈만큼(약 300)
- *   남는다. 밴드를 300 으로 두면 그 편차가 창 밖이라 기준값이 영영 안 내려온다.
- *   해제 임계값까지 열어두면 "안 눌린 동안은 계속 보정" 이 되어 자연스럽다.
+ * 기준값이 러닝 최대값이라 구조적으로 노이즈 꼭대기에 걸린다. 평활 후 평상시 편차가
+ * 약 100 남으므로 그걸 천천히 걷어내야 한다.
+ *
+ * ★ 밴드는 노이즈(약 120)와 액추에이션(4000) 사이여야 한다.
+ *   해제 임계값(2500)까지 열면 손가락을 살짝 얹은 상태(2000)까지 보정 대상이 되어
+ *   기준값이 눌린 쪽으로 끌려간다.
+ *
+ * ★ 주기는 스캔 횟수가 아니라 실제 시간으로 센다.
+ *   스캔 속도가 호출자마다 1000배 넘게 다르다 (CLI 20회/초 vs 메인 루프 26000회/초).
+ *   온도 드리프트는 물리 현상이니 ms 로 세는 게 맞다.
  */
-#define KEYS_DRIFT_BAND         KEYS_RELEASE_LEVEL
-#define KEYS_DRIFT_PERIOD       1024    /* 스캔 이만큼마다 기준값을 1 내린다 */
+#define KEYS_DRIFT_BAND         800
+#define KEYS_DRIFT_MS           32      /* 이 시간마다 기준값을 1 내린다 (약 30/초) */
 
 /*
  * 부팅 캘리브레이션 이상치 판정.
@@ -158,12 +165,13 @@ static volatile bool adc1_done = false;
 static uint16_t raw[KEYS_STEP_MAX][KEYS_CH_MAX];    /* 평활된 값 — 판정·표시에 쓴다 */
 static uint16_t base[KEYS_STEP_MAX][KEYS_CH_MAX];   /* 무압 기준값 (러닝 최대) */
 static uint16_t pressed[KEYS_STEP_MAX];             /* 행별 눌림 비트마스크 */
-static uint8_t  drift_cnt[KEYS_STEP_MAX][KEYS_CH_MAX];
 static bool     is_calibrated = false;
 static uint32_t scan_time_us = 0;
 static bool     is_init      = false;
 static uint32_t timeout_cnt  = 0;
 static uint32_t cal_time_ms  = 0;
+static uint32_t drift_ms     = 0;
+static bool     drift_due    = false;
 
 static void keysCalRejectOutlier(void);
 static void keysTrack(uint32_t step);
@@ -407,36 +415,23 @@ static inline void keysSmooth(uint32_t step, uint32_t ch, uint32_t packed)
  */
 static void keysTrack(uint32_t step)
 {
+  bool do_drift = drift_due;
+
   for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
   {
     uint16_t v = raw[step][c];
     int32_t  d;
 
     /* 해제 방향으로 벗어나면 그 값이 새 기준이다 — 즉시 */
-    if (v > base[step][c])
-    {
-      base[step][c]      = v;
-      drift_cnt[step][c] = 0;
-    }
+    if (v > base[step][c]) base[step][c] = v;
 
     d = (int32_t)base[step][c] - (int32_t)v;    /* 누를수록 커진다 */
 
     /*
-     * 해제 근처에 머무는 동안만 기준값을 천천히 끌어내린다.
-     * 눌려 있는 셀은 d 가 커서 이 구간에 들어오지 않으므로 영향받지 않는다.
+     * 노이즈 범위 안에 머무는 셀만 기준값을 한 칸 내린다.
+     * 눌려 있는 셀은 d 가 밴드를 넘어서 영향받지 않는다.
      */
-    if (d > 0 && d < KEYS_DRIFT_BAND)
-    {
-      if (++drift_cnt[step][c] >= KEYS_DRIFT_PERIOD)
-      {
-        drift_cnt[step][c] = 0;
-        base[step][c]--;
-      }
-    }
-    else
-    {
-      drift_cnt[step][c] = 0;
-    }
+    if (do_drift && d > 0 && d < KEYS_DRIFT_BAND) base[step][c]--;
 
     /* 히스테리시스 — 임계값 부근에서 떨리지 않게 */
     if (pressed[step] & (1U << c))
@@ -459,6 +454,14 @@ bool keysUpdate(void)
   if (is_init == false) return false;
 
   t_begin = micros();
+
+  /* 시간 기준 드리프트 — 스캔 속도와 무관하게 같은 속도로 보정된다 */
+  drift_due = false;
+  if (millis() - drift_ms >= KEYS_DRIFT_MS)
+  {
+    drift_ms  = millis();
+    drift_due = true;
+  }
 
   for (uint32_t step = 0; step < KEYS_STEP_MAX; step++)
   {
@@ -554,7 +557,6 @@ bool keysCalibrate(void)
 
   cal_time_ms = millis() - t_begin;
 
-  memset(drift_cnt, 0, sizeof(drift_cnt));
   memset(pressed,   0, sizeof(pressed));
   is_calibrated = true;
 
