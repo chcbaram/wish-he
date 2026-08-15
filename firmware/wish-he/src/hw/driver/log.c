@@ -52,7 +52,7 @@ static SemaphoreHandle_t mutex_lock;
  * 그래서 로그를 .noinit 링버퍼에도 흘려두고 OpenOCD 로 덤프한다.
  * .noinit 은 리셋 후에도 보존되므로 크래시 직전 로그도 남는다.
  *
- * 덤프 방법은 docs/debug-recovery.md 참조. 버퍼 주소는 build/wish60-he.map 의
+ * 덤프 방법은 docs/README.md 4.2 참조. 버퍼 주소는 build/wish60-he.map 의
  * log_ram 심볼에서 확인한다.
  */
 #define LOG_RAM_BUF_MAX   2048

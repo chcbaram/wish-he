@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # WISH60-HE 문서용 SVG 다이어그램 생성기
-# (hpm5361-fw/docs/images/gen_svg.py 의 Svg 헬퍼를 그대로 가져왔다)
+# Svg 헬퍼 + 다이어그램 생성
 import os, html
 
 OUT = "/Users/hancheol/hdd/git/hpm5300evk/firmware/wish60-he/docs/images"

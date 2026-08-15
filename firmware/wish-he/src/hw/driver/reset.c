@@ -6,7 +6,7 @@
  * 이 보드는 상용 IAP 부트로더 위에 얹혀 있고, IAP 는 부팅할 때마다
  * 플래시 BOOT_FLAG_ADDR 워드를 본다 — 0xFFFFFFFF 가 아니면 앱으로 가지 않고
  * USB 업데이트 모드로 남는다. 그래서 "부트로더로 재부팅" 은 그 워드를 쓰고
- * 소프트 리셋하는 것이다. (docs/README.md 6.3, ../hpm5361-fw/docs/board-iap.md 2절)
+ * 소프트 리셋하는 것이다. (docs/03-reset-boot.md)
  *
  * 다른 프로젝트들(m483-fw, baram-qmk-8k)은 RAM/RTC 백업 레지스터에 플래그를 두지만,
  * 여기서는 IAP 가 플래시만 확인하므로 선택의 여지가 없다. 자체 부트로더를 쓰게 되면

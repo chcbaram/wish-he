@@ -6,7 +6,7 @@
  * 이 보드에는 외부 디버깅용 LED 도, UART 헤더도 없다. 네오픽셀이 유일한
  * 시각적 상태 표시 수단이라 일찍 올린다.
  *
- * 하드웨어 (덤프 분석으로 확정 — ../hpm5361-fw/docs/flash_dump.md 6절):
+ * 하드웨어 (docs/00-hardware.md):
  *   - 데이터 핀 : PA29 = SPI1.MOSI (ALT5)
  *   - SCLK      : 8 MHz  → SPI 1 바이트 = 1.0us = WS2812 1 비트
  *   - LED 개수  : 83
@@ -75,7 +75,7 @@ static spi_control_config_t ctrl_config;
 static volatile bool is_busy = false;
 
 
-/* 테스트 패턴 밝기. 전류 예산 때문에 낮게 유지한다 (docs/README.md 4절). */
+/* 테스트 패턴 밝기. 전류 예산 때문에 낮게 유지한다 (docs/00-hardware.md 5절). */
 #define WS2812_TEST_LEVEL     12
 
 

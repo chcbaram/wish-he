@@ -1,6 +1,6 @@
 # 3. 리셋 / 부트로더 진입
 
-> 전체 로드맵은 [../steps.md](../steps.md) 를 본다.
+> 전체 목차는 [README.md](README.md) 를 본다.
 
 `m483-fw` · `baram-qmk-8k` 의 `reset` 모듈과 같은 인터페이스로 맞췄다.
 
