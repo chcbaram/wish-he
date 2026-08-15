@@ -325,10 +325,46 @@ typedef struct
 
 static const keys_switch_t keys_switch[] =
 {
-  { "generic 4.0mm", 400, 836 * KEYS_ACC_CNT },   /* 0 — 기본값. 실제 스위치가 정해지면 채운다 */
-  { "generic 3.5mm", 350, 731 * KEYS_ACC_CNT },   /* 1 */
-  { "generic 3.0mm", 300, 627 * KEYS_ACC_CNT },   /* 2 */
+  /*
+   * ── 일반형 ──────────────────────────────────────────────────
+   *
+   * 어떤 스위치가 꽂혔는지 모를 때 쓴다. 행정만 얼추 맞으면 mm 환산이 대략 맞는다.
+   * 보정(keys cal)을 하면 키별 실측 카운트가 이 값을 대신하므로, 여기 stroke_cnt 는
+   * 미보정 키의 임시 기준일 뿐이다.
+   */
+  { "generic 4.0mm", 400, 836 * KEYS_ACC_CNT },
+  { "generic 3.5mm", 350, 731 * KEYS_ACC_CNT },
+  { "generic 3.0mm", 300, 627 * KEYS_ACC_CNT },
+
+  /*
+   * ── 제원을 아는 제품 ────────────────────────────────────────
+   *
+   * 데이터시트의 전 행정을 그대로 쓴다. 일반형과 달리 mm 표시가 실제와 맞는다.
+   *
+   * stroke_cnt 는 데이터시트에 없다 — 자석 세기와 센서 배치가 정해야 하는 값이라
+   * 이 보드에서 재야 한다. 아래 값은 이 보드 61키를 보정해 얻은 평균이다
+   * (최소 2275, 최대 2683, 평균 2514).
+   */
+  { "GEON Raw HE 3.4mm", 340, 838 * KEYS_ACC_CNT },
 };
+
+/*
+ * 앞의 몇 개가 일반형인가.
+ *
+ * 설정 화면에서 "일반형"과 "제품"을 갈라 보여주려고 둔다. 사용자가 자기 스위치를
+ * 알면 제품을 고르는 쪽이 언제나 낫다 — 행정이 정확해야 mm 가 맞는다.
+ */
+#define KEYS_SWITCH_GENERIC_CNT   3
+
+/*
+ * 이 보드에 실제로 꽂힌 스위치.
+ *
+ * ★ 기본값을 일반형 4.0mm 로 두었던 것이 틀렸다.
+ *
+ *   실제는 3.4mm 다. 카운트 기준 판정은 영향이 없지만 mm 표시가 전부 18% 어긋난다 —
+ *   "입력지점 1.00mm" 가 실제로는 0.85mm 였다.
+ */
+#define KEYS_SWITCH_DEFAULT       3
 
 #define KEYS_SWITCH_CNT   (sizeof(keys_switch) / sizeof(keys_switch[0]))
 
@@ -1393,7 +1429,7 @@ static void keysCfgDefault(void)
   cfg.dead_um       = 0;
   cfg.rt_flags      = KEYS_RT_BOTTOM;   /* 바닥 보호만 켜 둔다 (RT 는 꺼짐) */
 
-  cfg.sw_type_def = 0;
+  cfg.sw_type_def = KEYS_SWITCH_DEFAULT;
 
   for (uint32_t i = 0; i < KEYS_MAX; i++)
   {
@@ -1561,6 +1597,20 @@ uint16_t keysGetDepthUm(uint16_t row, uint16_t col)
 uint16_t keysGetPressUm(void)     { return cfg.press_um; }
 uint16_t keysGetReleaseUm(void)   { return cfg.release_um; }
 uint8_t  keysGetSwitchType(void)  { return cfg.sw_type_def; }
+
+/* 스위치 종류표를 호스트가 읽을 수 있게 연다 — 웹앱이 목록을 따로 들지 않게 한다 */
+uint32_t keysGetSwitchCount(void)        { return KEYS_SWITCH_CNT; }
+uint32_t keysGetSwitchGenericCount(void) { return KEYS_SWITCH_GENERIC_CNT; }
+
+const char *keysGetSwitchName(uint32_t i)
+{
+  return (i < KEYS_SWITCH_CNT) ? keys_switch[i].name : "";
+}
+
+uint16_t keysGetSwitchTravelUm(uint32_t i)
+{
+  return (i < KEYS_SWITCH_CNT) ? keys_switch[i].travel_um : 0;
+}
 
 void keysSetPressUm(uint16_t um)
 {

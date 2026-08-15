@@ -80,6 +80,12 @@ void     keysSetPressUm(uint16_t um);
 void     keysSetReleaseUm(uint16_t um);
 void     keysSetSwitchType(uint8_t type);
 
+/* 스위치 종류표. 앞 GenericCount 개가 일반형이고 나머지가 제원을 아는 제품이다. */
+uint32_t    keysGetSwitchCount(void);
+uint32_t    keysGetSwitchGenericCount(void);
+const char *keysGetSwitchName(uint32_t i);
+uint16_t    keysGetSwitchTravelUm(uint32_t i);
+
 /* 래피드 트리거 — 전부 0.01mm. 플래그는 keys.c 의 KEYS_RT_* */
 uint16_t keysGetRtPressUm(void);
 uint16_t keysGetRtReleaseUm(void);
