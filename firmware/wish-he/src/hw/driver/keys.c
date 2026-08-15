@@ -93,8 +93,13 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
 #define KEYS_CAL_DISCARD        128
 #define KEYS_CAL_SAMPLES        1024
 
-/* keys map 에서 이보다 작게 움직인 건 노이즈로 보고 무시한다 */
-#define KEYS_MAP_REPORT_MIN     300
+/*
+ * keys map 의 보고 임계값.
+ *
+ * 이 명령은 매 프레임 64셀 중 최댓값을 고르므로 사실상 노이즈의 극단을 본다.
+ * 실측 노이즈 바닥이 약 300 이라 300 으로 두면 쉬지 않고 찍힌다. 넉넉히 띄운다.
+ */
+#define KEYS_MAP_REPORT_MIN     1200
 
 /*
  * 판정 임계값 — 실측 기준.
@@ -112,8 +117,15 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  * 기준값 추적 — 안 눌린 상태가 물리적 극단(자석이 가장 멀다)이므로 러닝 최대값이다.
  * 이 덕에 키를 누른 채 부팅해도 손을 떼는 순간 기준값이 제자리를 찾는다.
  */
-#define KEYS_DRIFT_BAND         300     /* 이 안쪽이면 해제 상태로 보고 드리프트 보정 */
-#define KEYS_DRIFT_PERIOD       64      /* 스캔 이만큼마다 기준값을 1 내린다 */
+/*
+ * ★ 드리프트 밴드는 "해제 상태로 볼 수 있는 범위" 여야 한다.
+ *
+ *   기준값은 러닝 최대값이라 노이즈 꼭대기에 걸린다 -> 평상시 편차가 노이즈만큼(약 300)
+ *   남는다. 밴드를 300 으로 두면 그 편차가 창 밖이라 기준값이 영영 안 내려온다.
+ *   해제 임계값까지 열어두면 "안 눌린 동안은 계속 보정" 이 되어 자연스럽다.
+ */
+#define KEYS_DRIFT_BAND         KEYS_RELEASE_LEVEL
+#define KEYS_DRIFT_PERIOD       1024    /* 스캔 이만큼마다 기준값을 1 내린다 */
 
 /*
  * 부팅 캘리브레이션 이상치 판정.
@@ -122,6 +134,9 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  * 스트로크(13400)와 정상 편차(5800) 사이라 양쪽 모두와 안전한 거리가 있다.
  */
 #define KEYS_CAL_OUTLIER        8000
+
+/* 평활 계수. 1/(2^n) 씩 따라간다. 스트로크(13400) 대비 지연은 무시할 수준이다. */
+#define KEYS_SMOOTH_SHIFT       2
 
 
 /*
@@ -140,7 +155,7 @@ static uint32_t adc1_buf[KEYS_SEQ_LEN];
 static volatile bool adc0_done = false;
 static volatile bool adc1_done = false;
 
-static uint16_t raw[KEYS_STEP_MAX][KEYS_CH_MAX];
+static uint16_t raw[KEYS_STEP_MAX][KEYS_CH_MAX];    /* 평활된 값 — 판정·표시에 쓴다 */
 static uint16_t base[KEYS_STEP_MAX][KEYS_CH_MAX];   /* 무압 기준값 (러닝 최대) */
 static uint16_t pressed[KEYS_STEP_MAX];             /* 행별 눌림 비트마스크 */
 static uint8_t  drift_cnt[KEYS_STEP_MAX][KEYS_CH_MAX];
@@ -152,6 +167,7 @@ static uint32_t cal_time_ms  = 0;
 
 static void keysCalRejectOutlier(void);
 static void keysTrack(uint32_t step);
+static inline void keysSmooth(uint32_t step, uint32_t ch, uint32_t packed);
 
 #if CLI_USE(HW_KEYS)
 static void cliKeys(cli_args_t *args);
@@ -364,6 +380,22 @@ static inline bool keysWaitDone(void)
 }
 
 /*
+ * 1차 IIR 평활.
+ *
+ * 기준값이 러닝 최대값이라 노이즈 꼭대기를 그대로 붙잡는다. 생값을 그냥 넣으면
+ * 기준값이 노이즈만큼 들리고, 그만큼 평상시 편차가 남는다. 근원에서 줄이는 게 낫다.
+ *
+ * 계수 1/4 이면 노이즈가 절반 이하로 줄고 지연은 스캔 몇 번(38us x 4)뿐이다.
+ */
+static inline void keysSmooth(uint32_t step, uint32_t ch, uint32_t packed)
+{
+  int32_t v = (int32_t)(packed & 0xFFFF);
+  int32_t p = (int32_t)raw[step][ch];
+
+  raw[step][ch] = (uint16_t)(p + ((v - p) >> KEYS_SMOOTH_SHIFT));
+}
+
+/*
  * 기준값 추적 + 눌림 판정.
  *
  * 안 눌린 상태가 물리적 극단(자석이 가장 멀어 값이 가장 크다)이므로 기준값은
@@ -449,8 +481,8 @@ bool keysUpdate(void)
 
     for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++)
     {
-      raw[step][i]                = (uint16_t)(adc0_buf[i] & 0xFFFF);
-      raw[step][KEYS_SEQ_LEN + i] = (uint16_t)(adc1_buf[i] & 0xFFFF);
+      keysSmooth(step, i,                adc0_buf[i]);
+      keysSmooth(step, KEYS_SEQ_LEN + i, adc1_buf[i]);
     }
 
     if (is_calibrated) keysTrack(step);
