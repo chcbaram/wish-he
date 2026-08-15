@@ -99,19 +99,27 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  * 이 명령은 매 프레임 64셀 중 최댓값을 고르므로 사실상 노이즈의 극단을 본다.
  * 실측 노이즈 바닥이 약 300 이라 300 으로 두면 쉬지 않고 찍힌다. 넉넉히 띄운다.
  */
-#define KEYS_MAP_REPORT_MIN     1200
+#define KEYS_MAP_REPORT_MIN     75
+
+/* keys noise 측정 시간 */
+#define KEYS_NOISE_MS           3000
 
 /*
- * 판정 임계값 — 실측 기준.
+ * ★ 이 아래 숫자는 전부 12비트 영역이다 (원시 16비트를 >>4 한 값).
  *
- *   기준값(무압)      약 40000 ~ 46000   (셀 간 편차 약 5800)
- *   풀 스트로크       약 13400 카운트    (누르면 값이 내려간다)
- *   무압 노이즈       500 미만
+ *   왜 버리는가 — 실측 노이즈 p-p 가 16비트로 약 200 이다. 하위 4비트(16)는 그보다
+ *   한참 작아서 정보가 없다. 12비트로 내리면 테이블이 절반이 되고 상수가 읽히며,
+ *   8편 EEPROM 저장량도 절반이 된다. 상용 보드도 같은 이유로 >>4 를 한다.
+ *
+ * 실측 (12비트 환산)
+ *   기준값(무압)      약 2500 ~ 2880    (셀 간 편차 약 360)
+ *   풀 스트로크       약 838            (누르면 값이 내려간다)
+ *   무압 노이즈 p-p   약 12   (= ±6)    상용의 데드밴드 ±7 과 같은 자리
  *
  * 스트로크의 30% 에서 눌림, 19% 에서 해제. 둘 사이 간격이 히스테리시스다.
  */
-#define KEYS_PRESS_LEVEL        4000
-#define KEYS_RELEASE_LEVEL      2500
+#define KEYS_PRESS_LEVEL        250
+#define KEYS_RELEASE_LEVEL      156
 
 /*
  * 기준값 추적 — 안 눌린 상태가 물리적 극단(자석이 가장 멀다)이므로 러닝 최대값이다.
@@ -131,26 +139,35 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  *   스캔 속도가 호출자마다 1000배 넘게 다르다 (CLI 20회/초 vs 메인 루프 26000회/초).
  *   온도 드리프트는 물리 현상이니 ms 로 세는 게 맞다.
  */
-#define KEYS_DRIFT_BAND         800
-#define KEYS_DRIFT_MS           32      /* 이 시간마다 기준값을 한 칸 움직인다 (약 30/초) */
+#define KEYS_DRIFT_BAND         50
+#define KEYS_DRIFT_MS           512     /* 이 시간마다 기준값을 한 칸 움직인다 */
 
 /*
  * 이보다 크게 해제 방향으로 벌어지면 "진짜 해제"로 보고 즉시 기준값을 옮긴다.
- * 노이즈(약 120)보다 충분히 크고 스트로크(13400)보다 충분히 작아야 한다.
- * 누른 채 부팅한 키가 손을 뗄 때 수천 카운트가 뛰므로 여기에 걸린다.
+ * 노이즈(±6)보다 충분히 크고 스트로크(838)보다 충분히 작아야 한다.
+ * 누른 채 부팅한 키가 손을 뗄 때 수백 카운트가 뛰므로 여기에 걸린다.
  */
-#define KEYS_LATCH_JUMP         500
+#define KEYS_LATCH_JUMP         31
 
 /*
  * 부팅 캘리브레이션 이상치 판정.
  *
  * 기준값이 전체 중앙값보다 이만큼 아래면 "그 키는 눌린 채로 측정됐다"고 본다.
- * 스트로크(13400)와 정상 편차(5800) 사이라 양쪽 모두와 안전한 거리가 있다.
+ * 스트로크(838)와 정상 편차(360) 사이라 양쪽 모두와 안전한 거리가 있다.
  */
-#define KEYS_CAL_OUTLIER        8000
+#define KEYS_CAL_OUTLIER        500
 
-/* 평활 계수. 1/(2^n) 씩 따라간다. 스트로크(13400) 대비 지연은 무시할 수준이다. */
+/*
+ * 평활 계수. 1/(2^n) 씩 따라간다. 스트로크 대비 지연은 무시할 수준이다.
+ *
+ * ★ 필터 상태는 16비트로 유지하고 결과만 12비트로 내린다.
+ *   12비트 값에 직접 1/4 필터를 걸면 차이가 4 미만일 때 시프트가 0 이 되어 필터가
+ *   마지막 몇 카운트를 영영 못 따라간다. 상태를 원래 정밀도로 두면 그 함정이 없다.
+ */
 #define KEYS_SMOOTH_SHIFT       2
+
+/* 원시 16비트를 이만큼 내려 12비트 영역으로 쓴다 */
+#define KEYS_RAW_SHIFT          4
 
 
 /*
@@ -169,7 +186,8 @@ static uint32_t adc1_buf[KEYS_SEQ_LEN];
 static volatile bool adc0_done = false;
 static volatile bool adc1_done = false;
 
-static uint16_t raw[KEYS_STEP_MAX][KEYS_CH_MAX];    /* 평활된 값 — 판정·표시에 쓴다 */
+static uint16_t smooth[KEYS_STEP_MAX][KEYS_CH_MAX]; /* 16비트 필터 상태 (내부 전용) */
+static uint16_t raw[KEYS_STEP_MAX][KEYS_CH_MAX];    /* 12비트 — 판정·표시는 전부 이걸 쓴다 */
 static uint16_t base[KEYS_STEP_MAX][KEYS_CH_MAX];   /* 무압 기준값 (러닝 최대) */
 static uint16_t pressed[KEYS_STEP_MAX];             /* 행별 눌림 비트마스크 */
 static bool     is_calibrated = false;
@@ -405,9 +423,12 @@ static inline bool keysWaitDone(void)
 static inline void keysSmooth(uint32_t step, uint32_t ch, uint32_t packed)
 {
   int32_t v = (int32_t)(packed & 0xFFFF);
-  int32_t p = (int32_t)raw[step][ch];
+  int32_t p = (int32_t)smooth[step][ch];
 
-  raw[step][ch] = (uint16_t)(p + ((v - p) >> KEYS_SMOOTH_SHIFT));
+  p += (v - p) >> KEYS_SMOOTH_SHIFT;
+
+  smooth[step][ch] = (uint16_t)p;
+  raw[step][ch]    = (uint16_t)(p >> KEYS_RAW_SHIFT);
 }
 
 /*
@@ -795,6 +816,71 @@ void cliKeys(cli_args_t *args)
     ret = true;
   }
 
+  /*
+   * 셀별 노이즈 측정.
+   *
+   * "값이 흔들린다"와 "값이 치우쳐 있다"는 다른 문제인데 한 장면만 봐서는 구분이 안 된다.
+   * 일정 시간 동안 편차의 최소/최대를 모아 진폭(p-p)과 중심을 같이 보여준다.
+   *
+   *   진폭이 크다        -> 그 셀의 노이즈가 크다
+   *   진폭은 작고 치우침 -> 스위치가 덜 복귀했거나 기준값이 아직 안 맞았다
+   */
+  if (args->argc == 1 && args->isStr(0, "noise"))
+  {
+    static int16_t  d_min[KEYS_STEP_MAX][KEYS_CH_MAX];
+    static int16_t  d_max[KEYS_STEP_MAX][KEYS_CH_MAX];
+    uint32_t t_begin;
+    uint32_t cnt = 0;
+
+    for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+    {
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++) { d_min[st][c] = 32767; d_max[st][c] = -32768; }
+    }
+
+    cliPrintf("%d ms 동안 측정한다 — 키에서 손을 뗄 것\n", KEYS_NOISE_MS);
+    delay(300);
+
+    t_begin = millis();
+    while (millis() - t_begin < KEYS_NOISE_MS)
+    {
+      keysUpdate();
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          int32_t d = keysGetDelta(st, c);
+          if (d < d_min[st][c]) d_min[st][c] = (int16_t)d;
+          if (d > d_max[st][c]) d_max[st][c] = (int16_t)d;
+        }
+      }
+      cnt++;
+    }
+
+    cliPrintf("\n진폭 (p-p)\n      ");
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++) cliPrintf(" ch%-3d", (int)c);
+    cliPrintf("\n");
+    for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+    {
+      cliPrintf("  s%-2d ", (int)st);
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        cliPrintf(" %5d", (int)(d_max[st][c] - d_min[st][c]));
+      cliPrintf("\n");
+    }
+
+    cliPrintf("\n중심 ((max+min)/2)\n      ");
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++) cliPrintf(" ch%-3d", (int)c);
+    cliPrintf("\n");
+    for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+    {
+      cliPrintf("  s%-2d ", (int)st);
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        cliPrintf(" %+5d", (int)((d_max[st][c] + d_min[st][c]) / 2));
+      cliPrintf("\n");
+    }
+    cliPrintf("\n%d 회 스캔\n", (int)cnt);
+    ret = true;
+  }
+
   /* 편차 표. 눌린 셀이 표에서 바로 보인다. */
   if (args->argc == 1 && args->isStr(0, "watch"))
   {
@@ -906,6 +992,7 @@ void cliKeys(cli_args_t *args)
     cliPrintf("keys base\n");
     cliPrintf("keys map\n");
     cliPrintf("keys watch\n");
+    cliPrintf("keys noise\n");
     cliPrintf("keys dump\n");
     cliPrintf("keys raw\n");
     cliPrintf("keys time\n");
