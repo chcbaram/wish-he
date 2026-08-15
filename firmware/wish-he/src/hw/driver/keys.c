@@ -132,7 +132,14 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  *   온도 드리프트는 물리 현상이니 ms 로 세는 게 맞다.
  */
 #define KEYS_DRIFT_BAND         800
-#define KEYS_DRIFT_MS           32      /* 이 시간마다 기준값을 1 내린다 (약 30/초) */
+#define KEYS_DRIFT_MS           32      /* 이 시간마다 기준값을 한 칸 움직인다 (약 30/초) */
+
+/*
+ * 이보다 크게 해제 방향으로 벌어지면 "진짜 해제"로 보고 즉시 기준값을 옮긴다.
+ * 노이즈(약 120)보다 충분히 크고 스트로크(13400)보다 충분히 작아야 한다.
+ * 누른 채 부팅한 키가 손을 뗄 때 수천 카운트가 뛰므로 여기에 걸린다.
+ */
+#define KEYS_LATCH_JUMP         500
 
 /*
  * 부팅 캘리브레이션 이상치 판정.
@@ -422,8 +429,21 @@ static void keysTrack(uint32_t step)
     uint16_t v = raw[step][c];
     int32_t  d;
 
-    /* 해제 방향으로 벗어나면 그 값이 새 기준이다 — 즉시 */
-    if (v > base[step][c]) base[step][c] = v;
+    /*
+     * 해제 방향 갱신 — 크기에 따라 갈라야 한다.
+     *
+     * ★ 무조건 즉시 갱신하면 기준값이 노이즈 꼭대기를 붙잡는다. 그런데 그 기회는
+     *   스캔 속도에 비례하는 반면 드리프트 보정은 시간 기준이라, 스캔이 빨라질수록
+     *   (CLI 20회/초 -> 메인 루프 26000회/초) 균형점이 위로 밀려 편차가 커진다.
+     *
+     *   그래서 큰 변화(진짜 해제)만 즉시 반영하고, 노이즈 수준의 잔파도는 드리프트와
+     *   같은 시간 기준으로 올린다. 위아래가 대칭이 되어 스캔 속도와 무관해진다.
+     */
+    if (v > base[step][c])
+    {
+      if ((uint32_t)(v - base[step][c]) > KEYS_LATCH_JUMP) base[step][c] = v;
+      else if (do_drift)                                   base[step][c]++;
+    }
 
     d = (int32_t)base[step][c] - (int32_t)v;    /* 누를수록 커진다 */
 
