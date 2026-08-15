@@ -297,12 +297,17 @@ static keys_cfg_t cfg;
  * ADC 가 직접 쓰므로 캐시에 걸리면 안 된다. .noncacheable.non_init 은 NOLOAD 라
  * 0 초기화되지 않는다 — 첫 스캔 전에는 쓰레기값이 들어 있다고 봐야 한다.
  * 결과는 32비트 워드에 패킹되고 하위 16비트가 값이다 (dma_seq16bit 미사용).
+ *
+ * ★ volatile 이어야 한다.
+ *   ATTR_PLACE_AT_NONCACHEABLE_BSS 는 **하드웨어 캐시** 이야기라 컴파일러와는 무관하다.
+ *   컴파일러 눈에는 아무도 쓰지 않는 배열이라, -O2 에서는 읽기를 합치거나 루프 밖으로
+ *   끌어낼 수 있다. 특히 "채워질 때까지 기다리는" 회전은 volatile 없이는 성립하지 않는다.
  */
 ATTR_PLACE_AT_NONCACHEABLE_BSS __attribute__((aligned(ADC_SOC_DMA_ADDR_ALIGNMENT)))
-static uint32_t adc0_buf[KEYS_SEQ_LEN];
+static volatile uint32_t adc0_buf[KEYS_SEQ_LEN];
 
 ATTR_PLACE_AT_NONCACHEABLE_BSS __attribute__((aligned(ADC_SOC_DMA_ADDR_ALIGNMENT)))
-static uint32_t adc1_buf[KEYS_SEQ_LEN];
+static volatile uint32_t adc1_buf[KEYS_SEQ_LEN];
 
 
 static uint16_t raw[KEYS_STEP_MAX][KEYS_CH_MAX];    /* 12비트 — 판정·표시는 전부 이걸 쓴다 */
@@ -370,7 +375,7 @@ static bool     drift_due    = false;
 static void keysCalRejectOutlier(void);
 static bool keysCfgLoad(void);
 static bool keysCfgSave(void);
-static void keysTrack(uint32_t step);
+static ATTR_RAMFUNC void keysTrack(uint32_t step);
 static inline void keysFilter(uint32_t step, uint32_t ch, uint32_t packed);
 
 #if CLI_USE(HW_KEYS)
@@ -431,7 +436,7 @@ static void keysInitPins(void)
   gpio_write_port(HPM_GPIO0, KEYS_MUX_GPIO_PORT, mux_addr[0]);
 }
 
-static bool keysInitAdc(ADC16_Type *ptr, const uint8_t *seq_ch, uint32_t *buf)
+static bool keysInitAdc(ADC16_Type *ptr, const uint8_t *seq_ch, volatile uint32_t *buf)
 {
   adc16_config_t         cfg;
   adc16_channel_config_t ch_cfg;
@@ -557,6 +562,49 @@ static inline void keysSettle(void)
   }
 }
 
+/*
+ * ★ "변환 끝"과 "버퍼에 앉음"은 다른 사건이다.
+ *
+ *   SEQ_CMPT 는 마지막 채널의 **변환**이 끝났다는 뜻이다. 그 결과가 버스를 건너
+ *   DMA 버퍼에 앉기까지는 시간이 더 걸린다. -O0 일 때는 플래그를 보고 버퍼를 읽기까지
+ *   코드가 충분히 느려서 드러나지 않았는데, -O2 로 그 간격이 좁아지자 각 시퀀스의
+ *   **마지막 원소**(ch3 · ch7)만 직전 스캔 값을 읽었다.
+ *
+ *     노이즈 p-p    다른 셀 3~9      ch3 · ch7  12 ~ 231
+ *
+ *   순서 문제라 핀을 바꿔도 소용없다. 원시값이 한 스텝 밀리므로 **엉뚱한 키가 눌린
+ *   것으로 판정된다** — 실제로 그렇게 나타났다.
+ *
+ *   ★ cycle_bit 은 못 쓴다.
+ *     DMA 워드 최상위 비트가 버퍼를 한 바퀴 돌 때마다 뒤집힌다고 되어 있지만,
+ *     SW 트리거가 시퀀스를 0번부터 다시 시작시켜서 포인터가 감기지 않는다.
+ *     수백만 스캔을 돈 뒤 덤프해도 네 워드 모두 bit31 = 0 이었다.
+ *
+ *   그래서 **마지막 칸을 비워 두고 채워지는 것을 본다.** DMA 워드는 채널 번호가
+ *   실려 있어 절대 0 이 아니다. 칸은 순서대로 채워지므로 마지막이 왔으면 앞은 이미 왔다.
+ *   보통은 비교 한 번에 끝난다 — 늦었을 때만 돈다.
+ */
+static inline void keysDmaArm(void)
+{
+  adc0_buf[KEYS_SEQ_LEN - 1] = 0;
+  adc1_buf[KEYS_SEQ_LEN - 1] = 0;
+}
+
+static inline bool keysWaitDma(void)
+{
+  uint32_t spin = 0;
+
+  while (adc0_buf[KEYS_SEQ_LEN - 1] == 0 || adc1_buf[KEYS_SEQ_LEN - 1] == 0)
+  {
+    if (++spin > KEYS_WAIT_LIMIT)
+    {
+      timeout_cnt++;
+      return false;
+    }
+  }
+  return true;
+}
+
 /* 두 ADC 의 시퀀스 완료를 폴링으로 기다린다. 걸리면 false. */
 static inline bool keysWaitDone(void)
 {
@@ -605,7 +653,7 @@ static inline void keysFilter(uint32_t step, uint32_t ch, uint32_t packed)
  *   - 온도 드리프트 -> 위로 새면 즉시, 아래로 새면 천천히 따라간다
  *   - 개체 편차     -> 셀마다 제 기준을 갖는다
  */
-static void keysTrack(uint32_t step)
+ATTR_RAMFUNC static void keysTrack(uint32_t step)
 {
   bool do_drift = drift_due;
 
@@ -653,7 +701,17 @@ static void keysTrack(uint32_t step)
   }
 }
 
-bool keysUpdate(void)
+/*
+ * ★ 스캔 경로는 ILM 에 둔다 (ATTR_RAMFUNC -> .fast 섹션 -> 리셋 때 복사).
+ *
+ *   같은 코드가 문맥에 따라 두 배 느렸다. 측정 루프에서 keysUpdate() 만 반복하면
+ *   29us 인데, 메인 루프에서는 63us 였다. 사이에 qmkUpdate() 와 usbUpdate() 가
+ *   끼면서 XIP 플래시 명령어 캐시에서 스캔 코드가 밀려났기 때문이다 — 매 스캔이
+ *   플래시에서 다시 읽혔다.
+ *
+ *   ILM 은 코어에 붙어 있어 캐시를 타지 않는다. 128KB 중 1KB 도 안 쓰고 있었다.
+ */
+ATTR_RAMFUNC bool keysUpdate(void)
 {
   uint32_t t_begin;
   bool     ret = true;
@@ -676,10 +734,20 @@ bool keysUpdate(void)
     gpio_write_port(HPM_GPIO0, KEYS_MUX_GPIO_PORT, mux_addr[step]);
     keysSettle();
 
+    /* 마지막 칸을 비워 둔다 — 여기가 채워지면 이번 스텝의 값이 다 온 것이다 */
+    keysDmaArm();
+
     adc16_trigger_seq_by_sw(HPM_ADC0);
     adc16_trigger_seq_by_sw(HPM_ADC1);
 
     if (keysWaitDone() == false)
+    {
+      ret = false;
+      break;
+    }
+
+    /* 변환이 끝난 것과 버퍼에 앉은 것은 다르다 */
+    if (keysWaitDma() == false)
     {
       ret = false;
       break;
@@ -1801,30 +1869,97 @@ void cliKeys(cli_args_t *args)
     ret = true;
   }
 
-  /* 스캔 한 바퀴 시간 — 8kHz(125us) 예산과 비교하는 근거 */
+  /*
+   * 스캔 한 바퀴 시간 — 8kHz(125us) 예산과 비교하는 근거.
+   *
+   * 총량만으로는 손댈 데를 못 고른다. 같은 루프를 네 단계로 쌓아 돌리고 차이로
+   * 각 몫을 뽑는다.
+   *
+   *   mux      MUX 주소 쓰기 + 세틀링
+   *   +adc     트리거와 완료 대기 — 여기 늘어난 만큼이 ADC 변환 시간이다
+   *   +filter  데드밴드 필터 8채널
+   *   +track   기준값 추적과 눌림 판정  == keysUpdate() 와 같다
+   *
+   * ★ 변환 대기가 크면 후처리를 그 안으로 겹치는 게 답이고 (파이프라인),
+   *   후처리가 크면 스텝 루프에서 빼내는 게 답이다. 답이 갈리므로 먼저 잰다.
+   */
   if (args->argc == 1 && args->isStr(0, "time"))
   {
-    uint32_t cnt = 0;
-    uint32_t t_begin = micros();
+    const uint32_t   N       = 2000;
+    static const char *name[4] = { "mux+settle", "  +adc 변환", "  +filter ", "  +track  " };
+    uint32_t         us[4]   = { 0, };
+    uint32_t         cnt     = 0;
+    uint32_t         t_begin;
 
-    while (micros() - t_begin < 1000000)
+    /* 드리프트가 끼면 회차마다 몫이 달라진다. 흔한 쪽(안 도는 회차)으로 고정한다. */
+    drift_due = false;
+
+    for (uint32_t mode = 0; mode < 4; mode++)
+    {
+      uint32_t t = micros();
+
+      for (uint32_t n = 0; n < N; n++)
+      {
+        for (uint32_t step = 0; step < KEYS_STEP_MAX; step++)
+        {
+          gpio_write_port(HPM_GPIO0, KEYS_MUX_GPIO_PORT, mux_addr[step]);
+          keysSettle();
+
+          if (mode >= 1)
+          {
+            adc16_trigger_seq_by_sw(HPM_ADC0);
+            adc16_trigger_seq_by_sw(HPM_ADC1);
+            if (keysWaitDone() == false) break;
+            gpio_write_port(HPM_GPIO0, KEYS_MUX_GPIO_PORT, mux_addr[step + 1]);
+          }
+
+          if (mode >= 2)
+          {
+            for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++)
+            {
+              keysFilter(step, i,                adc0_buf[i]);
+              keysFilter(step, KEYS_SEQ_LEN + i, adc1_buf[i]);
+            }
+          }
+
+          if (mode >= 3 && is_calibrated) keysTrack(step);
+        }
+      }
+      us[mode] = micros() - t;
+    }
+
+    cliPrintf("스캔 1회 = %d step x %d ch,  %d 회 평균\n\n",
+              KEYS_STEP_MAX, KEYS_CH_MAX, (int)N);
+
+    for (uint32_t i = 0; i < 4; i++)
+    {
+      uint32_t ns   = us[i] * 1000 / N;                       /* 스캔 1회 */
+      uint32_t d_ns = ns - (i ? (us[i - 1] * 1000 / N) : 0);  /* 이번 단계 몫 */
+
+      cliPrintf("  %s : %3d.%03d us   (+%2d.%03d)\n",
+                name[i], (int)(ns / 1000), (int)(ns % 1000),
+                (int)(d_ns / 1000), (int)(d_ns % 1000));
+    }
+
+    /* 실제 keysUpdate() 로도 한 번 — 위 분해가 맞는지 대조한다 */
+    t_begin = micros();
+    while (micros() - t_begin < 500000)
     {
       keysUpdate();
       cnt++;
     }
+    cnt = cnt ? cnt : 1;
 
-    cliPrintf("scan   : %d 회 / 초\n", (int)cnt);
-    cliPrintf("주기   : %d us\n", (int)(1000000 / (cnt ? cnt : 1)));
-    cliPrintf("8kHz 예산 125us 대비 : %d %%\n",
-              (int)((1000000 / (cnt ? cnt : 1)) * 100 / 125));
-    cliPrintf("timeout: %d\n", (int)timeout_cnt);
+    cliPrintf("\nkeysUpdate : %d us,  %d 회/초\n", (int)(500000 / cnt), (int)(cnt * 2));
+    cliPrintf("8kHz 예산 125us 대비 : %d %%\n", (int)((500000 / cnt) * 100 / 125));
+    cliPrintf("timeout    : %d\n", (int)timeout_cnt);
     ret = true;
   }
 
   /* 진단 — 시퀀스가 실제로 도는지, 어떤 인터럽트 비트가 서는지 본다 */
   if (args->argc == 1 && args->isStr(0, "adc"))
   {
-    struct { const char *name; ADC16_Type *ptr; uint32_t *buf; }
+    struct { const char *name; ADC16_Type *ptr; volatile uint32_t *buf; }
     tbl[2] = { {"ADC0", HPM_ADC0, adc0_buf}, {"ADC1", HPM_ADC1, adc1_buf} };
 
     for (uint32_t n = 0; n < 2; n++)
