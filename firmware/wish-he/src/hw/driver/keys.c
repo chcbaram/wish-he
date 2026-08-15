@@ -78,8 +78,20 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
 /* 완료를 기다리다 이만큼 돌면 포기한다. 스핀이 영원히 걸리는 것만 막으면 된다. */
 #define KEYS_WAIT_LIMIT         100000
 
-/* 기준값을 잡을 때 평균낼 스캔 횟수. 38us 스캔이니 32회여도 1.3ms 다. */
-#define KEYS_CAL_SAMPLES        32
+/*
+ * 부팅 씨앗값 — 두 단계다. 성격이 달라서 나눠 놓았다.
+ *
+ *   버리는 스캔 : 전원 인가 직후 ADC 레퍼런스·센서 바이어스가 자리잡는 시간.
+ *                 평균에 넣으면 기준값이 오염되므로 그냥 버린다.
+ *   평균낼 스캔 : 노이즈 감쇠. 샘플 수의 제곱근에 비례한다 (1024회 = 32배).
+ *
+ * ★ keysInit() 은 usbInit() 앞에 있다. 여기 쓰는 시간이 그대로 USB 열거 지연이 된다.
+ *   38us 스캔 기준으로 1024+128 회면 약 44ms — 체감되지 않는다.
+ *   상용 보드는 10000회(약 380ms)를 쓰지만, 우리는 러닝 최대값 추적이 계속 보정하므로
+ *   씨앗값의 정밀도에 그만큼 기대지 않는다. 더 올리려면 이 숫자만 키우면 된다.
+ */
+#define KEYS_CAL_DISCARD        128
+#define KEYS_CAL_SAMPLES        1024
 
 /* keys map 에서 이보다 작게 움직인 건 노이즈로 보고 무시한다 */
 #define KEYS_MAP_REPORT_MIN     300
@@ -136,6 +148,7 @@ static bool     is_calibrated = false;
 static uint32_t scan_time_us = 0;
 static bool     is_init      = false;
 static uint32_t timeout_cnt  = 0;
+static uint32_t cal_time_ms  = 0;
 
 static void keysCalRejectOutlier(void);
 static void keysTrack(uint32_t step);
@@ -469,11 +482,20 @@ uint32_t keysGetScanTime(void)
 bool keysCalibrate(void)
 {
   uint32_t acc[KEYS_STEP_MAX][KEYS_CH_MAX];
+  uint32_t t_begin;
 
 
   if (is_init == false) return false;
 
+  t_begin = millis();
+
   memset(acc, 0, sizeof(acc));
+
+  /* 안정화 — 결과는 버린다 */
+  for (uint32_t n = 0; n < KEYS_CAL_DISCARD; n++)
+  {
+    if (keysUpdate() == false) return false;
+  }
 
   for (uint32_t n = 0; n < KEYS_CAL_SAMPLES; n++)
   {
@@ -497,6 +519,8 @@ bool keysCalibrate(void)
   }
 
   keysCalRejectOutlier();
+
+  cal_time_ms = millis() - t_begin;
 
   memset(drift_cnt, 0, sizeof(drift_cnt));
   memset(pressed,   0, sizeof(pressed));
@@ -624,7 +648,8 @@ void cliKeys(cli_args_t *args)
     for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++) cliPrintf("%d ", adc1_seq_ch[i]);
     cliPrintf("\nmux addr    : ");
     for (uint32_t i = 0; i < KEYS_STEP_MAX; i++) cliPrintf("%d ", mux_addr[i]);
-    cliPrintf("\ncalibrated  : %d\n", is_calibrated);
+    cliPrintf("\ncalibrated  : %d  (%d + %d scan, %d ms)\n",
+              is_calibrated, KEYS_CAL_DISCARD, KEYS_CAL_SAMPLES, (int)cal_time_ms);
     cliPrintf("scan        : %d us\n", (int)scan_time_us);
     cliPrintf("timeout     : %d\n", (int)timeout_cnt);
     ret = true;
