@@ -224,7 +224,18 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  *   온도 드리프트는 물리 현상이니 ms 로 세는 게 맞다.
  */
 #define KEYS_DRIFT_BAND         (50 * KEYS_ACC_CNT)
-#define KEYS_DRIFT_MS           512     /* 이 시간마다 기준값을 한 칸 움직인다 */
+#define KEYS_DRIFT_MS           512     /* 이 시간마다 기준값을 한 걸음 움직인다 */
+
+/*
+ * ★ 걸음은 눈금을 따라간다.
+ *
+ *   누적을 넣으면서 눈금이 3배가 됐는데 걸음이 1카운트 그대로면 **물리적으로 3배
+ *   느려진다.** 한 걸음이 스트로크의 1/836 에서 1/2508 로 줄기 때문이다. 온도
+ *   드리프트를 따라잡는 속도가 그만큼 처진다.
+ *
+ *   그래서 걸음도 KEYS_ACC_CNT 만큼 준다 — 512ms 에 스트로크의 1/836, 누적 전과 같다.
+ */
+#define KEYS_DRIFT_STEP         KEYS_ACC_CNT
 
 /*
  * 이보다 크게 해제 방향으로 벌어지면 "진짜 해제"로 보고 즉시 기준값을 옮긴다.
@@ -755,7 +766,7 @@ ATTR_RAMFUNC static void keysTrack(uint32_t step)
     if (v > base[step][c])
     {
       if ((uint32_t)(v - base[step][c]) > KEYS_LATCH_JUMP) base[step][c] = v;
-      else if (do_drift)                                   base[step][c]++;
+      else if (do_drift)                                   base[step][c] += KEYS_DRIFT_STEP;
     }
 
     d = (int32_t)base[step][c] - (int32_t)v;    /* 누를수록 커진다 */
@@ -764,7 +775,8 @@ ATTR_RAMFUNC static void keysTrack(uint32_t step)
      * 노이즈 범위 안에 머무는 셀만 기준값을 한 칸 내린다.
      * 눌려 있는 셀은 d 가 밴드를 넘어서 영향받지 않는다.
      */
-    if (do_drift && d > 0 && d < KEYS_DRIFT_BAND) base[step][c]--;
+    if (do_drift && d > KEYS_DRIFT_STEP && d < KEYS_DRIFT_BAND)
+      base[step][c] -= KEYS_DRIFT_STEP;
 
     /* 히스테리시스 — 임계값 부근에서 떨리지 않게 */
     if (pressed[step] & (1U << c))
