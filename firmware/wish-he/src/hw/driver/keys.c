@@ -118,6 +118,13 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
 #define KEYS_CAL_STROKE_MIN     500
 
 /*
+ * 보정 종료 조합. 터미널 없이 키보드만 있을 때도 끝낼 수 있어야 한다.
+ * 보정 중에는 리포트를 막아두므로 이 조합이 호스트로 새어나가지 않는다.
+ */
+#define KEYS_EXIT_KC1           0xE0   /* Left Ctrl */
+#define KEYS_EXIT_KC2           0x29   /* Esc */
+
+/*
  * keys bar — 눌린 깊이를 가로 막대로.
  *
  * 스트로크가 실측 838 이라 상한을 900 으로 두면 끝까지 눌러도 막대가 넘치지 않는다.
@@ -309,6 +316,35 @@ static bool     report_off = false;
 
 /* 보정 중 키별 바닥값 수집용 */
 static uint16_t cal_min_tmp[KEYS_MAX];
+
+/*
+ * 지정한 두 키코드가 동시에 눌려 있는가.
+ *
+ * 보정 중에는 리포트를 막아두므로 키 조합을 종료 신호로 쓸 수 있다. 터미널 없이
+ * 키보드만 연결한 상태에서도 끝낼 수 있어야 하기 때문이다.
+ *
+ * 자리를 박아두지 않고 키맵에서 찾는다 — 키맵이 바뀌어도 따라간다.
+ */
+static bool keysComboHeld(uint8_t kc1, uint8_t kc2)
+{
+  bool a = false;
+  bool b = false;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      uint8_t kc;
+
+      if (keysGetPressed(st, c) == false) continue;
+
+      kc = keys_keymap[st][c];
+      if (kc == kc1) a = true;
+      if (kc == kc2) b = true;
+    }
+  }
+  return (a && b);
+}
 
 static bool keysCalIsDone(uint16_t row, uint16_t col)
 {
@@ -1161,7 +1197,9 @@ void cliKeys(cli_args_t *args)
     }
 
     cliPrintf("모든 키를 끝까지 한 번씩 눌러주세요.\n");
-    cliPrintf("채워진 자리가 끝난 키입니다. Ctrl+C 로 중단.\n\n");
+    cliPrintf("채워진 자리가 끝난 키입니다.\n");
+    cliPrintf("다 눌렀으면 키보드에서 [왼쪽 Ctrl + ESC] 를 함께 누르면 끝납니다.\n");
+    cliPrintf("(터미널에서는 Ctrl+C 도 됩니다. 그때까지 끝난 것만 저장합니다.)\n\n");
     rows = keysLayoutRows();
 
     while (cliKeepLoop())
@@ -1189,13 +1227,24 @@ void cliKeys(cli_args_t *args)
       cliPrintf("  %d / %d 완료    \n", (int)done, (int)total);
       cliMoveUp(rows + 1);
 
-      if (done >= total) break;
+      if (done >= total)                                break;   /* 전부 끝남 */
+      if (keysComboHeld(KEYS_EXIT_KC1, KEYS_EXIT_KC2))  break;   /* 사용자가 끝냄 */
       delay(30);
     }
     cliMoveDown(rows + 1);
 
-    if (done >= total && total > 0)
+    /*
+     * ★ 부분 저장을 허용한다.
+     *
+     *   레이아웃에는 레이아웃 옵션 소켓(스플릿 백스페이스 등)이 다 들어 있지만
+     *   실제로는 그중 하나만 끼운다. 그래서 "전부 끝나야 저장"으로 막으면 영영
+     *   저장할 수 없다. 끝난 키만 보정됨으로 표시하고, 나머지는 종류표의 공칭값을
+     *   계속 쓰면 된다.
+     */
+    if (done > 0)
     {
+      uint32_t n_skip = 0;
+
       for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
       {
         for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
@@ -1204,17 +1253,45 @@ void cliKeys(cli_args_t *args)
 
           if (keysIsPresent(st, c) == false) continue;
 
-          cfg.key[i].cal_max = base[st][c];
-          cfg.key[i].cal_min = cal_min_tmp[i];
-          cfg.key[i].flags  |= 0x01;
+          if (keysCalIsDone(st, c))
+          {
+            cfg.key[i].cal_max = base[st][c];
+            cfg.key[i].cal_min = cal_min_tmp[i];
+            cfg.key[i].flags  |= 0x01;
+          }
+          else
+          {
+            n_skip++;
+          }
         }
       }
-      cliPrintf("\n보정 완료 — 저장한다\n");
+
+      cliPrintf("\n보정 %d / %d 저장", (int)done, (int)total);
+      if (n_skip) cliPrintf("  (%d개는 스위치가 없거나 덜 눌림 — 공칭값 유지)", (int)n_skip);
+      cliPrintf("\n");
+
       cliPrintf("save : %s  seq %d\n", keysCfgSave() ? "OK" : "E_", (int)cfg.seq);
+
+      /* 어느 자리가 빠졌는지 알려준다. 예상과 다르면 배선이나 장착을 봐야 한다. */
+      if (n_skip)
+      {
+        cliPrintf("빠진 자리 : ");
+        for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+        {
+          for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+          {
+            if (keysIsPresent(st, c) && keysCalIsDone(st, c) == false)
+            {
+              cliPrintf("%d,%d ", (int)st, (int)c);
+            }
+          }
+        }
+        cliPrintf("\n");
+      }
     }
     else
     {
-      cliPrintf("\n중단 — %d / %d 만 끝나서 저장하지 않는다\n", (int)done, (int)total);
+      cliPrintf("\n눌린 키가 없어 저장하지 않는다\n");
     }
     ret = true;
   }
@@ -1235,6 +1312,42 @@ void cliKeys(cli_args_t *args)
               keys_switch[cfg.sw_type_def].travel_um % 100);
     cliPrintf("calibrated  : %d / %d 키\n", (int)n_cal, KEYS_MAX);
     cliPrintf("record      : %d B\n", (int)sizeof(keys_cfg_t));
+
+    if (n_cal)
+    {
+      uint32_t lo = 0xFFFF, hi = 0, sum = 0;
+
+      cliPrintf("\n키별 스트로크 (보정된 것만, '-' 은 미보정)\n      ");
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++) cliPrintf(" ch%-3d", (int)c);
+      cliPrintf("\n");
+
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        cliPrintf("  s%-2d ", (int)st);
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          uint32_t i = st * KEYS_CH_MAX + c;
+
+          if (cfg.key[i].flags & 1)
+          {
+            uint32_t st_v = cfg.key[i].cal_max - cfg.key[i].cal_min;
+
+            cliPrintf(" %5d", (int)st_v);
+            if (st_v < lo) lo = st_v;
+            if (st_v > hi) hi = st_v;
+            sum += st_v;
+          }
+          else
+          {
+            cliPrintf("     -");
+          }
+        }
+        cliPrintf("\n");
+      }
+      cliPrintf("\n  최소 %d, 최대 %d, 평균 %d  (편차 %d%%)\n",
+                (int)lo, (int)hi, (int)(sum / n_cal),
+                (int)((hi - lo) * 100 / (sum / n_cal)));
+    }
     ret = true;
   }
 
