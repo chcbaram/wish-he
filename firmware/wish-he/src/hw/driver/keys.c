@@ -83,6 +83,50 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
 /* 완료를 기다리다 이만큼 돌면 포기한다. 스핀이 영원히 걸리는 것만 막으면 된다. */
 #define KEYS_WAIT_LIMIT         100000
 
+
+/*
+ * 누적 개수 — 표본 몇 개를 더해서 하나로 쓰나.
+ *
+ * ★ 왜 더하나. 잡음이 sqrt(N) 배로만 커지기 때문이다.
+ *
+ *   표본 3개를 더하면 신호는 3배, 잡음은 sqrt(3)=1.73 배가 된다. 상용 보드가 쓰는
+ *   방법이다.
+ *
+ *   ★ 실측은 1.31 배였다 — 이론의 1.73 배가 아니다.
+ *
+ *     누적 1개   p-p 평균 17,  눈금 0~4095    스트로크 836  대비 2.03 %
+ *     누적 3개   p-p 평균 39,  눈금 0~12285   스트로크 2508 대비 1.55 %
+ *
+ *   생값 비율이 39/17 = 2.29 다. 완전 무상관이면 1.73, 완전 상관이면 3.0 이므로
+ *   연속 스캔 사이에 상관계수 0.45 쯤이 남아 있다. 5편에서 잡은 센서 상관시간
+ *   10.6us 에 스캔 간격 28us 면 상관이 0.07 이어야 하니, 이 잔여분은 센서 열잡음이
+ *   아니라 전원·기준전압·MUX 쪽의 더 느린 요동이다. 누적으로는 못 지운다.
+ *
+ *   그래서 개수를 5, 7 로 늘려도 비례해서 좋아지지 않는다. 더 필요하면 상관 성분
+ *   자체를 봐야 한다.
+ *
+ *   그래도 남길 값어치는 있다. 래피드 트리거가 0.1mm 를 다루는데
+ *
+ *     잡음 sigma (p-p/6)   0.0135mm  ->  0.0102mm     여유 7.4 sigma -> 10 sigma
+ *     데드밴드 / 스트로크     0.84 %   ->   0.48 %
+ *
+ *   방향 반전 판정이 잡음을 따라갈 확률이 그만큼 준다.
+ *
+ * ★ 상용과 다른 점 — 우리는 이동합을 쓴다.
+ *
+ *   상용은 3개를 모아 한 번 판정한다 (40kHz 스캔 -> 13.4kHz 판정). 우리는 스캔이
+ *   35kHz 라 최근 3개의 합을 매 스캔 갱신해도 부담이 없다. 판정 횟수를 잃지 않고
+ *   같은 sqrt(3) 을 얻는다.
+ *
+ *     상용    [1 2 3] 판정   [4 5 6] 판정
+ *     우리    [1 2 3] 판정 / [2 3 4] 판정 / [3 4 5] 판정 ...
+ *
+ *   대가는 이동평균의 군지연 1샘플 = 28us 다. 6편에서 IIR 을 버린 이유(63% 에
+ *   152us, 90% 에 342us)와는 자릿수가 다르고, 상용도 3개를 모으므로 같은 지연을
+ *   이미 받아들이고 있다.
+ */
+#define KEYS_ACC_CNT            3
+
 /*
  * 부팅 씨앗값 — 두 단계다. 성격이 달라서 나눠 놓았다.
  *
@@ -115,7 +159,7 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  * 실측 풀 스트로크가 약 838 이라 그 60% 다. 너무 높게 잡으면 사용자가 아무리 눌러도
  * 안 끝나고, 낮게 잡으면 덜 눌린 값이 바닥값으로 저장된다.
  */
-#define KEYS_CAL_STROKE_MIN     500
+#define KEYS_CAL_STROKE_MIN     (500 * KEYS_ACC_CNT)
 
 /*
  * 보정 종료 제스처. 터미널 없이 키보드만 있을 때도 끝낼 수 있어야 한다.
@@ -136,8 +180,8 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  */
 #define KEYS_BAR_SLOTS          6
 #define KEYS_BAR_W              40
-#define KEYS_BAR_FULL           900
-#define KEYS_BAR_MIN            30
+#define KEYS_BAR_FULL           (900 * KEYS_ACC_CNT)
+#define KEYS_BAR_MIN            (30 * KEYS_ACC_CNT)
 
 /* keys layout — 화면에 그릴 때 1 키유닛을 몇 칸으로 볼 것인가 */
 #define KEYS_GEO_UNIT           4       /* layout.h 좌표 단위 (1키 = 4) */
@@ -158,8 +202,8 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  *
  * 스트로크의 30% 에서 눌림, 19% 에서 해제. 둘 사이 간격이 히스테리시스다.
  */
-#define KEYS_PRESS_LEVEL        250
-#define KEYS_RELEASE_LEVEL      156
+#define KEYS_PRESS_LEVEL        (250 * KEYS_ACC_CNT)
+#define KEYS_RELEASE_LEVEL      (156 * KEYS_ACC_CNT)
 
 /*
  * 기준값 추적 — 안 눌린 상태가 물리적 극단(자석이 가장 멀다)이므로 러닝 최대값이다.
@@ -179,7 +223,7 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  *   스캔 속도가 호출자마다 1000배 넘게 다르다 (CLI 20회/초 vs 메인 루프 26000회/초).
  *   온도 드리프트는 물리 현상이니 ms 로 세는 게 맞다.
  */
-#define KEYS_DRIFT_BAND         50
+#define KEYS_DRIFT_BAND         (50 * KEYS_ACC_CNT)
 #define KEYS_DRIFT_MS           512     /* 이 시간마다 기준값을 한 칸 움직인다 */
 
 /*
@@ -187,7 +231,7 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  * 노이즈(±6)보다 충분히 크고 스트로크(838)보다 충분히 작아야 한다.
  * 누른 채 부팅한 키가 손을 뗄 때 수백 카운트가 뛰므로 여기에 걸린다.
  */
-#define KEYS_LATCH_JUMP         31
+#define KEYS_LATCH_JUMP         (31 * KEYS_ACC_CNT)
 
 /*
  * 부팅 캘리브레이션 이상치 판정.
@@ -195,10 +239,20 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  * 기준값이 전체 중앙값보다 이만큼 아래면 "그 키는 눌린 채로 측정됐다"고 본다.
  * 스트로크(838)와 정상 편차(360) 사이라 양쪽 모두와 안전한 거리가 있다.
  */
-#define KEYS_CAL_OUTLIER        500
+#define KEYS_CAL_OUTLIER        (500 * KEYS_ACC_CNT)
 
 /* 원시 16비트를 이만큼 내려 12비트 영역으로 쓴다 */
 #define KEYS_RAW_SHIFT          4
+
+
+
+/*
+ * ★ 이 아래 임계값들은 전부 "누적된 합" 눈금이다.
+ *
+ *   12비트 표본 하나가 아니라 3개의 합이므로 범위가 0~12285 다. 값의 근거는 8편
+ *   실측(12비트)에 있으므로 그 값을 그대로 두고 KEYS_ACC_CNT 를 곱한다 —
+ *   누적 개수를 바꿔도 따라오고, 원래 근거가 어디서 왔는지도 남는다.
+ */
 
 /*
  * 데드밴드 폭.
@@ -217,7 +271,18 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  *
  *   상용 보드가 쓰는 값과 같다 (12비트 영역에서 ±7). 실측 노이즈 ±6 바로 위다.
  */
-#define KEYS_DEADBAND           7
+/*
+ * ★ 여기만 3배가 아니다.
+ *
+ *   눈금은 3배가 되지만 잡음은 sqrt(3)=1.73 배만 커진다. 밴드는 잡음을 덮는 물건이니
+ *   잡음을 따라가야 한다 — 3배로 키우면 애써 줄인 잡음만큼 분해능을 도로 버린다.
+ *
+ *     7 x 3 / 1.73 = 12.1  ->  12
+ *
+ *   결과적으로 밴드가 스트로크에서 차지하는 비율이 7/838 에서 12/2514 로 줄어,
+ *   같은 지연 0 을 유지하면서 분해능이 1.7배 좋아진다.
+ */
+#define KEYS_DEADBAND           12
 
 
 /*
@@ -243,9 +308,9 @@ typedef struct
 
 static const keys_switch_t keys_switch[] =
 {
-  { "generic 4.0mm", 400, 836 },   /* 0 — 기본값. 실제 스위치가 정해지면 채운다 */
-  { "generic 3.5mm", 350, 731 },   /* 1 */
-  { "generic 3.0mm", 300, 627 },   /* 2 */
+  { "generic 4.0mm", 400, 836 * KEYS_ACC_CNT },   /* 0 — 기본값. 실제 스위치가 정해지면 채운다 */
+  { "generic 3.5mm", 350, 731 * KEYS_ACC_CNT },   /* 1 */
+  { "generic 3.0mm", 300, 627 * KEYS_ACC_CNT },   /* 2 */
 };
 
 #define KEYS_SWITCH_CNT   (sizeof(keys_switch) / sizeof(keys_switch[0]))
@@ -259,7 +324,7 @@ static const keys_switch_t keys_switch[] =
  *   어디로 갈지 설계가 어려워지고, 실제로 그것 때문에 한 번 브릭을 만들었다.
  */
 #define KEYS_CFG_MAGIC     0x4746434BUL   /* 'KCFG' */
-#define KEYS_CFG_VERSION   1
+#define KEYS_CFG_VERSION   2      /* 2: 누적 도입으로 눈금이 3배 — 옛 보정값은 버린다 */
 
 typedef struct
 {
@@ -310,7 +375,18 @@ ATTR_PLACE_AT_NONCACHEABLE_BSS __attribute__((aligned(ADC_SOC_DMA_ADDR_ALIGNMENT
 static volatile uint32_t adc1_buf[KEYS_SEQ_LEN];
 
 
-static uint16_t raw[KEYS_STEP_MAX][KEYS_CH_MAX];    /* 12비트 — 판정·표시는 전부 이걸 쓴다 */
+/*
+ * 누적 링 — 셀마다 최근 KEYS_ACC_CNT 개의 12비트 표본을 들고 있다.
+ *
+ * 합을 매번 다시 더하지 않는다. 가장 오래된 값을 빼고 새 값을 더한다 (스캔당 셀마다
+ * 뺄셈 하나, 덧셈 하나). 링의 어느 칸을 덮어쓸지는 스캔 단위로 정해지므로 8x8 이
+ * 같은 칸을 쓴다 — 인덱스를 셀마다 들 필요가 없다.
+ */
+static uint16_t acc_hist[KEYS_STEP_MAX][KEYS_CH_MAX][KEYS_ACC_CNT];
+static uint16_t acc_sum[KEYS_STEP_MAX][KEYS_CH_MAX];
+static uint32_t acc_idx = 0;
+
+static uint16_t raw[KEYS_STEP_MAX][KEYS_CH_MAX];    /* 누적합(0~12285) — 판정·표시는 전부 이걸 쓴다 */
 static uint16_t base[KEYS_STEP_MAX][KEYS_CH_MAX];   /* 무압 기준값 (러닝 최대) */
 static uint16_t pressed[KEYS_STEP_MAX];             /* 행별 눌림 비트마스크 */
 static bool     is_calibrated = false;
@@ -626,8 +702,17 @@ static inline bool keysWaitDma(void)
  */
 static inline void keysFilter(uint32_t step, uint32_t ch, uint32_t packed)
 {
-  int32_t v = (int32_t)((packed & 0xFFFF) >> KEYS_RAW_SHIFT);
-  int32_t o = (int32_t)raw[step][ch];
+  uint16_t v12 = (uint16_t)((packed & 0xFFFF) >> KEYS_RAW_SHIFT);
+  int32_t  v;
+  int32_t  o;
+
+  /* 링을 한 칸 밀어 합을 갱신한다 — 가장 오래된 것을 빼고 새 것을 더한다 */
+  v = (int32_t)acc_sum[step][ch] - (int32_t)acc_hist[step][ch][acc_idx] + (int32_t)v12;
+  acc_hist[step][ch][acc_idx] = v12;
+  acc_sum[step][ch]           = (uint16_t)v;
+
+  /* 데드밴드는 합 눈금에 건다 */
+  o = (int32_t)raw[step][ch];
 
   if      (v > o + KEYS_DEADBAND) o = v - KEYS_DEADBAND;
   else if (v < o - KEYS_DEADBAND) o = v + KEYS_DEADBAND;
@@ -789,12 +874,22 @@ ATTR_RAMFUNC bool keysUpdate(void)
     if (is_calibrated) keysTrack(hold);
   }
 
+  /* 링 칸은 스캔 단위로 돈다 — 한 스캔 안에서는 64셀이 같은 칸을 덮는다 */
+  if (++acc_idx >= KEYS_ACC_CNT) acc_idx = 0;
+
   scan_time_us = micros() - t_begin;
   scan_cnt++;
   if (scan_time_us > scan_us_max)      scan_us_max = scan_time_us;
   if (scan_time_us > KEYS_SCAN_OVER_US) scan_over_cnt++;
 
   return ret;
+}
+
+/* 데드밴드 이전의 누적합. 필터가 얼마나 덮고 있는지 가르려면 이게 필요하다. */
+uint16_t keysGetAcc(uint8_t step, uint8_t ch)
+{
+  if (step >= KEYS_STEP_MAX || ch >= KEYS_CH_MAX) return 0;
+  return acc_sum[step][ch];
 }
 
 uint16_t keysGetRaw(uint8_t step, uint8_t ch)
@@ -1575,7 +1670,7 @@ void cliKeys(cli_args_t *args)
         }
         cliPrintf("\n");
       }
-      cliPrintf("\n  최소 %d, 최대 %d, 평균 %d  (편차 %d%%)\n",
+      cliPrintf("\n  최소 %d, 최대 %d, 평균 %d  (편차 %d%)\n",
                 (int)lo, (int)hi, (int)(sum / n_cal),
                 (int)((hi - lo) * 100 / (sum / n_cal)));
     }
@@ -1677,12 +1772,18 @@ void cliKeys(cli_args_t *args)
   {
     static int16_t  d_min[KEYS_STEP_MAX][KEYS_CH_MAX];
     static int16_t  d_max[KEYS_STEP_MAX][KEYS_CH_MAX];
+    static uint16_t a_min[KEYS_STEP_MAX][KEYS_CH_MAX];
+    static uint16_t a_max[KEYS_STEP_MAX][KEYS_CH_MAX];
     uint32_t t_begin;
     uint32_t cnt = 0;
 
     for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
     {
-      for (uint32_t c = 0; c < KEYS_CH_MAX; c++) { d_min[st][c] = 32767; d_max[st][c] = -32768; }
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+      {
+        d_min[st][c] = 32767; d_max[st][c] = -32768;
+        a_min[st][c] = 0xFFFF; a_max[st][c] = 0;
+      }
     }
 
     cliPrintf("%d ms 동안 측정한다 — 키에서 손을 뗄 것\n", KEYS_NOISE_MS);
@@ -1696,9 +1797,13 @@ void cliKeys(cli_args_t *args)
       {
         for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
         {
-          int32_t d = keysGetDelta(st, c);
+          int32_t  d = keysGetDelta(st, c);
+          uint16_t a = keysGetAcc(st, c);
+
           if (d < d_min[st][c]) d_min[st][c] = (int16_t)d;
           if (d > d_max[st][c]) d_max[st][c] = (int16_t)d;
+          if (a < a_min[st][c]) a_min[st][c] = a;
+          if (a > a_max[st][c]) a_max[st][c] = a;
         }
       }
       cnt++;
@@ -1725,6 +1830,38 @@ void cliKeys(cli_args_t *args)
         cliPrintf(" %+5d", (int)((d_max[st][c] + d_min[st][c]) / 2));
       cliPrintf("\n");
     }
+    /*
+     * ★ 필터 이전 값도 같이 낸다.
+     *
+     *   위 표는 데드밴드를 통과한 뒤라 밴드 폭을 바꾸면 같이 움직인다. 누적을
+     *   넣으면서 밴드도 7 -> 12 로 바꿨으니 그 표만으로는 누적의 효과를 못 가른다.
+     *   아래가 센서에서 온 그대로다.
+     */
+    {
+      uint32_t sum = 0, n = 0, mx = 0;
+
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          uint32_t pp;
+
+          if ((keys_present[st] & (1U << c)) == 0) continue;
+          pp = (uint32_t)(a_max[st][c] - a_min[st][c]);
+          sum += pp; n++;
+          if (pp > mx) mx = pp;
+        }
+      }
+      n = n ? n : 1;
+
+      cliPrintf("\n데드밴드 이전 (누적 %d개, 눈금 0~%d)\n", KEYS_ACC_CNT, 4095 * KEYS_ACC_CNT);
+      cliPrintf("  p-p 평균 %d, 최대 %d  (셀 %d)\n", (int)(sum / n), (int)mx, (int)n);
+      cliPrintf("  스트로크 %d 대비 %d.%02d %\n",
+                (int)(836 * KEYS_ACC_CNT),
+                (int)((sum / n) * 100 / (836 * KEYS_ACC_CNT)),
+                (int)((sum / n) * 10000 / (836 * KEYS_ACC_CNT) % 100));
+    }
+
     cliPrintf("\n%d 회 스캔\n", (int)cnt);
     ret = true;
   }
@@ -1981,7 +2118,7 @@ void cliKeys(cli_args_t *args)
     cnt = cnt ? cnt : 1;
 
     cliPrintf("\nkeysUpdate : %d us,  %d 회/초\n", (int)(500000 / cnt), (int)(cnt * 2));
-    cliPrintf("8kHz 예산 125us 대비 : %d %%\n", (int)((500000 / cnt) * 100 / 125));
+    cliPrintf("8kHz 예산 125us 대비 : %d %\n", (int)((500000 / cnt) * 100 / 125));
     cliPrintf("timeout    : %d\n", (int)timeout_cnt);
     ret = true;
   }
