@@ -1001,15 +1001,16 @@ ATTR_RAMFUNC static void keysTrack(uint32_t step)
        *   바닥까지 눌러 붙잡으면 기준점이 바닥에 고정되는데 손가락은 누르는 동안에도
        *   미세하게 풀린다. 그 이완만으로 해제가 나가 키가 툭툭 끊긴다.
        */
-      bool in_bottom = bot_on && ((uint16_t)d >= t->bottom_lo);
+      bool in_bottom  = bot_on && ((uint16_t)d >= t->bottom_lo);
+      bool rt_active  = rt_on && (rt_cont || (rt_arm[step] & bit));
 
-      if (rt_on && !in_bottom &&
+      if (rt_active && !in_bottom &&
           (int32_t)peak[step][c] - d >= (int32_t)t->rt_release)
       {
         pressed[step] &= (uint16_t)~bit;
         peak[step][c]  = (uint16_t)d;
       }
-      else if (d < (int32_t)t->release)         /* 절대 해제지점 */
+      else if (d < (int32_t)t->release)         /* 절대 해제 — 항상 유효하다 */
       {
         pressed[step] &= (uint16_t)~bit;
         peak[step][c]  = (uint16_t)d;
@@ -1023,28 +1024,43 @@ ATTR_RAMFUNC static void keysTrack(uint32_t step)
       /*
        * RT 재입력 — 가장 얕았던 지점에서 이만큼 내려가면 다시 누른 것으로 본다.
        *
-       * 연속 RT 가 아니면 입력지점 위로 올라온 순간 RT 가 풀린다 (rt_arm). 그때는
-       * 다시 입력지점을 넘어야 붙는다.
+       * ★ RT 가 걸려 있는 동안 절대 입력지점은 보지 않는다.
+       *
+       *   처음에는 둘을 or 로 묶었다가 크게 당했다. RT 가 깊은 곳(예: 2187 카운트)
+       *   에서 해제를 내면 키는 떼진 상태인데 깊이는 아직 입력지점(627)보다 훨씬
+       *   깊다. 그래서 바로 다음 스캔에 절대 입력이 걸려 즉시 재입력되고,
+       *   RT 해제 -> 절대 입력 -> RT 해제 가 손가락이 올라오는 내내 반복됐다.
+       *
+       *     ffffffffffffffffffffffff
+       *
+       *   바닥까지 누르면 peak 이 최대라 그 반복 구간이 가장 길어진다.
+       *
+       *   RT 가 걸린 동안에는 RT 만 판정하고, 절대 입력지점은 RT 를 처음 거는
+       *   용도로만 쓴다.
        */
-      bool rt_ok = rt_on && (rt_cont || (rt_arm[step] & bit));
+      bool rt_active = rt_on && (rt_cont || (rt_arm[step] & bit));
 
-      if (rt_ok && d - (int32_t)peak[step][c] >= (int32_t)t->rt_press)
+      if (rt_active)
+      {
+        if (d - (int32_t)peak[step][c] >= (int32_t)t->rt_press)
+        {
+          pressed[step] |= bit;
+          peak[step][c]  = (uint16_t)d;
+        }
+      }
+      else if (d > (int32_t)t->press)           /* 절대 입력지점 — RT 를 여기서 건다 */
       {
         pressed[step] |= bit;
         peak[step][c]  = (uint16_t)d;
         rt_arm[step]  |= bit;
       }
-      else if (d > (int32_t)t->press)           /* 절대 입력지점 */
-      {
-        pressed[step] |= bit;
-        peak[step][c]  = (uint16_t)d;
-        rt_arm[step]  |= bit;
-      }
-      else if (d < (int32_t)t->release)
-      {
-        /* 입력지점 아래로 완전히 돌아왔다 — 연속 RT 가 아니면 여기서 푼다 */
-        rt_arm[step] &= (uint16_t)~bit;
-      }
+
+      /*
+       * 입력지점 아래로 완전히 돌아왔으면 RT 를 푼다.
+       *
+       * 연속 RT 면 풀지 않는다 — 전 구간에서 살아 있는 게 그 기능이다.
+       */
+      if (!rt_cont && d < (int32_t)t->release) rt_arm[step] &= (uint16_t)~bit;
     }
   }
 }
