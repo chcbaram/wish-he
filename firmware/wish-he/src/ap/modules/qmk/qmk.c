@@ -22,6 +22,11 @@
 #include "cli.h"
 #include "log.h"
 #include "ap.h"
+#include "usb/cherryusb/hid_kbd_if.h"
+#include "matrix.h"
+#include "dynamic_keymap.h"
+#include "keycode_config.h"
+#include <string.h>
 
 extern void viaPortInit(void);   /* keyboards/<보드>/via_port.c */
 
@@ -131,6 +136,13 @@ static void cliQmk(cli_args_t *args)
     cliPrintf("keyboard_task : last %d us, avg %d us, max %d us  (n=%d)\n",
               (int)task_us_last, (int)avg, (int)task_us_max, (int)task_us_cnt);
     cliPrintf("               (max 가 125us 를 넘으면 폴링을 놓친다)\n");
+    /*
+     * 매직 스왑이 켜져 있으면 매트릭스도 키맵도 맞는데 나가는 코드만 달라진다.
+     * 한 번 당했으니 늘 보이게 둔다.
+     */
+    cliPrintf("keymap_config : 0x%04X  (nkro %d, 매직 스왑 %s)\n",
+              (unsigned)keymap_config.raw, keymap_config.nkro,
+              (keymap_config.raw & ~0x0080u) ? "★ 켜짐 — 비정상" : "없음");
     ret = true;
   }
 
@@ -147,6 +159,56 @@ static void cliQmk(cli_args_t *args)
       delay(200);
     }
     cliPrintf("\n");
+    ret = true;
+  }
+
+  /*
+   * 실제로 USB 로 나가는 부트 리포트를 그대로 찍는다.
+   *
+   * 스캔·매트릭스·키맵이 다 맞는데 화면에 다른 글자가 나오면 남는 건 이 바이트뿐이다.
+   * 여기서 기대한 코드가 나오면 장치는 결백하고 호스트 해석 문제이며, 다른 코드가
+   * 나오면 QMK 에서 리포트를 만드는 사이가 잘못된 것이다.
+   */
+  if (args->argc == 1 && args->isStr(0, "log"))
+  {
+    uint8_t prev[8] = { 0, };
+
+    cliPrintf("키를 누르면 리포트를 찍는다 — Ctrl-C 로 끝낸다\n");
+    cliPrintf("  mods  keys[6]\n");
+
+    while (cliKeepLoop())
+    {
+      uint8_t now[8];
+
+      hidKbdGetReportRaw(now);
+      if (memcmp(now, prev, sizeof(now)) != 0)
+      {
+        cliPrintf("  0x%02X  ", now[0]);
+        for (uint32_t i = 2; i < 8; i++) cliPrintf("%02X ", now[i]);
+
+        /*
+         * 같은 순간의 매트릭스와 그 자리의 키맵 값을 나란히 찍는다.
+         * 셋을 따로 재면 어느 단계에서 어긋났는지 못 가른다.
+         */
+        cliPrintf("  <-");
+        for (uint32_t r = 0; r < MATRIX_ROWS; r++)
+        {
+          matrix_row_t bits = matrix_get_row(r);
+
+          for (uint32_t c = 0; c < MATRIX_COLS; c++)
+          {
+            if (bits & (1U << c))
+            {
+              cliPrintf(" (%d,%d)=0x%04X", (int)r, (int)c,
+                        (unsigned)dynamic_keymap_get_keycode(0, r, c));
+            }
+          }
+        }
+        cliPrintf("\n");
+        memcpy(prev, now, sizeof(now));
+      }
+      cliLoopIdle();
+    }
     ret = true;
   }
 
@@ -173,6 +235,7 @@ static void cliQmk(cli_args_t *args)
     cliPrintf("qmk start\n");
     cliPrintf("qmk info\n");
     cliPrintf("qmk rate\n");
+    cliPrintf("qmk log        USB 로 나가는 부트 리포트를 찍는다\n");
     cliPrintf("qmk reset\n");
     cliPrintf("qmk clear eeprom\n");
   }

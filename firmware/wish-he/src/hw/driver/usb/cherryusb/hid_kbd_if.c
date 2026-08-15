@@ -186,6 +186,11 @@ void hidKbdSetReportRaw(const uint8_t *p_report)
   restore_global_irq(mask);
 }
 
+void hidKbdGetReportRaw(uint8_t *p_report)
+{
+  for (uint32_t i = 0; i < KBD_REPORT_LEN; i++) p_report[i] = shadow[i];
+}
+
 void hidKbdSetReport(uint8_t modifier, const uint8_t *keys, uint32_t cnt)
 {
   uint8_t next[KBD_REPORT_LEN];

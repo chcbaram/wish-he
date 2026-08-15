@@ -18,6 +18,7 @@
 #include "via.h"
 #include "eeprom.h"
 #include "keys.h"
+#include "log.h"
 
 
 /* 채널 ID. 다른 보드와 겹쳐도 상관없지만, 도구를 공유하려고 같은 값을 쓴다. */
@@ -83,8 +84,30 @@ bool get_hold_on_other_key_press(uint16_t keycode, keyrecord_t *record)
 
 void viaPortInit(void)
 {
+  keymap_config_t clean;
+
   hold_okp = eeprom_read_byte((const uint8_t *)EE_USER_HOLD_OKP);
   if (hold_okp > 1) hold_okp = 1;      /* 지운 적 없는 EEPROM 은 0xFF 다 */
+
+  /*
+   * 이미 망가진 EEPROM 을 되살린다.
+   *
+   * 위 버그가 keymap_config 에 쓰레기를 써 놓은 보드가 있다. 우리는 매직 스왑을
+   * 어디에도 노출하지 않으므로 — 메뉴에도, 키맵에도 없다 — 켜져 있다면 그 쓰레기다.
+   * nkro 만 남기고 지운다. 사용자 키맵은 다른 영역이라 건드리지 않는다.
+   *
+   * ★ 매직 키코드를 실제로 노출하게 되면 이 청소를 걷어내야 한다.
+   */
+  clean.raw  = 0;
+  clean.nkro = keymap_config.nkro;
+
+  if (clean.raw != keymap_config.raw)
+  {
+    logPrintf("[  ] keymap_config 정리 0x%04X -> 0x%04X\n",
+              (unsigned)keymap_config.raw, (unsigned)clean.raw);
+    keymap_config.raw = clean.raw;
+    eeconfig_update_keymap(keymap_config.raw);
+  }
 }
 
 
@@ -113,7 +136,22 @@ static void viaNkroSet(uint8_t *p_val)
   if (p_val[0] == val_nkro_enable)
   {
     keymap_config.nkro = p_val[1] ? 1 : 0;
-    eeconfig_update_keymap(&keymap_config);
+
+    /*
+     * ★ .raw 를 넘긴다. 포인터가 아니다.
+     *
+     *   eeconfig_update_keymap(uint16_t) 는 **값**을 받는데 처음에 &keymap_config 를
+     *   넘겼다. 포인터가 16비트로 잘려 keymap_config 전체로 저장됐고, 하필 매직 스왑
+     *   비트에 걸렸다 — NKRO 를 한 번 토글한 뒤로
+     *
+     *     swap_backslash_backspace  BSPC <-> BSLS
+     *     swap_lalt_lgui            LALT <-> LGUI
+     *     swap_lctl_lgui            LCTL  -> LGUI
+     *
+     *   가 켜져서, 매트릭스도 키맵도 맞는데 **나가는 키코드만** 달랐다. 찾는 데
+     *   오래 걸린 이유가 이거다 — 눈에 보이는 곳은 전부 정상이었다.
+     */
+    eeconfig_update_keymap(keymap_config.raw);
     clear_keyboard();          /* 프로토콜이 바뀌므로 눌린 키를 다 떼고 간다 */
   }
 }

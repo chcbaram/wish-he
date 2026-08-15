@@ -33,6 +33,15 @@ void     hidKbdSetReport(uint8_t modifier, const uint8_t *keys, uint32_t cnt);
 /* 8바이트 부트 리포트를 그대로. QMK 의 report_keyboard_t 배치와 같다. */
 void     hidKbdSetReportRaw(const uint8_t *p_report);
 
+/*
+ * 지금 나가 있는 리포트를 그대로 읽는다 (KBD_REPORT_LEN 바이트).
+ *
+ * "화면에 찍히는 글자가 이상하다"를 좁힐 때 쓴다. 스캔·매트릭스·키맵이 다 맞는데
+ * 글자가 다르면 남는 건 이 바이트뿐이라, 여기서 갈라야 장치 문제인지 호스트
+ * 해석 문제인지 정해진다.
+ */
+void     hidKbdGetReportRaw(uint8_t *p_report);
+
 /* 호스트가 켠 LED 비트 (Caps/Num/Scroll) */
 uint8_t  hidKbdGetLeds(void);
 
