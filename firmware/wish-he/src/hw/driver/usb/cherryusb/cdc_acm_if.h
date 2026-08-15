@@ -12,7 +12,8 @@ extern "C" {
 #if HW_USB_STACK == HW_USB_STACK_CHERRYUSB
 
 
-bool     cdcIfInit(void);
+bool     cdcIfInit(void);         /* 링버퍼 준비 */
+void     cdcIfRegister(void);     /* 스택 등록. usbBegin() 에서만 — 부르는 순서가 IF 번호다 */
 void     cdcIfEventHandler(uint8_t busid, uint8_t event);   /* usbd_initialize() 에 넘긴다 */
 bool     cdcIfIsConfigured(void);   /* 케이블 연결 + 열거 완료 */
 bool     cdcIfIsConnected(void);    /* 위 + 호스트가 포트 오픈(DTR) */

@@ -216,16 +216,104 @@ def program(iap, image, progress=True):
     iap.end()
 
 
-# ── main ────────────────────────────────────────────────────────────────────
-IAP_USAGE_PAGE = 0xFF53          # IAP 의 64바이트 업데이트 채널 (IF3)
+# ── 장치 찾기 ───────────────────────────────────────────────────────────────
+IAP_USAGE_PAGE = 0xFF53          # 부트로더의 64바이트 업데이트 채널
+APP_USAGE_PAGE = 0xFF60          # 앱의 32바이트 설정 채널 (raw HID)
+
+APP_REPORT_LEN = 32
+APP_CMD_BOOT   = 0x02            # 부트로더로 점프
+APP_RESP_OK    = 0x00
+
+# ★ 0xFF60 은 VIA 를 쓰는 키보드가 다 같이 쓰는 페이지다. 이걸로만 고르면 책상에
+#   물려둔 남의 키보드에 리셋 명령을 쏘게 된다. 자동 점프는 VID/PID 까지 맞을 때만 한다.
+APP_VID = 0x0483
+APP_PID = 0x5304
 
 
-def find_iap(devs):
-    """IAP 업데이트 채널을 고른다. 0xFF53 을 우선하고, 없으면 벤더 페이지 전부."""
+def find_iap(devs, vid=0, pid=0):
+    """
+    부트로더의 업데이트 채널을 고른다.
+
+    ★ 예전에는 0xFF53 이 없으면 "벤더 페이지(>=0xFF00) 전부"로 폴백했는데, 책상에 물린
+      다른 USB 장치들이 0xFF00 을 쓰는 바람에 그것들을 부트로더로 오인했다.
+      폴백은 사용자가 --vid/--pid 로 대상을 직접 좁혔을 때만 한다.
+    """
     exact = [d for d in devs if d["usage_page"] == IAP_USAGE_PAGE]
-    if exact:
+    if exact or not (vid or pid):
         return exact
-    return [d for d in devs if d["usage_page"] >= 0xFF00]
+    return [d for d in devs if d["usage_page"] >= 0xFF00
+            and d["usage_page"] != APP_USAGE_PAGE]
+
+
+def find_app(devs, vid=0, pid=0):
+    """이 펌웨어의 설정 채널만 고른다 (usage page + VID/PID 둘 다 일치)."""
+    want_vid = vid or APP_VID
+    want_pid = pid or APP_PID
+    return [d for d in devs
+            if d["usage_page"] == APP_USAGE_PAGE
+            and d["vid"] == want_vid and d["pid"] == want_pid]
+
+
+def request_boot(lib, dev, verbose=False):
+    """
+    앱에 부트로더 점프를 요청한다.
+
+    앱은 응답을 보낸 뒤 50ms 있다가 리셋한다. 응답을 못 받아도 실패가 아니다 —
+    타이밍에 따라 리셋이 먼저 일어날 수 있다. 실제 판정은 부트로더가 열거되는지로 한다.
+    """
+    h = lib.hid_open_path(dev["path"])
+    if not h:
+        return False
+
+    try:
+        buf = bytearray(APP_REPORT_LEN)
+        buf[0] = APP_CMD_BOOT
+        if lib.hid_write(h, b"\x00" + bytes(buf), APP_REPORT_LEN + 1) < 0:
+            return False
+
+        rbuf = ctypes.create_string_buffer(APP_REPORT_LEN)
+        n = lib.hid_read_timeout(h, rbuf, APP_REPORT_LEN, 300)
+        if verbose and n > 0:
+            print(f"    앱 응답 : cmd 0x{rbuf.raw[0]:02X} status {rbuf.raw[1]}")
+        return True
+    finally:
+        lib.hid_close(h)
+
+
+def wait_for_iap(lib, vid, pid, timeout=5.0):
+    """부트로더가 열거될 때까지 기다린다."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.2)
+        cands = find_iap(enumerate_devices(lib, vid, pid), vid, pid)
+        if cands:
+            return cands
+    return []
+
+
+def ensure_bootloader(lib, args):
+    """
+    부트로더가 이미 떠 있으면 그대로, 아니면 앱에 점프를 요청해서 띄운다.
+
+    반환 : 업데이트 채널 후보 목록
+    """
+    cands = find_iap(enumerate_devices(lib, args.vid, args.pid), args.vid, args.pid)
+    if cands:
+        return cands
+
+    apps = find_app(enumerate_devices(lib, args.vid, args.pid), args.vid, args.pid)
+    if not apps:
+        return []
+
+    d = apps[0]
+    print(f"앱이 실행 중이다 ({d['vid']:04x}:{d['pid']:04x} {d['product']}) "
+          f"— HID 로 부트로더 진입을 요청한다")
+    request_boot(lib, d, args.verbose)
+
+    cands = wait_for_iap(lib, args.vid, args.pid)
+    if cands:
+        print("부트로더 진입 확인")
+    return cands
 
 
 def main():
@@ -236,6 +324,10 @@ def main():
     ap.add_argument("--vid", type=lambda s: int(s, 0), default=0)
     ap.add_argument("--pid", type=lambda s: int(s, 0), default=0)
     ap.add_argument("--path", help="hidapi 경로를 직접 지정")
+    ap.add_argument("--boot", action="store_true",
+                    help="부트로더 진입만 하고 끝낸다 (기록하지 않음)")
+    ap.add_argument("--no-auto", action="store_true",
+                    help="앱에 부트로더 진입을 요청하지 않는다")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -243,7 +335,7 @@ def main():
     devs = enumerate_devices(lib, args.vid, args.pid)
 
     if args.list or args.info:
-        target = devs if args.list else find_iap(devs)
+        target = devs if args.list else find_iap(devs, args.vid, args.pid)
         if not target:
             print("해당하는 장치가 없다.")
             return
@@ -254,8 +346,14 @@ def main():
             print(f"    path = {d['path'].decode(errors='replace')}")
         return
 
+    if args.boot:
+        cands = ensure_bootloader(lib, args)
+        if not cands:
+            sys.exit("[E_] 부트로더로 넘기지 못했다. 앱이 HID 를 올렸는지 확인할 것")
+        return
+
     if not args.image:
-        ap.error("이미지 파일을 지정하거나 --list / --info 를 쓴다")
+        ap.error("이미지 파일을 지정하거나 --list / --info / --boot 를 쓴다")
 
     image = Path(args.image).read_bytes()
     if image[:4] != APP_MAGIC:
@@ -264,10 +362,14 @@ def main():
     if args.path:
         path = args.path.encode()
     else:
-        cands = find_iap(devs)
+        if args.no_auto:
+            cands = find_iap(devs, args.vid, args.pid)
+        else:
+            cands = ensure_bootloader(lib, args)
         if not cands:
-            sys.exit("IAP 장치를 찾지 못했다. 보드가 업데이트 모드인지 확인할 것 "
-                     "(CLI 에서 'reset boot')")
+            sys.exit("[E_] 업데이트 채널을 찾지 못했다.\n"
+                     "      앱이 돌고 있다면 CLI 에서 'reset boot', 또는\n"
+                     "      PA09 를 LOW 로 잡고 전원을 다시 넣을 것")
         if len(cands) > 1:
             print("후보가 여러 개다. --path 로 지정할 것:")
             for d in cands:

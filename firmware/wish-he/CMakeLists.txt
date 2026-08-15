@@ -108,6 +108,7 @@ if(HW_USB_STACK EQUAL 0)
   set(USB_SRC_FILES
     ${HPM_SDK_DIR}/middleware/cherryusb/core/usbd_core.c
     ${HPM_SDK_DIR}/middleware/cherryusb/class/cdc/usbd_cdc_acm.c
+    ${HPM_SDK_DIR}/middleware/cherryusb/class/hid/usbd_hid.c
     ${HPM_SDK_DIR}/middleware/cherryusb/port/hpmicro/usb_dc_hpm.c
     ${HPM_SDK_DIR}/middleware/cherryusb/port/hpmicro/usb_glue_hpm.c
     ${HPM_SDK_DIR}/components/usb/device/hpm_usb_device.c
@@ -118,6 +119,7 @@ if(HW_USB_STACK EQUAL 0)
     ${HPM_SDK_DIR}/middleware/cherryusb/common
     ${HPM_SDK_DIR}/middleware/cherryusb/core
     ${HPM_SDK_DIR}/middleware/cherryusb/class/cdc
+    ${HPM_SDK_DIR}/middleware/cherryusb/class/hid
     ${HPM_SDK_DIR}/middleware/cherryusb/port/hpmicro
     ${HPM_SDK_DIR}/components/usb/device
   )

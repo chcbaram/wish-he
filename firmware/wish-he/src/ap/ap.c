@@ -31,6 +31,7 @@ void updateLED(void)
 void update(void const *arg)
 {
   updateLED();
+  usbUpdate();          /* HID 로 들어온 부트/리셋 요청 처리 */
 }
 
 void cliLoopIdle(void)

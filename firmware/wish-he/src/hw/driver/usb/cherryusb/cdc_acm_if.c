@@ -22,13 +22,8 @@
 #include "usbd_core.h"
 #include "usbd_cdc_acm.h"
 #include "hpm_interrupt.h"
+#include "usb/cherryusb/usb_desc.h"
 
-
-#define CDC_IN_EP           0x81
-#define CDC_OUT_EP          0x01
-#define CDC_INT_EP          0x83
-
-#define USB_CONFIG_SIZE     (9 + CDC_ACM_DESCRIPTOR_LEN)
 
 #define CDC_RX_BUF_SIZE     4096
 #define CDC_TX_BUF_SIZE     4096
@@ -58,90 +53,6 @@ static uint16_t          cdc_mps       = USB_BULK_EP_MPS_HS;
 static void cdcRxArm(void);
 static void cdcRxRearm(void);
 static void cdcTxKick(void);
-
-
-
-
-/*---------------------------------------------------------------------------
- *  기술자
- *---------------------------------------------------------------------------*/
-static const uint8_t device_descriptor[] = {
-  USB_DEVICE_DESCRIPTOR_INIT(USB_2_0, 0xEF, 0x02, 0x01, USBD_VID, USBD_PID, 0x0100, 0x01)
-};
-
-static const uint8_t config_descriptor_hs[] = {
-  USB_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x02, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
-  CDC_ACM_DESCRIPTOR_INIT(0x00, CDC_INT_EP, CDC_OUT_EP, CDC_IN_EP, USB_BULK_EP_MPS_HS, 0x02),
-};
-
-static const uint8_t config_descriptor_fs[] = {
-  USB_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x02, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
-  CDC_ACM_DESCRIPTOR_INIT(0x00, CDC_INT_EP, CDC_OUT_EP, CDC_IN_EP, USB_BULK_EP_MPS_FS, 0x02),
-};
-
-static const uint8_t device_quality_descriptor[] = {
-  USB_DEVICE_QUALIFIER_DESCRIPTOR_INIT(USB_2_0, 0xEF, 0x02, 0x01, 0x01),
-};
-
-/* other-speed 는 "지금 속도의 반대쪽"을 기술한다. HS 로 동작 중이면 FS 규격을 담는 게 맞다. */
-static const uint8_t other_speed_config_descriptor_hs[] = {
-  USB_OTHER_SPEED_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x02, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
-  CDC_ACM_DESCRIPTOR_INIT(0x00, CDC_INT_EP, CDC_OUT_EP, CDC_IN_EP, USB_BULK_EP_MPS_FS, 0x02),
-};
-
-static const uint8_t other_speed_config_descriptor_fs[] = {
-  USB_OTHER_SPEED_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x02, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
-  CDC_ACM_DESCRIPTOR_INIT(0x00, CDC_INT_EP, CDC_OUT_EP, CDC_IN_EP, USB_BULK_EP_MPS_HS, 0x02),
-};
-
-static const char *string_descriptors[] = {
-  (const char[]){ 0x09, 0x04 },   /* LangID : en-US */
-  "HPMicro",
-  _DEF_BOARD_NAME,
-  "0001",
-};
-
-static const uint8_t *device_descriptor_callback(uint8_t speed)
-{
-  (void)speed;
-  return device_descriptor;
-}
-
-static const uint8_t *config_descriptor_callback(uint8_t speed)
-{
-  if (speed == USB_SPEED_HIGH) return config_descriptor_hs;
-  if (speed == USB_SPEED_FULL) return config_descriptor_fs;
-  return NULL;
-}
-
-static const uint8_t *device_quality_descriptor_callback(uint8_t speed)
-{
-  (void)speed;
-  return device_quality_descriptor;
-}
-
-static const uint8_t *other_speed_config_descriptor_callback(uint8_t speed)
-{
-  if (speed == USB_SPEED_HIGH) return other_speed_config_descriptor_hs;
-  if (speed == USB_SPEED_FULL) return other_speed_config_descriptor_fs;
-  return NULL;
-}
-
-static const char *string_descriptor_callback(uint8_t speed, uint8_t index)
-{
-  (void)speed;
-  if (index >= (sizeof(string_descriptors)/sizeof(string_descriptors[0]))) return NULL;
-  return string_descriptors[index];
-}
-
-static const struct usb_descriptor cdc_descriptor =
-{
-  .device_descriptor_callback         = device_descriptor_callback,
-  .config_descriptor_callback         = config_descriptor_callback,
-  .device_quality_descriptor_callback = device_quality_descriptor_callback,
-  .other_speed_descriptor_callback    = other_speed_config_descriptor_callback,
-  .string_descriptor_callback         = string_descriptor_callback,
-};
 
 
 
@@ -306,13 +217,14 @@ void cdcIfEventHandler(uint8_t busid, uint8_t event)
 /*---------------------------------------------------------------------------
  *  공개 API
  *---------------------------------------------------------------------------*/
-static struct usbd_interface intf0;
-static struct usbd_interface intf1;
+static struct usbd_interface cdc_ctrl_intf;   /* IF1 : CDC 제어  */
+static struct usbd_interface cdc_data_intf;   /* IF2 : CDC 데이터 */
 
 static struct usbd_endpoint cdc_out_ep = { .ep_addr = CDC_OUT_EP, .ep_cb = usbd_cdc_acm_bulk_out };
 static struct usbd_endpoint cdc_in_ep  = { .ep_addr = CDC_IN_EP,  .ep_cb = usbd_cdc_acm_bulk_in  };
 
 
+/* 링버퍼만 준비한다. 스택 등록은 cdcIfRegister() 가 따로 한다. */
 bool cdcIfInit(void)
 {
   qbufferCreate(&q_rx, q_rx_buf, CDC_RX_BUF_SIZE);
@@ -323,13 +235,22 @@ bool cdcIfInit(void)
   is_rx_full    = false;
   is_tx_busy    = false;
 
-  usbd_desc_register(CDC_BUSID, &cdc_descriptor);
-  usbd_add_interface(CDC_BUSID, usbd_cdc_acm_init_intf(CDC_BUSID, &intf0));
-  usbd_add_interface(CDC_BUSID, usbd_cdc_acm_init_intf(CDC_BUSID, &intf1));
+  return true;
+}
+
+/*
+ * 인터페이스 등록은 usbBegin() 에서만 부른다.
+ *
+ * ★ 부르는 순서가 곧 인터페이스 번호다. cdcInit() 이 hw.c 에서 usbInit() 보다 먼저
+ *   불리는데 거기서 등록까지 해버리면 CDC 가 IF0 을 가져가 usb_desc.c 의 배치와
+ *   어긋난다. 그래서 버퍼 준비와 등록을 갈라놓았다.
+ */
+void cdcIfRegister(void)
+{
+  usbd_add_interface(CDC_BUSID, usbd_cdc_acm_init_intf(CDC_BUSID, &cdc_ctrl_intf));
+  usbd_add_interface(CDC_BUSID, usbd_cdc_acm_init_intf(CDC_BUSID, &cdc_data_intf));
   usbd_add_endpoint(CDC_BUSID, &cdc_out_ep);
   usbd_add_endpoint(CDC_BUSID, &cdc_in_ep);
-
-  return true;
 }
 
 bool cdcIfIsConfigured(void)

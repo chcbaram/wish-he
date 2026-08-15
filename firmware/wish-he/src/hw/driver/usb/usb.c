@@ -18,6 +18,8 @@
 #include "usbd_core.h"
 #include "hpm_interrupt.h"
 #include "usb/cherryusb/cdc_acm_if.h"
+#include "usb/cherryusb/hid_if.h"
+#include "usb/cherryusb/usb_desc.h"
 #endif
 
 
@@ -58,7 +60,16 @@ bool usbBegin(UsbMode_t usb_mode)
 
   intc_set_irq_priority(CONFIG_HPM_USBD_IRQn, 2);
 
-  if (usbd_initialize(0, CONFIG_HPM_USBD_BASE, cdcIfEventHandler) != 0)
+  /*
+   * 등록 순서가 인터페이스 번호다 (usb_desc.h 의 배치와 반드시 일치해야 한다).
+   *   hidIfInit()     -> IF0
+   *   cdcIfRegister() -> IF1, IF2
+   */
+  usbDescRegister(0);
+  hidIfInit();
+  cdcIfRegister();
+
+  if (usbd_initialize(0, CONFIG_HPM_USBD_BASE, usbDescEventHandler) != 0)
   {
     return false;
   }
@@ -67,6 +78,14 @@ bool usbBegin(UsbMode_t usb_mode)
   is_usb_mode = usb_mode;
 
   return true;
+}
+
+/* 메인 루프에서 부른다. HID 로 예약된 리셋을 여기서 실행한다. */
+void usbUpdate(void)
+{
+#if HW_USB_STACK == HW_USB_STACK_CHERRYUSB
+  hidIfUpdate();
+#endif
 }
 
 bool usbIsOpen(void)
@@ -121,10 +140,12 @@ void cliUsb(cli_args_t *args)
       cliPrintf("USB Connect : %d      \n", usbIsConnect());
       cliPrintf("USB Open    : %d      \n", usbIsOpen());
       cliPrintf("USB Baud    : %d      \n", (int)cdcGetBaud());
-      cliMoveUp(5);
+      cliPrintf("HID Ready   : %d      \n", hidIfIsConfigured());
+      cliPrintf("HID Rx      : %d      \n", (int)hidIfGetRxCount());
+      cliMoveUp(7);
       delay(100);
     }
-    cliMoveDown(5);
+    cliMoveDown(7);
     ret = true;
   }
 
