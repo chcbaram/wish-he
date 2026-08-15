@@ -35,6 +35,8 @@
 #define KBD_BUSID           0
 
 
+
+
 /* 표준 부트 키보드 기술자. BIOS 가 알아보는 형태라 임의로 바꾸면 안 된다. */
 static const uint8_t kbd_report_desc[] = {
   0x05, 0x01,       /* Usage Page (Generic Desktop)        */
@@ -87,6 +89,24 @@ static volatile uint32_t sent_cnt      = 0;
 
 static struct usbd_interface kbd_intf;
 
+/*
+ * 폴링 주기 측정용.
+ *
+ * 평소에는 바뀔 때만 보내므로 호스트가 실제로 몇 us 마다 물어보는지 알 수 없다.
+ * 이 모드에서는 일부러 매번 재무장해서 "폴링마다 전송"이 되게 하고, 완료 사이의
+ * 간격을 히스토그램으로 모은다.
+ *
+ *   125us 와 250us 로 갈린다  -> 호스트는 8kHz 로 묻고 우리가 가끔 놓친 것
+ *   167us 근처로 뭉친다        -> 호스트가 그 주기로 묻는 것
+ */
+static volatile bool     poll_test = false;
+static volatile uint32_t poll_last = 0;
+static volatile uint32_t poll_min  = 0xFFFFFFFF;
+static volatile uint32_t poll_max  = 0;
+
+/* SOF — 버스 마이크로프레임. HS 면 데이터와 무관하게 125us 마다 뜬다. */
+static volatile uint32_t sof_cnt = 0;
+
 
 
 
@@ -113,6 +133,22 @@ static void kbdInCallback(uint8_t busid, uint8_t ep, uint32_t nbytes)
 
   sent_cnt++;
   is_tx_busy = false;
+
+  if (poll_test)
+  {
+    uint32_t now = micros();
+
+    if (poll_last)
+    {
+      uint32_t dt = now - poll_last;
+
+      if (dt < poll_min) poll_min = dt;
+      if (dt > poll_max) poll_max = dt;
+    }
+    poll_last  = now;
+    is_pending = true;            /* 매번 다시 싣는다 */
+  }
+
   kbdArm();
 }
 
@@ -174,6 +210,11 @@ void hidKbdEventHandler(uint8_t busid, uint8_t event)
       is_tx_busy    = false;
       break;
 
+    /* 초당 8000번 온다. 세는 것 말고는 하지 않는다. */
+    case USBD_EVENT_SOF:
+      sof_cnt++;
+      break;
+
     case USBD_EVENT_CONFIGURED:
       is_configured = true;
       is_tx_busy    = false;
@@ -212,6 +253,33 @@ uint32_t hidKbdGetSentCount(void)
 {
   return sent_cnt;
 }
+
+uint32_t hidKbdGetSofCount(void)
+{
+  return sof_cnt;
+}
+
+void hidKbdPollTest(bool on)
+{
+  uint32_t mask = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+
+  poll_test = false;
+
+  /* ★ 끌 때는 통계를 지우지 않는다. 지우면 읽기도 전에 사라진다. */
+  if (on)
+  {
+    poll_last  = 0;
+    poll_min   = 0xFFFFFFFF;
+    poll_max   = 0;
+    poll_test  = true;
+    is_pending = true;
+    kbdArm();                     /* 체인 시작 */
+  }
+  restore_global_irq(mask);
+}
+
+uint32_t hidKbdGetPollMin(void) { return (poll_min == 0xFFFFFFFF) ? 0 : poll_min; }
+uint32_t hidKbdGetPollMax(void) { return poll_max; }
 
 #endif
 #endif

@@ -72,6 +72,21 @@ endforeach(TMP_PATH)
 
 # HPM SDK 는 필요한 파일만 명시적으로 나열한다. (글로브 금지)
 #
+# 최적화 수준.
+#
+#   -O0 로 두면 ISR 진입·복귀와 스캔 루프가 그대로 느려진다. 8kHz USB 폴링은 완료 후
+#   125us 안에 재무장해야 해서 이 차이가 곧바로 드러난다. 그렇다고 -O2 로 올리면
+#   디버깅 때 변수가 최적화로 사라져 추적이 어렵다.
+#
+#   실측 결과 최적화는 8kHz 폴링과 무관했다 (-O0 / -Og 모두 약 5900/s). 그래서 시험
+#   중에는 추적이 쉬운 -O0 를 기본으로 둔다.
+#     cmake -DHW_OPT=-O2 -S . -B build   으로 바꿀 수 있다.
+#
+if(NOT DEFINED HW_OPT)
+  set(HW_OPT -O0)
+endif()
+message(STATUS "Optimize: ${HW_OPT}")
+
 # 키보드 모델 선택. keyboards/<모델>/ 에 레이아웃 원본과 생성물이 들어 있다.
 #   cmake -DHW_KEYBOARD=<모델> -S . -B build  으로 전환
 if(NOT DEFINED HW_KEYBOARD)
@@ -259,7 +274,7 @@ target_compile_options(${EXECUTABLE} PRIVATE
   -Wuninitialized
 
   -g3
-  -O0
+  ${HW_OPT}
   )
 
 

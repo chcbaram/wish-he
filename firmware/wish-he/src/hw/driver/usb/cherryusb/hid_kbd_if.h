@@ -32,6 +32,17 @@ void     hidKbdSetReport(uint8_t modifier, const uint8_t *keys, uint32_t cnt);
 
 uint32_t hidKbdGetSentCount(void);
 
+/*
+ * 폴링 주기 측정 모드. 일부러 매번 재무장해 "폴링마다 전송"을 만들고
+ * 완료 사이 간격을 히스토그램으로 모은다. 평소에는 꺼둔다.
+ */
+void     hidKbdPollTest(bool on);
+uint32_t hidKbdGetPollMin(void);
+uint32_t hidKbdGetPollMax(void);
+
+/* SOF 카운트 — 버스 마이크로프레임. HS 면 8000/s 가 나와야 한다. */
+uint32_t hidKbdGetSofCount(void);
+
 
 #endif
 #endif

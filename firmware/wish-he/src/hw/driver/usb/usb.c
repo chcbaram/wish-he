@@ -188,7 +188,12 @@ void cliUsb(cli_args_t *args)
     c0 = hidKbdGetSentCount();
     while (millis() - t0 < sec * 1000)
     {
-      /* 아무것도 찍지 않는다. 메인 루프는 계속 돈다. */
+      /*
+       * ★ 여기서 cliLoopIdle() 을 불러야 한다.
+       *   RTOS 가 없어서 CLI 명령이 도는 동안 메인 루프가 멈춘다. 그냥 빈 루프로
+       *   기다리면 스캔도 리포트 갱신도 안 돌아서 "키를 눌러도 0" 이 나온다.
+       */
+      cliLoopIdle();
     }
     t1 = millis();
     c1 = hidKbdGetSentCount();
@@ -196,6 +201,37 @@ void cliUsb(cli_args_t *args)
     r = (c1 - c0) * 1000 / (t1 - t0);
     cliPrintf("KBD 리포트 : %d 개 / %d ms\n", (int)(c1 - c0), (int)(t1 - t0));
     cliPrintf("             %d /s\n", (int)r);
+    ret = true;
+  }
+
+  /* 호스트가 실제로 몇 us 마다 묻는지 — 매 폴링마다 전송하게 하고 간격을 잰다 */
+  if (args->argc == 1 && args->isStr(0, "poll"))
+  {
+    uint32_t sec = 1;
+    uint32_t c0, c1, t0, t1, r, s0;
+
+    cliPrintf("%d 초 동안 매 폴링마다 전송한다...\n", (int)sec);
+
+    s0 = hidKbdGetSofCount();
+    c0 = hidKbdGetSentCount();
+    hidKbdPollTest(true);
+
+    t0 = millis();
+    while (millis() - t0 < sec * 1000)
+    {
+      cliLoopIdle();          /* 메인 루프를 굶기지 않는다 */
+    }
+    t1 = millis();
+
+    hidKbdPollTest(false);
+    c1 = hidKbdGetSentCount();
+
+    r = (c1 - c0) * 1000 / (t1 - t0);
+    cliPrintf("SOF    : %d /s   <- 버스 마이크로프레임 (HS 면 8000)\n",
+              (int)((hidKbdGetSofCount() - s0) * 1000 / (t1 - t0)));
+    cliPrintf("전송   : %d /s   <- 실제로 데이터가 나간 횟수\n", (int)r);
+    cliPrintf("간격   : 최소 %d us, 최대 %d us\n",
+              (int)hidKbdGetPollMin(), (int)hidKbdGetPollMax());
     ret = true;
   }
 
@@ -293,6 +329,7 @@ void cliUsb(cli_args_t *args)
   {
     cliPrintf("usb info\n");
     cliPrintf("usb rate\n");
+    cliPrintf("usb poll\n");
     cliPrintf("usb tx\n");
     cliPrintf("usb rx\n");
     cliPrintf("usb duplex\n");
