@@ -21,7 +21,7 @@ bool hwInit(void)
 {
   cliInit();
   logInit();
-  resetInit();
+  resetInit();          /* 부팅 안전망 포함 — 연속 실패가 쌓였으면 돌아오지 않는다 */
   swtimerInit();
   ledInit();
   ws2812Init();

@@ -51,6 +51,16 @@
 #define      HW_UART_CH_CLI         HW_UART_CH_DEBUG
 
 
+/*
+ * 부팅 안전망.
+ *
+ * 부팅 도중 멈추는 펌웨어를 구우면 USB 가 안 올라와 복구가 막힌다. 시도 횟수를
+ * .noinit 에 세고, 한계를 넘으면 더 진행하지 않고 부트로더로 떨어진다.
+ * 하드폴트도 exception_handler 가 리셋하므로 같은 그물에 걸린다.
+ */
+#define      HW_BOOT_FAIL_LIMIT     3       /* 이만큼 연속 실패하면 부트로더로 */
+#define      HW_BOOT_OK_MS          3000    /* 메인 루프가 이만큼 살면 성공으로 본다 */
+
 //-- USB (CDC)
 //
 #define _USE_HW_USB

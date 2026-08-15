@@ -33,6 +33,18 @@
    start.S 의 c_startup() 이 0 으로 밀지 않는다. */
 static __attribute__((section(".noinit"))) fault_log_t fault_log;
 
+/*
+ * 부팅 시도 카운터. fault_log 와 같은 .noinit 이라 리셋해도 남는다.
+ * 별도 매직을 둬서 콜드 부팅(쓰레기값)과 구분한다.
+ */
+#define BOOT_LOG_MAGIC   0x424F4F54UL   /* 'BOOT' */
+
+static __attribute__((section(".noinit"))) struct
+{
+  uint32_t magic;
+  uint32_t fail_cnt;
+} boot_log;
+
 static volatile uint32_t tick_ms   = 0;
 static uint32_t          tick_hz   = 0;   /* mchtmr 클럭 (Hz)  */
 static uint32_t          tick_us   = 0;   /* 1us 당 카운트     */
@@ -82,6 +94,26 @@ bool itFaultIsValid(void)
 const fault_log_t *itFaultGet(void)
 {
   return &fault_log;
+}
+
+void itBootMarkStart(void)
+{
+  if (boot_log.magic != BOOT_LOG_MAGIC)
+  {
+    boot_log.magic    = BOOT_LOG_MAGIC;
+    boot_log.fail_cnt = 0;
+  }
+  boot_log.fail_cnt++;
+}
+
+void itBootMarkOk(void)
+{
+  boot_log.fail_cnt = 0;
+}
+
+uint32_t itBootGetFailCount(void)
+{
+  return (boot_log.magic == BOOT_LOG_MAGIC) ? boot_log.fail_cnt : 0;
 }
 
 void itFaultClear(void)
