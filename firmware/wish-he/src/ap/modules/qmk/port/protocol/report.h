@@ -18,7 +18,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #pragma once
 
 #include <stdint.h>
-#include "usb/cherryusb/usb_desc.h"   /* KBD_REPORT_LEN / KBD_ROLLOVER */
+#include "usb/cherryusb/usb_desc.h"   /* KBD_REPORT_LEN / KBD_ROLLOVER / EXK_* */
 #include <stdbool.h>
 #include "keycode.h"
 #include "util.h"
@@ -132,7 +132,11 @@ enum desktop_usages {
 
 // clang-format on
 
-#define NKRO_REPORT_BITS 30
+/*
+ * NKRO 비트맵 바이트 수. IF1(hid_exk_if.c)의 리포트 기술자와 반드시 같아야 한다 —
+ * 어긋나면 호스트가 리포트 길이를 다르게 알고 키가 엉뚱하게 들어간다.
+ */
+#define NKRO_REPORT_BITS EXK_NKRO_BYTES
 
 /* 부트 키보드 리포트 — [0] 모디파이어 [1] 예약 [2..7] 키 6개 */
 #define KEYBOARD_REPORT_KEYS KBD_ROLLOVER

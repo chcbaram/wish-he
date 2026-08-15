@@ -18,6 +18,7 @@
 #include "report.h"
 #include "keycode_config.h"
 #include "usb/cherryusb/hid_kbd_if.h"
+#include "usb/cherryusb/hid_exk_if.h"
 
 
 static uint8_t usb_keyboard_leds(void)
@@ -33,17 +34,27 @@ static void usb_send_keyboard(report_keyboard_t *report)
 
 static void usb_send_nkro(report_nkro_t *report)
 {
+#ifdef NKRO_ENABLE
+  /* report_nkro_t = { report_id, mods, bits[30] } — IF1 의 ID 1 배치와 같다 */
+  hidExkSendReport((const uint8_t *)report, sizeof(report_nkro_t));
+#else
   (void)report;
+#endif
 }
 
 static void usb_send_mouse(report_mouse_t *report)
 {
-  (void)report;
+  (void)report;   /* 마우스 인터페이스는 아직 없다 */
 }
 
 static void usb_send_extra(report_extra_t *report)
 {
+#ifdef EXTRAKEY_ENABLE
+  /* report_extra_t = { report_id, usage } — 시스템(3) / 컨슈머(4) 둘 다 이 모양 */
+  hidExkSendReport((const uint8_t *)report, sizeof(report_extra_t));
+#else
   (void)report;
+#endif
 }
 
 host_driver_t usb_driver = {
@@ -55,13 +66,25 @@ host_driver_t usb_driver = {
 };
 
 
-/* 부트 프로토콜만 쓴다. NKRO 인터페이스가 생기면 여기가 바뀐다. */
+/*
+ * NKRO 는 별도 인터페이스(IF1)라 부트 프로토콜과 무관하게 늘 보낼 수 있다.
+ *
+ * 보통 QMK 는 "호스트가 report protocol 을 쓸 때만 NKRO" 로 판단하는데, 그건 키보드
+ * 인터페이스 하나로 둘을 겸할 때 이야기다. 우리는 IF0(부트) 과 IF1(NKRO) 이 따로
+ * 있으므로 BIOS 는 IF0 을 보고 OS 는 IF1 을 본다.
+ *
+ * 실제로 NKRO 로 나갈지는 keymap_config.nkro (NK_TOGG 로 토글) 가 정한다.
+ */
 uint8_t keyboard_protocol_get(void)
 {
-  return 0;
+  return 1;
 }
 
 bool host_can_send_nkro(void)
 {
+#ifdef NKRO_ENABLE
+  return hidExkIsConfigured();
+#else
   return false;
+#endif
 }

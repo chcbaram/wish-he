@@ -49,7 +49,7 @@ set(QMK_SRC_FILES
   ${QMK_ROOT}/quantum/keymap_introspection.c   # keymap.c 를 #include 한다
   ${QMK_ROOT}/quantum/color.c
   ${QMK_ROOT}/quantum/process_keycode/process_grave_esc.c
-  ${QMK_ROOT}/quantum/process_keycode/process_magic.c
+  ${QMK_ROOT}/quantum/process_keycode/process_magic.c   # NK_TOGG
 )
 
 file(GLOB QMK_SRC_GLOB CONFIGURE_DEPENDS
@@ -81,3 +81,7 @@ add_compile_definitions(VIA_ENABLE)
 add_compile_definitions(RAW_ENABLE)
 add_compile_definitions(DYNAMIC_KEYMAP_ENABLE)
 add_compile_definitions(GRAVE_ESC_ENABLE)
+
+# NKRO 와 확장키는 IF1 (hid_exk_if.c) 로 나간다
+add_compile_definitions(NKRO_ENABLE)
+add_compile_definitions(EXTRAKEY_ENABLE)

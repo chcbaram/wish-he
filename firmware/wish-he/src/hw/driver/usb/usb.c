@@ -20,6 +20,8 @@
 #include "usb/cherryusb/cdc_acm_if.h"
 #include "usb/cherryusb/hid_if.h"
 #include "usb/cherryusb/hid_kbd_if.h"
+#include "usb/cherryusb/hid_exk_if.h"
+#include "usb/cherryusb/hid_trk_if.h"
 #include "usb/cherryusb/usb_desc.h"
 #endif
 
@@ -64,12 +66,16 @@ bool usbBegin(UsbMode_t usb_mode)
   /*
    * 등록 순서가 인터페이스 번호다 (usb_desc.h 의 배치와 반드시 일치해야 한다).
    *   hidKbdInit()    -> IF0   (부트 키보드는 반드시 첫 번째)
-   *   hidIfInit()     -> IF1
-   *   cdcIfRegister() -> IF2, IF3
+   *   hidExkInit()    -> IF1   NKRO · 확장키
+   *   hidIfInit()     -> IF2   raw HID (VIA)
+   *   hidTrkInit()    -> IF3   HE 스트리밍
+   *   cdcIfRegister() -> IF4, IF5
    */
   usbDescRegister(0);
   hidKbdInit();
+  hidExkInit();
   hidIfInit();
+  hidTrkInit();
   cdcIfRegister();
 
   if (usbd_initialize(0, CONFIG_HPM_USBD_BASE, usbDescEventHandler) != 0)
@@ -88,6 +94,7 @@ void usbUpdate(void)
 {
 #if HW_USB_STACK == HW_USB_STACK_CHERRYUSB
   hidIfUpdate();
+  hidTrkUpdate();
 #endif
 }
 
@@ -163,10 +170,12 @@ void cliUsb(cli_args_t *args)
                 hidIfIsTracking(), (int)hidIfGetTrackCount());
       cliPrintf("KBD Ready   : %d      \n", hidKbdIsConfigured());
       cliPrintf("KBD Report  : %d /s   \n", (int)rate);
-      cliMoveUp(9);
+      cliPrintf("EXK Ready   : %d  (%d 리포트)\n",
+                hidExkIsConfigured(), (int)hidExkGetSentCount());
+      cliMoveUp(10);
       delay(100);
     }
-    cliMoveDown(9);
+    cliMoveDown(10);
     ret = true;
   }
 

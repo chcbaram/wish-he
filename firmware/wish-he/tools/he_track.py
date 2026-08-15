@@ -31,6 +31,14 @@ from iap_update import load_hidapi, enumerate_devices, APP_USAGE_PAGE, APP_VID, 
 REPORT_LEN = 32
 HDR        = 4
 
+# ★ 채널이 둘이다.
+#
+#   0xFF60  설정 채널 — 명령을 보내고 응답을 받는다 (VIA 와 같이 쓴다)
+#   0xFF61  스트리밍  — 장치가 트래킹 프레임만 밀어낸다. IN 뿐이다
+#
+# 처음에는 하나로 썼는데, 트래킹 프레임이 VIA 의 요청-응답 짝에 끼어들었다.
+TRK_USAGE_PAGE = 0xFF61
+
 CMD_LAYOUT = 0xC2
 CMD_TRACK  = 0xC3
 EVT_TRACK  = 0xC4
@@ -63,12 +71,7 @@ class Device:
         return buf.raw[:n]
 
     def command(self, cmd, arg=0, timeout_ms=1000):
-        """
-        명령을 보내고 그 명령의 응답을 받는다.
-
-        ★ 트래킹이 켜져 있으면 그 사이에 0xC4 프레임이 끼어든다. 태그가 다르므로
-          걸러내면 되지만, 명령 응답인 줄 알고 받으면 짝이 어긋난다.
-        """
+        """명령을 보내고 그 명령의 응답을 받는다."""
         self.write(bytes([cmd, arg]))
         deadline = time.time() + timeout_ms / 1000.0
         while time.time() < deadline:
@@ -108,7 +111,7 @@ def track(dev, on):
     return rsp[2], rsp[3], (travel or 400)
 
 
-def collect(dev, key_cnt, state, timeout_ms=500):
+def collect(trk, key_cnt, state, timeout_ms=500):
     """
     스냅샷 한 장이 완성될 때까지 프레임을 모은다.
 
@@ -117,7 +120,7 @@ def collect(dev, key_cnt, state, timeout_ms=500):
     """
     seen_wrap = False
     while True:
-        rsp = dev.read(timeout_ms)
+        rsp = trk.read(timeout_ms)
         if rsp is None:
             return False
         if rsp[0] != EVT_TRACK:
@@ -216,7 +219,14 @@ def main():
                  f"(usage page 0x{APP_USAGE_PAGE:04X}, "
                  f"VID {args.vid:04X} PID {args.pid:04X})")
 
-    dev = Device(lib, devs[0]["path"])
+    strm = [d for d in enumerate_devices(lib)
+            if d["usage_page"] == TRK_USAGE_PAGE
+            and d["vid"] == args.vid and d["pid"] == args.pid]
+    if not strm:
+        sys.exit(f"스트리밍 채널을 찾지 못했다 (usage page 0x{TRK_USAGE_PAGE:04X})")
+
+    dev  = Device(lib, devs[0]["path"])     # 설정 — 명령
+    trk  = Device(lib, strm[0]["path"])     # 스트리밍 — 프레임만
     try:
         layout = read_layout(dev)
         key_cnt, per_frame, travel = track(dev, True)
@@ -229,7 +239,7 @@ def main():
             t0 = time.time()
             n = 0
             while time.time() - t0 < 3.0:
-                if collect(dev, key_cnt, state):
+                if collect(trk, key_cnt, state):
                     n += 1
             dt = time.time() - t0
             print(f"스냅샷 {n}장 / {dt:.1f}s = {n/dt:.0f}/s")
@@ -237,7 +247,7 @@ def main():
 
         print("\x1b[2J", end="")
         while True:
-            if not collect(dev, key_cnt, state):
+            if not collect(trk, key_cnt, state):
                 continue
             lines = render(layout, state, key_cnt, travel, args.raw)
             sys.stdout.write("\x1b[H")
@@ -253,6 +263,7 @@ def main():
         except Exception:
             pass
         dev.close()
+        trk.close()
         print()
 
 

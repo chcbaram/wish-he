@@ -41,20 +41,13 @@ extern "C" {
 #define HID_CMD_LAYOUT            0xC2    /* 물리 배치 읽기 — 페이지 방식 */
 #define HID_CMD_TRACK             0xC3    /* 라이브 트래킹 on/off */
 
-/* 장치가 스스로 내보내는 프레임의 태그 (IN 리포트 [0]) */
-#define HID_EVT_TRACK             0xC4    /* 트래킹 스냅샷 조각 */
-
 /* 응답 상태 (IN 리포트 [1]) */
 #define HID_RESP_OK               0x00
 #define HID_RESP_UNKNOWN_CMD      0x01
 #define HID_RESP_FAIL             0x02
 
-/*
- * 한 프레임에 담는 키 수. 32바이트 리포트에서 헤더 4바이트를 빼면 28바이트고,
- * 키당 4바이트(원시값 + 깊이)라 7개다. 64키면 10프레임이 한 스냅샷이 된다.
- */
+/* 응답의 가변부가 시작하는 자리 */
 #define HID_TRACK_HDR             4
-#define HID_TRACK_PER_FRAME       ((HID_EP_MPS - HID_TRACK_HDR) / 4)
 
 /* 레이아웃 한 항목은 {x, y, w, h, row, col} 6바이트 */
 #define HID_LAYOUT_ENTRY          6

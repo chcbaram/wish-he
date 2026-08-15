@@ -20,10 +20,20 @@
 #include "usb/cherryusb/cdc_acm_if.h"
 #include "usb/cherryusb/hid_if.h"
 #include "usb/cherryusb/hid_kbd_if.h"
+#include "usb/cherryusb/hid_exk_if.h"
+#include "usb/cherryusb/hid_trk_if.h"
 
 
-#define USB_CONFIG_SIZE   (9 + HID_KEYBOARD_DESCRIPTOR_LEN \
-                         + HID_CUSTOM_INOUT_DESCRIPTOR_LEN + CDC_ACM_DESCRIPTOR_LEN)
+/*
+ * 인터페이스 6개 — 부트 키보드 / NKRO·확장 / raw HID / HE 스트리밍 / CDC 2개.
+ * IN 전용 HID 인터페이스는 키보드용 매크로를 그대로 쓴다 (서브클래스만 0).
+ */
+#define USB_IF_COUNT      0x06
+#define USB_CONFIG_SIZE   (9 + HID_KEYBOARD_DESCRIPTOR_LEN            /* IF0 부트 키보드 */ \
+                             + HID_KEYBOARD_DESCRIPTOR_LEN            /* IF1 NKRO·확장   */ \
+                             + HID_CUSTOM_INOUT_DESCRIPTOR_LEN        /* IF2 raw HID     */ \
+                             + HID_KEYBOARD_DESCRIPTOR_LEN            /* IF3 스트리밍    */ \
+                             + CDC_ACM_DESCRIPTOR_LEN)                /* IF4-5 CDC       */
 
 /*
  * 인터럽트 엔드포인트 폴링 주기. HS 는 2^(n-1) 마이크로프레임, FS 는 ms 단위다.
@@ -49,20 +59,28 @@ static const uint8_t device_descriptor[] = {
 };
 
 static const uint8_t config_descriptor_hs[] = {
-  USB_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x04, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
+  USB_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, USB_IF_COUNT, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
   HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_KBD, 0x01, KBD_REPORT_DESC_SIZE,
                                KBD_IN_EP, KBD_EP_MPS, KBD_INTERVAL_HS),
+  HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_EXK, 0x00, EXK_REPORT_DESC_SIZE,
+                               EXK_IN_EP, EXK_EP_MPS, KBD_INTERVAL_HS),
   HID_CUSTOM_INOUT_DESCRIPTOR_INIT(USB_IF_HID, 0x00, HID_REPORT_DESC_SIZE,
                                    HID_OUT_EP, HID_IN_EP, HID_EP_MPS, HID_INTERVAL_HS),
+  HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_TRK, 0x00, TRK_REPORT_DESC_SIZE,
+                               TRK_IN_EP, TRK_EP_MPS, HID_INTERVAL_HS),
   CDC_ACM_DESCRIPTOR_INIT(USB_IF_CDC, CDC_INT_EP, CDC_OUT_EP, CDC_IN_EP, USB_BULK_EP_MPS_HS, 0x02),
 };
 
 static const uint8_t config_descriptor_fs[] = {
-  USB_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x04, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
+  USB_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, USB_IF_COUNT, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
   HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_KBD, 0x01, KBD_REPORT_DESC_SIZE,
                                KBD_IN_EP, KBD_EP_MPS, KBD_INTERVAL_FS),
+  HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_EXK, 0x00, EXK_REPORT_DESC_SIZE,
+                               EXK_IN_EP, EXK_EP_MPS, KBD_INTERVAL_FS),
   HID_CUSTOM_INOUT_DESCRIPTOR_INIT(USB_IF_HID, 0x00, HID_REPORT_DESC_SIZE,
                                    HID_OUT_EP, HID_IN_EP, HID_EP_MPS, HID_INTERVAL_FS),
+  HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_TRK, 0x00, TRK_REPORT_DESC_SIZE,
+                               TRK_IN_EP, TRK_EP_MPS, HID_INTERVAL_FS),
   CDC_ACM_DESCRIPTOR_INIT(USB_IF_CDC, CDC_INT_EP, CDC_OUT_EP, CDC_IN_EP, USB_BULK_EP_MPS_FS, 0x02),
 };
 
@@ -72,20 +90,28 @@ static const uint8_t device_quality_descriptor[] = {
 
 /* other-speed 는 "지금 속도의 반대쪽"을 기술한다. HS 로 동작 중이면 FS 규격을 담는 게 맞다. */
 static const uint8_t other_speed_config_descriptor_hs[] = {
-  USB_OTHER_SPEED_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x04, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
+  USB_OTHER_SPEED_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, USB_IF_COUNT, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
   HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_KBD, 0x01, KBD_REPORT_DESC_SIZE,
                                KBD_IN_EP, KBD_EP_MPS, KBD_INTERVAL_FS),
+  HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_EXK, 0x00, EXK_REPORT_DESC_SIZE,
+                               EXK_IN_EP, EXK_EP_MPS, KBD_INTERVAL_FS),
   HID_CUSTOM_INOUT_DESCRIPTOR_INIT(USB_IF_HID, 0x00, HID_REPORT_DESC_SIZE,
                                    HID_OUT_EP, HID_IN_EP, HID_EP_MPS, HID_INTERVAL_FS),
+  HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_TRK, 0x00, TRK_REPORT_DESC_SIZE,
+                               TRK_IN_EP, TRK_EP_MPS, HID_INTERVAL_FS),
   CDC_ACM_DESCRIPTOR_INIT(USB_IF_CDC, CDC_INT_EP, CDC_OUT_EP, CDC_IN_EP, USB_BULK_EP_MPS_FS, 0x02),
 };
 
 static const uint8_t other_speed_config_descriptor_fs[] = {
-  USB_OTHER_SPEED_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x04, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
+  USB_OTHER_SPEED_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, USB_IF_COUNT, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
   HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_KBD, 0x01, KBD_REPORT_DESC_SIZE,
                                KBD_IN_EP, KBD_EP_MPS, KBD_INTERVAL_HS),
+  HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_EXK, 0x00, EXK_REPORT_DESC_SIZE,
+                               EXK_IN_EP, EXK_EP_MPS, KBD_INTERVAL_HS),
   HID_CUSTOM_INOUT_DESCRIPTOR_INIT(USB_IF_HID, 0x00, HID_REPORT_DESC_SIZE,
                                    HID_OUT_EP, HID_IN_EP, HID_EP_MPS, HID_INTERVAL_HS),
+  HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_TRK, 0x00, TRK_REPORT_DESC_SIZE,
+                               TRK_IN_EP, TRK_EP_MPS, HID_INTERVAL_HS),
   CDC_ACM_DESCRIPTOR_INIT(USB_IF_CDC, CDC_INT_EP, CDC_OUT_EP, CDC_IN_EP, USB_BULK_EP_MPS_HS, 0x02),
 };
 
@@ -149,7 +175,9 @@ void usbDescRegister(uint8_t busid)
 void usbDescEventHandler(uint8_t busid, uint8_t event)
 {
   hidKbdEventHandler(busid, event);
+  hidExkEventHandler(busid, event);
   hidIfEventHandler(busid, event);
+  hidTrkEventHandler(busid, event);
   cdcIfEventHandler(busid, event);
 }
 

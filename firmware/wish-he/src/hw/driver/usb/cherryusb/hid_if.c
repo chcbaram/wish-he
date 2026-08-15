@@ -14,17 +14,11 @@
  *   기록은 ROM API 로 XIP 플래시를 건드리는 일이라 인터럽트 컨텍스트에서 할 일이 아니다.
  *   그래서 콜백은 예약만 하고 hidIfUpdate() 가 메인 루프에서 실행한다.
  *
- * ★ 라이브 트래킹은 요청-응답이 아니라 장치가 밀어낸다.
+ * ★ 라이브 트래킹은 여기서 내보내지 않는다.
  *
- *   상용 보드는 페이지 번호를 받아 16키씩 돌려주는 요청-응답이다. 그러면 스냅샷
- *   하나에 왕복이 여러 번이라, 폴링 주기가 아무리 짧아도 왕복 수만큼 곱해진다.
- *   우리는 켜두면 장치가 계속 내보낸다 — 왕복이 없어 폴링 주기가 곧 프레임 주기다.
- *
- *     64키 x 4B(원시값+깊이) = 256B,  프레임당 7키  ->  스냅샷 10프레임
- *     125us 폴링  ->  1.25ms 스냅샷 = 초당 800장
- *
- *   래피드 트리거를 보려면 이 정도는 되어야 한다. 4mm 를 10ms 에 지나가는 타건에서
- *   스트로크 전체에 표본이 8장 실린다.
+ *   전용 인터페이스(hid_trk_if.c, IF3)가 맡는다. 이 채널로 같이 내보내면 VIA 의
+ *   요청-응답 짝이 어긋나기 때문이다 — VIA 는 명령 다음 IN 리포트를 응답이라고
+ *   가정한다. 여기서는 0xC3 으로 켜고 끄기만 한다.
  */
 
 #include "usb/cherryusb/hid_if.h"
@@ -38,6 +32,7 @@
 #include "usb/cherryusb/usb_desc.h"
 #include "reset.h"
 #include "keys.h"
+#include "usb/cherryusb/hid_trk_if.h"
 
 
 #define HID_BUSID           0
@@ -70,16 +65,9 @@ _Static_assert(sizeof(hid_report_desc) == HID_REPORT_DESC_SIZE,
                "HID_REPORT_DESC_SIZE 가 리포트 기술자 실제 크기와 다르다");
 
 
-/*
- * DMA 가 접근하는 스테이징 버퍼.
- *
- * 트래킹 프레임은 버퍼를 따로 둔다. 명령 응답과 같은 버퍼를 쓰면 한쪽을 채우는 도중
- * 다른 쪽이 전송을 걸 수 있다. 엔드포인트는 하나뿐이라 전송 권한은 is_tx_busy 로
- * 나눠 갖되, 버퍼는 겹치지 않게 한다.
- */
+/* DMA 가 접근하는 스테이징 버퍼 */
 USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX static uint8_t rx_report[HID_EP_MPS];
 USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX static uint8_t tx_report[HID_EP_MPS];
-USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX static uint8_t tk_report[HID_EP_MPS];
 
 enum
 {
@@ -103,11 +91,6 @@ static volatile uint32_t rx_count       = 0;
 static hid_raw_recv_t    raw_recv    = NULL;
 static uint8_t           raw_pending_buf[HID_EP_MPS];
 static volatile bool     raw_pending = false;
-
-/* 라이브 트래킹 */
-static volatile bool     track_on    = false;
-static          uint32_t track_idx   = 0;   /* 다음 프레임의 첫 키 인덱스 */
-static volatile uint32_t track_count = 0;   /* 내보낸 프레임 수 — usb info 진단용 */
 
 static struct usbd_interface hid_intf;
 
@@ -199,12 +182,11 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
     {
       uint16_t travel = keysGetTravelUm(0, 0);
 
-      track_on  = (p_rx[1] != 0);
-      track_idx = 0;
-      p_tx[2]   = KEYS_MAX;
-      p_tx[3]   = HID_TRACK_PER_FRAME;
-      p_tx[4]   = (uint8_t)(travel & 0xFF);
-      p_tx[5]   = (uint8_t)(travel >> 8);
+      hidTrkSetEnable(p_rx[1] != 0);
+      p_tx[2] = KEYS_MAX;
+      p_tx[3] = TRK_PER_FRAME;
+      p_tx[4] = (uint8_t)(travel & 0xFF);
+      p_tx[5] = (uint8_t)(travel >> 8);
       break;
     }
 
@@ -214,65 +196,6 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
   }
 
   return true;
-}
-
-/*
- * 트래킹 프레임 한 장.
- *
- *   [0] 태그 0xC4   [1] 첫 키 인덱스   [2] 이 프레임 키 수   [3] 전체 키 수
- *   [4..] 키당 4바이트   원시값(LE16) + 깊이(LE16, bit15 = 눌림)
- *
- * 깊이는 0.01mm 라 400 을 넘지 않으므로 상위 비트가 남는다. 거기에 눌림 판정을
- * 실어 보내면 호스트가 임계값을 몰라도 상용 화면처럼 체크 표시를 그릴 수 있다.
- *
- * ★ 버퍼를 채운 뒤에 전송 권한을 잡는다. 그 사이 명령 응답이 끼어들면 이번 프레임은
- *   그냥 버린다 — 다음 폴링에 다시 만들면 되고, 트래킹은 최신값이 중요하지 빠짐없이
- *   가는 게 중요한 게 아니다.
- */
-static void hidTrackUpdate(void)
-{
-  uint32_t n = 0;
-  uint32_t mask;
-
-  if (track_on == false || is_configured == false) return;
-  if (is_tx_busy)                                  return;   /* 값싼 선검사 */
-
-  memset(tk_report, 0, HID_EP_MPS);
-
-  while (n < HID_TRACK_PER_FRAME && (track_idx + n) < KEYS_MAX)
-  {
-    uint32_t i   = track_idx + n;
-    uint32_t row = i / KEYS_CH_MAX;
-    uint32_t col = i % KEYS_CH_MAX;
-    uint32_t o   = HID_TRACK_HDR + n * 4;
-    uint16_t raw = keysGetRaw(row, col);
-    uint16_t um  = keysGetDepthUm(row, col);
-
-    if (keysGetPressed(row, col)) um |= 0x8000;
-
-    tk_report[o + 0] = (uint8_t)(raw & 0xFF);
-    tk_report[o + 1] = (uint8_t)(raw >> 8);
-    tk_report[o + 2] = (uint8_t)(um & 0xFF);
-    tk_report[o + 3] = (uint8_t)(um >> 8);
-    n++;
-  }
-
-  tk_report[0] = HID_EVT_TRACK;
-  tk_report[1] = (uint8_t)track_idx;
-  tk_report[2] = (uint8_t)n;
-  tk_report[3] = KEYS_MAX;
-
-  mask = disable_global_irq(CSR_MSTATUS_MIE_MASK);
-  if (is_tx_busy == false)
-  {
-    is_tx_busy = true;
-    usbd_ep_start_write(HID_BUSID, HID_IN_EP, tk_report, HID_EP_MPS);
-
-    track_idx += n;
-    if (track_idx >= KEYS_MAX) track_idx = 0;
-    track_count++;
-  }
-  restore_global_irq(mask);
 }
 
 /*
@@ -307,7 +230,7 @@ void hidIfSetRawReceiveFunc(hid_raw_recv_t func)
   raw_recv = func;
 }
 
-/* 메인 루프에서 부른다. 트래킹 프레임을 내보내고, 예약된 리셋을 실제로 수행한다. */
+/* 메인 루프에서 부른다. 미뤄둔 VIA 명령과 예약된 리셋을 실제로 수행한다. */
 void hidIfUpdate(void)
 {
   if (raw_pending)
@@ -315,8 +238,6 @@ void hidIfUpdate(void)
     raw_pending = false;
     if (raw_recv != NULL) raw_recv(raw_pending_buf, HID_EP_MPS);
   }
-
-  hidTrackUpdate();
 
   if (pending_action == ACTION_NONE) return;
 
@@ -402,13 +323,11 @@ void hidIfEventHandler(uint8_t busid, uint8_t event)
     case USBD_EVENT_DISCONNECTED:
       is_configured = false;
       is_tx_busy    = false;
-      track_on      = false;   /* 도구가 끄지 않고 사라져도 계속 쏘지 않게 */
       break;
 
     case USBD_EVENT_CONFIGURED:
       is_configured = true;
       is_tx_busy    = false;
-      track_on      = false;
       usbd_ep_start_read(busid, HID_OUT_EP, rx_report, HID_EP_MPS);
       break;
 
@@ -423,9 +342,6 @@ bool hidIfInit(void)
   is_tx_busy     = false;
   pending_action = ACTION_NONE;
   rx_count       = 0;
-  track_on       = false;
-  track_idx      = 0;
-  track_count    = 0;
 
   usbd_add_interface(HID_BUSID,
                      usbd_hid_init_intf(HID_BUSID, &hid_intf,
@@ -443,7 +359,7 @@ bool hidIfIsConfigured(void)
 
 bool hidIfIsTracking(void)
 {
-  return track_on;
+  return hidTrkIsEnabled();
 }
 
 uint32_t hidIfGetRxCount(void)
@@ -453,7 +369,7 @@ uint32_t hidIfGetRxCount(void)
 
 uint32_t hidIfGetTrackCount(void)
 {
-  return track_count;
+  return hidTrkGetFrameCount();
 }
 
 #endif
