@@ -78,6 +78,39 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
 /* 완료를 기다리다 이만큼 돌면 포기한다. 스핀이 영원히 걸리는 것만 막으면 된다. */
 #define KEYS_WAIT_LIMIT         100000
 
+/* 기준값을 잡을 때 평균낼 스캔 횟수. 38us 스캔이니 32회여도 1.3ms 다. */
+#define KEYS_CAL_SAMPLES        32
+
+/* keys map 에서 이보다 작게 움직인 건 노이즈로 보고 무시한다 */
+#define KEYS_MAP_REPORT_MIN     300
+
+/*
+ * 판정 임계값 — 실측 기준.
+ *
+ *   기준값(무압)      약 40000 ~ 46000   (셀 간 편차 약 5800)
+ *   풀 스트로크       약 13400 카운트    (누르면 값이 내려간다)
+ *   무압 노이즈       500 미만
+ *
+ * 스트로크의 30% 에서 눌림, 19% 에서 해제. 둘 사이 간격이 히스테리시스다.
+ */
+#define KEYS_PRESS_LEVEL        4000
+#define KEYS_RELEASE_LEVEL      2500
+
+/*
+ * 기준값 추적 — 안 눌린 상태가 물리적 극단(자석이 가장 멀다)이므로 러닝 최대값이다.
+ * 이 덕에 키를 누른 채 부팅해도 손을 떼는 순간 기준값이 제자리를 찾는다.
+ */
+#define KEYS_DRIFT_BAND         300     /* 이 안쪽이면 해제 상태로 보고 드리프트 보정 */
+#define KEYS_DRIFT_PERIOD       64      /* 스캔 이만큼마다 기준값을 1 내린다 */
+
+/*
+ * 부팅 캘리브레이션 이상치 판정.
+ *
+ * 기준값이 전체 중앙값보다 이만큼 아래면 "그 키는 눌린 채로 측정됐다"고 본다.
+ * 스트로크(13400)와 정상 편차(5800) 사이라 양쪽 모두와 안전한 거리가 있다.
+ */
+#define KEYS_CAL_OUTLIER        8000
+
 
 /*
  * ADC 시퀀스 DMA 버퍼.
@@ -96,9 +129,16 @@ static volatile bool adc0_done = false;
 static volatile bool adc1_done = false;
 
 static uint16_t raw[KEYS_STEP_MAX][KEYS_CH_MAX];
+static uint16_t base[KEYS_STEP_MAX][KEYS_CH_MAX];   /* 무압 기준값 (러닝 최대) */
+static uint16_t pressed[KEYS_STEP_MAX];             /* 행별 눌림 비트마스크 */
+static uint8_t  drift_cnt[KEYS_STEP_MAX][KEYS_CH_MAX];
+static bool     is_calibrated = false;
 static uint32_t scan_time_us = 0;
 static bool     is_init      = false;
 static uint32_t timeout_cnt  = 0;
+
+static void keysCalRejectOutlier(void);
+static void keysTrack(uint32_t step);
 
 #if CLI_USE(HW_KEYS)
 static void cliKeys(cli_args_t *args);
@@ -264,10 +304,17 @@ bool keysInit(void)
   cliAdd("keys", cliKeys);
 #endif
 
+  if (ret)
+  {
+    /* ★ 부팅 때 키를 누르고 있으면 그 값이 기준이 된다. 6편에서 이상치 걸러내기 */
+    keysCalibrate();
+  }
+
   logPrintf("[%s] keysInit()\n", ret ? "OK" : "E_");
   if (ret)
   {
-    logPrintf("     %d step x %d ch = %d keys\n", KEYS_STEP_MAX, KEYS_CH_MAX, KEYS_MAX);
+    logPrintf("     %d step x %d ch = %d keys, cal %d\n",
+              KEYS_STEP_MAX, KEYS_CH_MAX, KEYS_MAX, is_calibrated);
   }
 
   return ret;
@@ -301,6 +348,61 @@ static inline bool keysWaitDone(void)
     }
   }
   return true;
+}
+
+/*
+ * 기준값 추적 + 눌림 판정.
+ *
+ * 안 눌린 상태가 물리적 극단(자석이 가장 멀어 값이 가장 크다)이므로 기준값은
+ * 러닝 최대값이다. 이 하나로 세 가지가 같이 해결된다.
+ *
+ *   - 누른 채 부팅  -> 손을 떼는 순간 제 값을 찾는다
+ *   - 온도 드리프트 -> 위로 새면 즉시, 아래로 새면 천천히 따라간다
+ *   - 개체 편차     -> 셀마다 제 기준을 갖는다
+ */
+static void keysTrack(uint32_t step)
+{
+  for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+  {
+    uint16_t v = raw[step][c];
+    int32_t  d;
+
+    /* 해제 방향으로 벗어나면 그 값이 새 기준이다 — 즉시 */
+    if (v > base[step][c])
+    {
+      base[step][c]      = v;
+      drift_cnt[step][c] = 0;
+    }
+
+    d = (int32_t)base[step][c] - (int32_t)v;    /* 누를수록 커진다 */
+
+    /*
+     * 해제 근처에 머무는 동안만 기준값을 천천히 끌어내린다.
+     * 눌려 있는 셀은 d 가 커서 이 구간에 들어오지 않으므로 영향받지 않는다.
+     */
+    if (d > 0 && d < KEYS_DRIFT_BAND)
+    {
+      if (++drift_cnt[step][c] >= KEYS_DRIFT_PERIOD)
+      {
+        drift_cnt[step][c] = 0;
+        base[step][c]--;
+      }
+    }
+    else
+    {
+      drift_cnt[step][c] = 0;
+    }
+
+    /* 히스테리시스 — 임계값 부근에서 떨리지 않게 */
+    if (pressed[step] & (1U << c))
+    {
+      if (d < KEYS_RELEASE_LEVEL) pressed[step] &= ~(1U << c);
+    }
+    else
+    {
+      if (d > KEYS_PRESS_LEVEL)   pressed[step] |=  (1U << c);
+    }
+  }
 }
 
 bool keysUpdate(void)
@@ -337,6 +439,8 @@ bool keysUpdate(void)
       raw[step][i]                = (uint16_t)(adc0_buf[i] & 0xFFFF);
       raw[step][KEYS_SEQ_LEN + i] = (uint16_t)(adc1_buf[i] & 0xFFFF);
     }
+
+    if (is_calibrated) keysTrack(step);
   }
 
   scan_time_us = micros() - t_begin;
@@ -353,6 +457,128 @@ uint16_t keysGetRaw(uint8_t step, uint8_t ch)
 uint32_t keysGetScanTime(void)
 {
   return scan_time_us;
+}
+
+/*
+ * 무압 기준값을 잡는다.
+ *
+ * 채널마다 기준값이 다르다 (자석·센서·기구 공차). 절대값이 아니라 "제 기준값에서
+ * 얼마나 벗어났는가"로 판정해야 하므로 부팅 때 한 번 재둔다.
+ * 여러 번 평균내서 노이즈를 줄인다.
+ */
+bool keysCalibrate(void)
+{
+  uint32_t acc[KEYS_STEP_MAX][KEYS_CH_MAX];
+
+
+  if (is_init == false) return false;
+
+  memset(acc, 0, sizeof(acc));
+
+  for (uint32_t n = 0; n < KEYS_CAL_SAMPLES; n++)
+  {
+    if (keysUpdate() == false) return false;
+
+    for (uint32_t s = 0; s < KEYS_STEP_MAX; s++)
+    {
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+      {
+        acc[s][c] += raw[s][c];
+      }
+    }
+  }
+
+  for (uint32_t s = 0; s < KEYS_STEP_MAX; s++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      base[s][c] = (uint16_t)(acc[s][c] / KEYS_CAL_SAMPLES);
+    }
+  }
+
+  keysCalRejectOutlier();
+
+  memset(drift_cnt, 0, sizeof(drift_cnt));
+  memset(pressed,   0, sizeof(pressed));
+  is_calibrated = true;
+
+  return true;
+}
+
+/*
+ * 부팅 때 눌려 있던 키를 걸러낸다.
+ *
+ * 누르면 값이 내려가므로, 기준값이 전체 중앙값보다 크게 낮은 셀은 "눌린 채 측정됐다".
+ * 그 셀만 중앙값으로 밀어두면 지금은 눌림으로 판정되고(맞다), 손을 떼는 순간
+ * 러닝 최대값 추적이 제 값을 찾아준다.
+ *
+ * 스트로크(약 13400)가 셀 간 정상 편차(약 5800)의 2배가 넘어서 이 판별이 성립한다.
+ */
+static void keysCalRejectOutlier(void)
+{
+  uint16_t sorted[KEYS_MAX];
+  uint32_t n = 0;
+  uint16_t median;
+
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++) sorted[n++] = base[st][c];
+  }
+
+  /* 64개뿐이라 삽입정렬로 충분하다 */
+  for (uint32_t i = 1; i < n; i++)
+  {
+    uint16_t v = sorted[i];
+    uint32_t j = i;
+    while (j > 0 && sorted[j - 1] > v) { sorted[j] = sorted[j - 1]; j--; }
+    sorted[j] = v;
+  }
+  median = sorted[n / 2];
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      if ((int32_t)median - (int32_t)base[st][c] > KEYS_CAL_OUTLIER)
+      {
+        logPrintf("[  ] s%d/ch%d 눌린 채 캘리 (%d -> 중앙값 %d)\n",
+                  (int)st, (int)c, (int)base[st][c], (int)median);
+        base[st][c] = median;
+      }
+    }
+  }
+}
+
+/* 기준값 대비 편차. 부호가 어느 쪽으로 움직이는지는 실측으로 정한다. */
+int32_t keysGetDelta(uint8_t step, uint8_t ch)
+{
+  if (step >= KEYS_STEP_MAX || ch >= KEYS_CH_MAX) return 0;
+  if (is_calibrated == false)                     return 0;
+
+  return (int32_t)raw[step][ch] - (int32_t)base[step][ch];
+}
+
+uint16_t keysGetBase(uint8_t step, uint8_t ch)
+{
+  if (step >= KEYS_STEP_MAX || ch >= KEYS_CH_MAX) return 0;
+  return base[step][ch];
+}
+
+bool keysGetPressed(uint16_t row, uint16_t col)
+{
+  if (row >= KEYS_STEP_MAX || col >= KEYS_CH_MAX) return false;
+  return (pressed[row] & (1U << col)) != 0;
+}
+
+/*
+ * 행 비트마스크를 그대로 준다. QMK 의 matrix_row_t 와 비트 순서가 같아서
+ * 상위 계층은 이 보드가 HE 인지 일반 매트릭스인지 몰라도 된다.
+ */
+uint16_t keysGetRow(uint16_t row)
+{
+  if (row >= KEYS_STEP_MAX) return 0;
+  return pressed[row];
 }
 
 
@@ -398,7 +624,117 @@ void cliKeys(cli_args_t *args)
     for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++) cliPrintf("%d ", adc1_seq_ch[i]);
     cliPrintf("\nmux addr    : ");
     for (uint32_t i = 0; i < KEYS_STEP_MAX; i++) cliPrintf("%d ", mux_addr[i]);
-    cliPrintf("\ntimeout     : %d\n", (int)timeout_cnt);
+    cliPrintf("\ncalibrated  : %d\n", is_calibrated);
+    cliPrintf("scan        : %d us\n", (int)scan_time_us);
+    cliPrintf("timeout     : %d\n", (int)timeout_cnt);
+    ret = true;
+  }
+
+  /* 눌린 키를 실시간으로 본다 */
+  if (args->argc == 0)
+  {
+    while (cliKeepLoop())
+    {
+      keysUpdate();
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        cliPrintf("  s%-2d ", (int)st);
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          cliPrintf(" %s", keysGetPressed(st, c) ? "[#]" : " . ");
+        }
+        cliPrintf("   0x%02X\n", (int)keysGetRow(st));
+      }
+      cliMoveUp(KEYS_STEP_MAX);
+      delay(30);
+    }
+    cliMoveDown(KEYS_STEP_MAX);
+    ret = true;
+  }
+
+  if (args->argc == 1 && args->isStr(0, "base"))
+  {
+    cliPrintf("기준값을 다시 잡는다 — 키에서 손을 떼고 있을 것\n");
+    delay(300);
+    if (keysCalibrate())
+    {
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        cliPrintf("  s%-2d ", (int)st);
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++) cliPrintf(" %5d", (int)base[st][c]);
+        cliPrintf("\n");
+      }
+    }
+    else
+    {
+      cliPrintf("[E_] 캘리브레이션 실패\n");
+    }
+    ret = true;
+  }
+
+  /*
+   * 키 하나를 누르면 어느 셀이 얼마나 움직이는지 알려준다.
+   * 64셀 <-> 실제 키 위치 표를 이걸로 만든다.
+   */
+  if (args->argc == 1 && args->isStr(0, "map"))
+  {
+    int32_t  last_d  = 0;
+    uint32_t last_st = 0, last_ch = 0;
+
+    cliPrintf("키를 하나씩 눌러본다. 가장 크게 움직인 셀을 표시한다.\n\n");
+
+    while (cliKeepLoop())
+    {
+      int32_t  best   = 0;
+      uint32_t best_s = 0, best_c = 0;
+
+      keysUpdate();
+
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          int32_t d = keysGetDelta(st, c);
+          int32_t a = (d < 0) ? -d : d;
+
+          if (a > ((best < 0) ? -best : best)) { best = d; best_s = st; best_c = c; }
+        }
+      }
+
+      /* 값이 크게 바뀐 순간에만 한 줄 남긴다 — 스크롤이 넘치지 않게 */
+      if (((best < 0) ? -best : best) > KEYS_MAP_REPORT_MIN &&
+          (best_s != last_st || best_c != last_ch ||
+           ((best - last_d) > 200) || ((last_d - best) > 200)))
+      {
+        cliPrintf("  s%d / ch%d   delta %+6d   (raw %5d, base %5d)\n",
+                  (int)best_s, (int)best_c, (int)best,
+                  (int)raw[best_s][best_c], (int)base[best_s][best_c]);
+        last_d = best; last_st = best_s; last_ch = best_c;
+      }
+      delay(20);
+    }
+    ret = true;
+  }
+
+  /* 편차 표. 눌린 셀이 표에서 바로 보인다. */
+  if (args->argc == 1 && args->isStr(0, "watch"))
+  {
+    while (cliKeepLoop())
+    {
+      keysUpdate();
+      cliPrintf("      ");
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++) cliPrintf(" ch%-3d", (int)c);
+      cliPrintf("\n");
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        cliPrintf("  s%-2d ", (int)st);
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++) cliPrintf(" %+5d", (int)keysGetDelta(st, c));
+        cliPrintf("\n");
+      }
+      cliMoveUp(KEYS_STEP_MAX + 1);
+      delay(50);
+    }
+    cliMoveDown(KEYS_STEP_MAX + 1);
     ret = true;
   }
 
@@ -487,6 +823,10 @@ void cliKeys(cli_args_t *args)
   {
     cliPrintf("keys info\n");
     cliPrintf("keys adc\n");
+    cliPrintf("keys           눌린 키 표시\n");
+    cliPrintf("keys base\n");
+    cliPrintf("keys map\n");
+    cliPrintf("keys watch\n");
     cliPrintf("keys dump\n");
     cliPrintf("keys raw\n");
     cliPrintf("keys time\n");
