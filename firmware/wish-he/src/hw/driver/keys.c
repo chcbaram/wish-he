@@ -31,6 +31,9 @@
 #include "hpm_interrupt.h"
 #include "hpm_soc_feature.h"
 
+/* keyboards/<모델>/layout.h — tools/gen_keymap.py 가 KLE 에서 생성한다 */
+#include "layout.h"
+
 
 #define KEYS_SEQ_LEN        KEYS_CH_MAX_PER_ADC   /* ADC 하나가 훑는 채널 수 */
 
@@ -103,6 +106,11 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
 
 /* keys noise 측정 시간 */
 #define KEYS_NOISE_MS           3000
+
+/* keys layout — 화면에 그릴 때 1 키유닛을 몇 칸으로 볼 것인가 */
+#define KEYS_GEO_UNIT           4       /* layout.h 좌표 단위 (1키 = 4) */
+#define KEYS_VIEW_UNIT          3       /* 화면 칸 */
+#define KEYS_VIEW_W             72
 
 /*
  * ★ 이 아래 숫자는 전부 12비트 영역이다 (원시 16비트를 >>4 한 값).
@@ -765,6 +773,61 @@ void cliKeys(cli_args_t *args)
   }
 
   /*
+   * 실제 키보드 배치로 그린다.
+   *
+   * 8x8 격자로는 매핑이 맞는지 알 수 없다. ESC 를 눌렀을 때 ESC 자리에 표시돼야
+   * 비로소 맞는 것이다. keyboards/<모델>/layout.h 의 물리 좌표를 그대로 쓴다.
+   */
+  if (args->argc == 1 && args->isStr(0, "layout"))
+  {
+    uint32_t rows = 0;
+
+    for (uint32_t i = 0; i < KEYS_LAYOUT_KEY_CNT; i++)
+    {
+      uint32_t r = keys_geo[i][1] / KEYS_GEO_UNIT + 1;
+      if (r > rows) rows = r;
+    }
+
+    cliPrintf("%s  —  %d 키\n", KEYS_LAYOUT_NAME, KEYS_LAYOUT_KEY_CNT);
+
+    while (cliKeepLoop())
+    {
+      for (uint32_t r = 0; r < rows; r++)
+      {
+        char line[KEYS_VIEW_W + 1];
+
+        memset(line, ' ', KEYS_VIEW_W);
+        line[KEYS_VIEW_W] = 0;
+
+        for (uint32_t i = 0; i < KEYS_LAYOUT_KEY_CNT; i++)
+        {
+          uint32_t x0, w;
+          bool     on;
+
+          if (keys_geo[i][1] / KEYS_GEO_UNIT != r) continue;
+
+          x0 = keys_geo[i][0] * KEYS_VIEW_UNIT / KEYS_GEO_UNIT;
+          w  = keys_geo[i][2] * KEYS_VIEW_UNIT / KEYS_GEO_UNIT;
+          if (w < 3) w = 3;
+          if (x0 + w > KEYS_VIEW_W) continue;
+
+          on = keysGetPressed(keys_geo[i][4], keys_geo[i][5]);
+
+          line[x0]         = '[';
+          line[x0 + w - 1] = ']';
+          for (uint32_t k = 1; k + 1 < w; k++) line[x0 + k] = on ? '#' : ' ';
+        }
+        cliPrintf("  %s\n", line);
+      }
+      keysUpdate();
+      cliMoveUp(rows);
+      delay(30);
+    }
+    cliMoveDown(rows);
+    ret = true;
+  }
+
+  /*
    * 매핑 측정 — 키를 누를 때마다 한 줄씩 순번을 붙여 기록한다.
    *
    * keys map 은 누르는 내내 찍혀 로그가 길어진다. 물리 배치와 (s, ch) 를 짝지을 때는
@@ -1035,7 +1098,8 @@ void cliKeys(cli_args_t *args)
   {
     cliPrintf("keys info\n");
     cliPrintf("keys adc\n");
-    cliPrintf("keys show      눌린 키 표시\n");
+    cliPrintf("keys show      눌린 키 표시 (8x8 격자)\n");
+    cliPrintf("keys layout    눌린 키 표시 (실제 배치)\n");
     cliPrintf("keys learn     매핑 측정 — 누를 때마다 \"s,ch\" 한 줄\n");
     cliPrintf("keys base\n");
     cliPrintf("keys map\n");

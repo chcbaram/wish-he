@@ -5,10 +5,10 @@ KLE 레이아웃 하나를 단일 진실 원본으로 삼아 VIA JSON 과 펌웨
 VIA 앱과 펌웨어가 같은 정보를 필요로 한다 — 어떤 (row, col) 이 실재하는 키이고
 물리적으로 어디에 있는가. 두 벌로 관리하면 반드시 어긋나므로 한 곳에서 뽑아 쓴다.
 
-    json/wish60-he-kle.json          <- 손으로 편집하는 건 이것 하나
-       │   (keyboard-layout-editor.com 에 그대로 붙여넣어 편집)
-       ├──▶  json/wish60-he-via.json        VIA 앱용
-       └──▶  src/hw/driver/keys_layout.h    펌웨어용 present/pos 표
+    keyboards/<모델>/layout-kle.json   <- 손으로 편집하는 건 이것 하나
+       │   (keyboard-layout-editor.com 의 Raw data 에 그대로 붙여넣어 편집)
+       ├──▶  keyboards/<모델>/layout-via.json   VIA 앱용
+       └──▶  keyboards/<모델>/layout.h          펌웨어용 present/pos/geo 표
 
 이 보드는 row = MUX 스텝(s), col = ADC 채널(ch) 이다. 매트릭스가 곧 하드웨어라
 변환 계층이 없다.
@@ -17,6 +17,7 @@ VIA 앱과 펌웨어가 같은 정보를 필요로 한다 — 어떤 (row, col) 
     python3 tools/gen_keymap.py --apply learn.txt   # 실측값을 KLE 범례에 채운다
     python3 tools/gen_keymap.py                     # KLE -> VIA JSON + 헤더
     python3 tools/gen_keymap.py --show              # 현재 매핑을 표로만 본다
+    python3 tools/gen_keymap.py --board <모델>      # 다른 모델을 대상으로
 
 의존성 없음.
 """
@@ -28,12 +29,35 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-KLE_PATH = ROOT / "json" / "wish60-he-kle.json"
-VIA_PATH = ROOT / "json" / "wish60-he-via.json"
-HDR_PATH = ROOT / "src" / "hw" / "driver" / "keys_layout.h"
+BOARDS = ROOT / "keyboards"
+DEFAULT_BOARD = "wish60-he-7u"
 
 VID, PID = "0x0483", "0x5304"
 ROWS, COLS = 8, 8
+
+# --board 로 정해지는 경로들
+KLE_PATH = VIA_PATH = HDR_PATH = None
+
+
+def set_board(name):
+    """
+    모델별 폴더 하나에 편집 원본과 생성물을 모은다.
+
+        keyboards/<모델>/layout-kle.json   <- 손으로 편집하는 건 이것 하나
+                        layout-via.json    VIA 앱용   (생성물)
+                        layout.h           펌웨어용   (생성물)
+
+    CMake 가 keyboards/${HW_KEYBOARD} 를 인클루드 경로에 넣으므로 펌웨어는
+    #include "layout.h" 한 줄이면 된다.
+    """
+    global KLE_PATH, VIA_PATH, HDR_PATH
+    d = BOARDS / name
+    if not d.is_dir():
+        have = sorted(p.name for p in BOARDS.iterdir() if p.is_dir()) if BOARDS.is_dir() else []
+        sys.exit(f"[E_] 그런 보드가 없다: {name}\n     있는 것: {', '.join(have) or '없음'}")
+    KLE_PATH = d / "layout-kle.json"
+    VIA_PATH = d / "layout-via.json"
+    HDR_PATH = d / "layout.h"
 
 ADDR_RE = re.compile(r"^(\d+),(\d+)$")
 LEARN_RE = re.compile(r"#(\d+)\s+(\d+),(\d+)")
@@ -83,6 +107,34 @@ def iter_keys(kle):
         for i, item in enumerate(row):
             if isinstance(item, str) and ADDR_RE.match(item.split("\n")[0]):
                 yield row, i, item
+
+
+def parse_geometry(kle):
+    """
+    KLE 좌표 규칙대로 훑어 (x, y, w, h, row, col) 을 키 단위로 뽑는다.
+
+    x/y 는 "다음 키 앞에 더할 상대 오프셋"이고, w/h 는 다음 키 하나에만 적용된 뒤
+    1 로 돌아간다. 키를 놓을 때마다 x 는 그 키의 폭만큼 나아간다.
+    """
+    out = []
+    y = 0.0
+    for row in rows_of(kle):
+        x, w, h = 0.0, 1.0, 1.0
+        for item in row:
+            if isinstance(item, dict):
+                x += item.get("x", 0)
+                y += item.get("y", 0)
+                w = item.get("w", w)
+                h = item.get("h", h)
+                continue
+            first = item.split("\n")[0]
+            if ADDR_RE.match(first):
+                s_, c_ = map(int, first.split(","))
+                out.append((x, y, w, h, s_, c_))
+            x += w
+            w = h = 1.0
+        y += 1.0
+    return out
 
 
 def addr_of(legend):
@@ -186,7 +238,7 @@ def cmd_gen():
         " * keys_layout.h  —  자동 생성. 직접 고치지 말 것.",
         " *",
         " *   생성 : tools/gen_keymap.py",
-        f" *   원본 : json/{KLE_PATH.name}",
+        f" *   원본 : keyboards/{KLE_PATH.parent.name}/{KLE_PATH.name}",
         " *",
         " * row = MUX 스텝, col = ADC 채널. 매트릭스가 곧 하드웨어다.",
         " */",
@@ -214,6 +266,21 @@ def cmd_gen():
     ]
     for n in range(0, len(keys), 8):
         L.append("  " + " ".join(f"{{{s},{c}}}," for s, c in keys[n:n + 8]))
+    L += ["};", ""]
+
+    # 물리 좌표 — CLI 가 실제 배치로 그려서 매핑을 눈으로 검증할 수 있게 한다.
+    geo = parse_geometry(kle)
+    L += [
+        "/*",
+        " * 물리 좌표. 단위는 1/4 키유닛 (1 키 = 4).",
+        " *   { x, y, w, h, row, col }",
+        " */",
+        "static const uint8_t keys_geo[KEYS_LAYOUT_KEY_CNT][6] =",
+        "{",
+    ]
+    for x, y, w, h, s_, c_ in geo:
+        L.append(f"  {{{round(x*4):3d},{round(y*4):3d},{round(w*4):3d},"
+                 f"{round(h*4):3d}, {s_},{c_} }},")
     L += ["};", "", "#endif", ""]
 
     HDR_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -227,7 +294,11 @@ def main():
     ap.add_argument("--apply", metavar="FILE",
                     help="keys learn 출력을 KLE 범례에 순서대로 반영한다")
     ap.add_argument("--show", action="store_true", help="현재 매핑만 표로 본다")
+    ap.add_argument("--board", default=DEFAULT_BOARD,
+                    help=f"keyboards/ 아래 모델 이름 (기본 {DEFAULT_BOARD})")
     args = ap.parse_args()
+
+    set_board(args.board)
 
     if args.apply:
         cmd_apply(args.apply)

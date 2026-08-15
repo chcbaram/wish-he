@@ -141,6 +141,13 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release .
 cmake --build build -j8
 ```
 
+키보드 모델은 `keyboards/` 아래에 있고 `-DHW_KEYBOARD=<모델>` 로 고른다 (기본
+`wish60-he-7u`). 레이아웃을 고쳤으면 먼저 생성물을 다시 만든다.
+
+```sh
+python3 tools/gen_keymap.py            # layout-kle.json -> layout-via.json + layout.h
+```
+
 산출물 `build/wish60-he.bin` 은 `0x80020000` 부터의 이미지다. 선두 4바이트가
 `48 50 4D 0A`(`"HPM\n"`) 여야 부트로더가 인식한다.
 
@@ -195,7 +202,7 @@ PY
 ```
 
 명령: `help` · `reset info|boot|reset` · `ws2812 info|all|set|off|test|rainbow` ·
-`keys info|dump|raw|time|adc` · `log` · `usb`
+`keys layout|show|learn|base|map|watch|noise|dump|time|info` · `log` · `usb`
 
 ### 4.2 RAM 링버퍼 (JTAG)
 

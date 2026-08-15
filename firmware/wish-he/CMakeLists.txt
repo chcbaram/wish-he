@@ -72,6 +72,13 @@ endforeach(TMP_PATH)
 
 # HPM SDK 는 필요한 파일만 명시적으로 나열한다. (글로브 금지)
 #
+# 키보드 모델 선택. keyboards/<모델>/ 에 레이아웃 원본과 생성물이 들어 있다.
+#   cmake -DHW_KEYBOARD=<모델> -S . -B build  으로 전환
+if(NOT DEFINED HW_KEYBOARD)
+  set(HW_KEYBOARD wish60-he-7u)
+endif()
+message(STATUS "Keyboard: ${HW_KEYBOARD}")
+
 set(HPM_SDK_DIR src/lib/hpm_sdk)
 
 set(SRC_FILES_SDK
@@ -143,6 +150,7 @@ add_executable(${EXECUTABLE}
 
 
 target_include_directories(${EXECUTABLE} PRIVATE
+  keyboards/${HW_KEYBOARD}
   src
   src/ap
   src/ap/modules
