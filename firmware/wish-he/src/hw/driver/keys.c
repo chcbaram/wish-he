@@ -801,13 +801,19 @@ void cliKeys(cli_args_t *args)
 
         for (uint32_t i = 0; i < KEYS_LAYOUT_KEY_CNT; i++)
         {
-          uint32_t x0, w;
+          uint32_t x0, x1, w;
           bool     on;
 
           if (keys_geo[i][1] / KEYS_GEO_UNIT != r) continue;
 
-          x0 = keys_geo[i][0] * KEYS_VIEW_UNIT / KEYS_GEO_UNIT;
-          w  = keys_geo[i][2] * KEYS_VIEW_UNIT / KEYS_GEO_UNIT;
+          /*
+           * ★ 폭을 따로 환산하면 안 된다. x0 과 w 를 각각 내림하면 오차가 두 번
+           *   생겨 행마다 오른쪽 끝이 한두 칸씩 어긋난다. 오른쪽 모서리를 직접
+           *   구해서 빼면 인접 키가 빈틈없이 붙고 행 끝도 정확히 맞는다.
+           */
+          x0 = (keys_geo[i][0]) * KEYS_VIEW_UNIT / KEYS_GEO_UNIT;
+          x1 = (keys_geo[i][0] + keys_geo[i][2]) * KEYS_VIEW_UNIT / KEYS_GEO_UNIT;
+          w  = x1 - x0;
           if (w < 3) w = 3;
           if (x0 + w > KEYS_VIEW_W) continue;
 
