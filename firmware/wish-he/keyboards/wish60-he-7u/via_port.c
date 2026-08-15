@@ -48,16 +48,26 @@ enum via_nkro_value
 };
 
 /*
- * HE 설정. 8편의 keys_cfg_t 가 이미 이 값들을 들고 있다.
+ * HE 설정. keys_cfg_t 가 이 값들을 들고 있다.
  *
- * 래피드 트리거와 데드존은 13편에서 펌웨어 로직이 생긴 뒤에 연다 — 지금 노출하면
- * 돌려도 아무 일이 없는 손잡이가 된다.
+ * 전부 0.01mm 단위고 VIA 규약대로 빅엔디안 16비트다. 플래그만 8비트다.
+ *
+ * ★ 여기서 쓰면 64키 전부에 적용된다.
+ *
+ *   판정은 키별 값을 보지만, 이 채널은 값 ID 두 바이트뿐이라 키 인덱스를 실을 자리가
+ *   없다. 그래서 전역(= 모두 선택)만 다룬다. 키를 골라 설정하는 것은 포크한 웹앱의
+ *   HE 탭에서 별도 명령으로 한다.
  */
 enum via_he_value
 {
-  val_he_press   = 1,   /* 입력지점 0.01mm */
-  val_he_release = 2,   /* 해제지점 0.01mm */
-  val_he_switch     = 3,   /* 스위치 종류 */
+  val_he_press      = 1,   /* 입력지점      0.01mm */
+  val_he_release    = 2,   /* 해제지점      0.01mm */
+  val_he_switch     = 3,   /* 스위치 종류   8비트 */
+  val_he_rt_press   = 4,   /* RT 재입력     0.01mm */
+  val_he_rt_release = 5,   /* RT 입력 해제  0.01mm */
+  val_he_bottom     = 6,   /* 바닥 보호     0.01mm */
+  val_he_dead       = 7,   /* 데드존        0.01mm */
+  val_he_rt_flags   = 8,   /* RT 켬 / 바닥 보호 / 연속 RT  8비트 */
 };
 
 
@@ -167,9 +177,16 @@ static void viaHeSet(uint8_t *p_val)
 
   switch (p_val[0])
   {
-    case val_he_press:   keysSetPressUm(v);            break;
-    case val_he_release: keysSetReleaseUm(v);          break;
+    case val_he_press:      keysSetPressUm(v);            break;
+    case val_he_release:    keysSetReleaseUm(v);          break;
+    case val_he_rt_press:   keysSetRtPressUm(v);          break;
+    case val_he_rt_release: keysSetRtReleaseUm(v);        break;
+    case val_he_bottom:     keysSetBottomUm(v);           break;
+    case val_he_dead:       keysSetDeadUm(v);             break;
+
+    /* 8비트짜리는 첫 바이트만 본다 */
     case val_he_switch:     keysSetSwitchType(p_val[1]);  break;
+    case val_he_rt_flags:   keysSetRtFlags(p_val[1]);     break;
     default: break;
   }
 }
@@ -180,9 +197,15 @@ static void viaHeGet(uint8_t *p_val)
 
   switch (p_val[0])
   {
-    case val_he_press:   v = keysGetPressUm();   break;
-    case val_he_release: v = keysGetReleaseUm(); break;
+    case val_he_press:      v = keysGetPressUm();     break;
+    case val_he_release:    v = keysGetReleaseUm();   break;
+    case val_he_rt_press:   v = keysGetRtPressUm();   break;
+    case val_he_rt_release: v = keysGetRtReleaseUm(); break;
+    case val_he_bottom:     v = keysGetBottomUm();    break;
+    case val_he_dead:       v = keysGetDeadUm();      break;
+
     case val_he_switch:     p_val[1] = keysGetSwitchType(); return;
+    case val_he_rt_flags:   p_val[1] = keysGetRtFlags();    return;
     default: return;
   }
 
