@@ -107,6 +107,17 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
 /* keys noise 측정 시간 */
 #define KEYS_NOISE_MS           3000
 
+/*
+ * keys bar — 눌린 깊이를 가로 막대로.
+ *
+ * 스트로크가 실측 838 이라 상한을 900 으로 두면 끝까지 눌러도 막대가 넘치지 않는다.
+ * 새 슬롯을 잡는 하한은 노이즈(±6)보다 충분히 커야 손 뗀 셀이 끼어들지 않는다.
+ */
+#define KEYS_BAR_SLOTS          6
+#define KEYS_BAR_W              40
+#define KEYS_BAR_FULL           900
+#define KEYS_BAR_MIN            30
+
 /* keys layout — 화면에 그릴 때 1 키유닛을 몇 칸으로 볼 것인가 */
 #define KEYS_GEO_UNIT           4       /* layout.h 좌표 단위 (1키 = 4) */
 #define KEYS_VIEW_UNIT          3       /* 화면 칸 */
@@ -997,6 +1008,129 @@ void cliKeys(cli_args_t *args)
     ret = true;
   }
 
+  /*
+   * 눌린 깊이를 가로 막대로 본다.
+   *
+   * keys map 은 숫자만 흘려서 "얼마나 깊이 들어갔나"가 눈에 안 들어온다. 여기서는
+   * 최대 6개까지 슬롯을 잡아 왼쪽에 좌표·값, 오른쪽에 막대를 그린다.
+   *
+   * 슬롯은 한 번 잡히면 값이 0 으로 돌아올 때까지 유지한다 — 떼는 동안 막대가
+   * 줄어드는 걸 봐야 하기 때문이다. 그래야 자리가 튀지 않는다.
+   */
+  if (args->argc == 1 && args->isStr(0, "bar"))
+  {
+    int8_t   slot_s[KEYS_BAR_SLOTS];
+    int8_t   slot_c[KEYS_BAR_SLOTS];
+    uint32_t slot_ms[KEYS_BAR_SLOTS];
+    uint32_t press_x = KEYS_PRESS_LEVEL * KEYS_BAR_W / KEYS_BAR_FULL;
+    uint32_t rel_x   = KEYS_RELEASE_LEVEL * KEYS_BAR_W / KEYS_BAR_FULL;
+
+    for (uint32_t i = 0; i < KEYS_BAR_SLOTS; i++)
+    {
+      slot_s[i] = -1; slot_c[i] = -1; slot_ms[i] = 0;
+    }
+
+    cliPrintf("눌린 깊이. ':' 해제 임계 %d, '|' 누름 임계 %d, 전체 %d\n\n",
+              KEYS_RELEASE_LEVEL, KEYS_PRESS_LEVEL, KEYS_BAR_FULL);
+
+    while (cliKeepLoop())
+    {
+      keysUpdate();
+
+      /* 살아 있는 슬롯의 시각을 갱신한다 — 재활용 순서를 정하는 기준이다 */
+      for (uint32_t i = 0; i < KEYS_BAR_SLOTS; i++)
+      {
+        if (slot_s[i] >= 0 && -keysGetDelta(slot_s[i], slot_c[i]) >= KEYS_BAR_MIN)
+        {
+          slot_ms[i] = millis();
+        }
+      }
+
+      /*
+       * 새로 움직인 셀을 슬롯에 앉힌다.
+       *
+       * ★ 빈 슬롯을 앞에서부터 찾으면 순차로 눌렀을 때 0번만 계속 재활용되어
+       *   한 줄에만 나온다. 빈 자리를 먼저 쓰고, 없으면 "가장 오래 조용했던"
+       *   슬롯을 밀어낸다. 그래야 동시에 눌러도, 하나씩 눌러도 쌓인다.
+       */
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          int32_t  d = -keysGetDelta(st, c);      /* 누를수록 양수 */
+          bool     have = false;
+          uint32_t pick = KEYS_BAR_SLOTS;
+
+          if (d < KEYS_BAR_MIN) continue;
+
+          for (uint32_t i = 0; i < KEYS_BAR_SLOTS; i++)
+          {
+            if (slot_s[i] == (int8_t)st && slot_c[i] == (int8_t)c) { have = true; break; }
+          }
+          if (have) continue;
+
+          for (uint32_t i = 0; i < KEYS_BAR_SLOTS; i++)      /* 빈 자리 우선 */
+          {
+            if (slot_s[i] < 0) { pick = i; break; }
+          }
+          if (pick == KEYS_BAR_SLOTS)                        /* 없으면 가장 오래 조용했던 슬롯 */
+          {
+            for (uint32_t i = 0; i < KEYS_BAR_SLOTS; i++)
+            {
+              if (-keysGetDelta(slot_s[i], slot_c[i]) >= KEYS_BAR_MIN) continue;
+              if (pick == KEYS_BAR_SLOTS || slot_ms[i] < slot_ms[pick]) pick = i;
+            }
+          }
+          if (pick < KEYS_BAR_SLOTS)
+          {
+            slot_s[pick]  = (int8_t)st;
+            slot_c[pick]  = (int8_t)c;
+            slot_ms[pick] = millis();
+          }
+        }
+      }
+
+      for (uint32_t i = 0; i < KEYS_BAR_SLOTS; i++)
+      {
+        char bar[KEYS_BAR_W + 1];
+
+        if (slot_s[i] < 0)
+        {
+          cliPrintf("  --      ---      ---  %*s   \n", KEYS_BAR_W, "");
+          continue;
+        }
+
+        {
+          int32_t  d = -keysGetDelta(slot_s[i], slot_c[i]);
+          uint32_t n;
+
+          if (d < 0) d = 0;
+          n = (uint32_t)d * KEYS_BAR_W / KEYS_BAR_FULL;
+          if (n > KEYS_BAR_W) n = KEYS_BAR_W;
+
+          for (uint32_t k = 0; k < KEYS_BAR_W; k++)
+          {
+            if (k < n)            bar[k] = '#';
+            else if (k == press_x) bar[k] = '|';
+            else if (k == rel_x)   bar[k] = ':';
+            else                   bar[k] = '.';
+          }
+          bar[KEYS_BAR_W] = 0;
+
+          cliPrintf("  s%d,ch%d  raw %4d  d %4d  %s %s\n",
+                    (int)slot_s[i], (int)slot_c[i],
+                    (int)keysGetRaw(slot_s[i], slot_c[i]), (int)d, bar,
+                    keysGetPressed(slot_s[i], slot_c[i]) ? "ON" : "  ");
+        }
+      }
+
+      cliMoveUp(KEYS_BAR_SLOTS);
+      delay(30);
+    }
+    cliMoveDown(KEYS_BAR_SLOTS);
+    ret = true;
+  }
+
   /* 편차 표. 눌린 셀이 표에서 바로 보인다. */
   if (args->argc == 1 && args->isStr(0, "watch"))
   {
@@ -1109,6 +1243,7 @@ void cliKeys(cli_args_t *args)
     cliPrintf("keys learn     매핑 측정 — 누를 때마다 \"s,ch\" 한 줄\n");
     cliPrintf("keys base\n");
     cliPrintf("keys map\n");
+    cliPrintf("keys bar       눌린 깊이를 막대로 (최대 6개)\n");
     cliPrintf("keys watch\n");
     cliPrintf("keys noise\n");
     cliPrintf("keys dump\n");
