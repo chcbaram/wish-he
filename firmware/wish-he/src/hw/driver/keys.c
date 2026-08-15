@@ -542,6 +542,38 @@ static uint16_t cal_min_tmp[KEYS_MAX];
  *
  * 자리를 박아두지 않고 키맵에서 찾는다 — 키맵이 바뀌어도 따라간다.
  */
+/*
+ * ★ 루프 명령은 키보드만으로도 빠져나올 수 있어야 한다.
+ *
+ *   report_off 를 켜는 명령(map·learn·layout·show·bar·watch·raw)이 도는 동안에는
+ *   키보드가 리포트를 안 보낸다. 그런데 콘솔은 그 키보드로 치는 터미널이다 —
+ *   Ctrl-C 를 칠 방법이 없어서 USB 를 뽑는 수밖에 없었다. cal 만 자체 탈출이
+ *   있었는데, 나머지도 같아야 한다.
+ *
+ *   Esc 를 누르면 나간다. 어차피 그동안 Esc 는 호스트로 안 나가므로 충돌이 없다.
+ */
+static bool keysKcHeld(uint8_t kc)
+{
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      if (keysGetPressed(st, c) && keys_keymap[st][c] == kc) return true;
+    }
+  }
+  return false;
+}
+
+static bool keysCliKeep(void)
+{
+  if (cliKeepLoop() == false) return false;
+
+  /* 리포트를 막는 동안에만 — 평소에는 Esc 가 진짜 Esc 여야 한다 */
+  if (report_off && keysKcHeld(KEYS_CANCEL_KC)) return false;
+
+  return true;
+}
+
 static bool keysComboHeld(uint8_t kc1, uint8_t kc2)
 {
   bool a = false;
@@ -1761,7 +1793,7 @@ void cliKeys(cli_args_t *args)
   /* 눌린 키를 실시간으로 본다 */
   if (args->argc == 1 && args->isStr(0, "show"))
   {
-    while (cliKeepLoop())
+    while (keysCliKeep())
     {
       /* 헤더와 데이터 모두 열 폭 5, 앞 라벨 폭 6 으로 맞춘다 */
       cliPrintf("      ");
@@ -1795,7 +1827,7 @@ void cliKeys(cli_args_t *args)
   {
     cliPrintf("%s  —  %d 키\n", KEYS_LAYOUT_NAME, KEYS_LAYOUT_KEY_CNT);
 
-    while (cliKeepLoop())
+    while (keysCliKeep())
     {
       keysDrawLayout(keysGetPressed);
       keysUpdate();
@@ -1821,7 +1853,7 @@ void cliKeys(cli_args_t *args)
     memset(prev, 0, sizeof(prev));
     cliPrintf("키를 순서대로 누르세요. 누를 때마다 한 줄씩 기록합니다.\n\n");
 
-    while (cliKeepLoop())
+    while (keysCliKeep())
     {
       keysUpdate();
       for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
@@ -1868,7 +1900,7 @@ void cliKeys(cli_args_t *args)
     cliPrintf("             [Ctrl + ESC]   취소 (저장하지 않음)\n\n");
     rows = keysLayoutRows();
 
-    while (cliKeepLoop())
+    while (keysCliKeep())
     {
       keysUpdate();
 
@@ -2084,7 +2116,7 @@ void cliKeys(cli_args_t *args)
 
     cliPrintf("키를 하나씩 눌러본다. 가장 크게 움직인 셀을 표시한다.\n\n");
 
-    while (cliKeepLoop())
+    while (keysCliKeep())
     {
       int32_t  best   = 0;
       uint32_t best_s = 0, best_c = 0;
@@ -2250,7 +2282,7 @@ void cliKeys(cli_args_t *args)
     cliPrintf("눌린 깊이. ':' 해제 임계 %d, '|' 누름 임계 %d, 전체 %d\n\n",
               thr[0].release, thr[0].press, KEYS_BAR_FULL);
 
-    while (cliKeepLoop())
+    while (keysCliKeep())
     {
       keysUpdate();
 
@@ -2351,7 +2383,7 @@ void cliKeys(cli_args_t *args)
   /* 편차 표. 눌린 셀이 표에서 바로 보인다. */
   if (args->argc == 1 && args->isStr(0, "watch"))
   {
-    while (cliKeepLoop())
+    while (keysCliKeep())
     {
       keysUpdate();
       cliPrintf("      ");
@@ -2382,7 +2414,7 @@ void cliKeys(cli_args_t *args)
   /* 살아있는 8x8 표. 키를 눌러 값이 어떻게 움직이는지 본다. */
   if (args->argc == 1 && args->isStr(0, "raw"))
   {
-    while (cliKeepLoop())
+    while (keysCliKeep())
     {
       keysUpdate();
       keysPrintTable();
