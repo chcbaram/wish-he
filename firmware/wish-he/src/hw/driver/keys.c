@@ -578,26 +578,20 @@ static uint16_t cal_min_tmp[KEYS_MAX];
  *   Ctrl-C 를 칠 방법이 없어서 USB 를 뽑는 수밖에 없었다. cal 만 자체 탈출이
  *   있었는데, 나머지도 같아야 한다.
  *
- *   Esc 를 누르면 나간다. 어차피 그동안 Esc 는 호스트로 안 나가므로 충돌이 없다.
+ *   ★ Esc 단독이 아니라 Ctrl+Esc 다.
+ *
+ *     처음에 Esc 단독으로 만들었더니 keys cal 이 망가졌다. 보정은 Esc 키까지
+ *     전부 눌러야 하는데 그 순간 빠져나가 버린다. cal 이 원래 쓰던 조합과 같게
+ *     맞춘다 — 보정 중에 Ctrl 과 Esc 를 동시에 누를 일은 없다.
  */
-static bool keysKcHeld(uint8_t kc)
-{
-  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
-  {
-    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
-    {
-      if (keysGetPressed(st, c) && keys_keymap[st][c] == kc) return true;
-    }
-  }
-  return false;
-}
+static bool keysComboHeld(uint8_t kc1, uint8_t kc2);
 
 static bool keysCliKeep(void)
 {
   if (cliKeepLoop() == false) return false;
 
-  /* 리포트를 막는 동안에만 — 평소에는 Esc 가 진짜 Esc 여야 한다 */
-  if (report_off && keysKcHeld(KEYS_CANCEL_KC)) return false;
+  /* 리포트를 막는 동안에만 — 평소에는 Ctrl+Esc 가 호스트로 가야 한다 */
+  if (report_off && keysComboHeld(KEYS_MOD_KC, KEYS_CANCEL_KC)) return false;
 
   return true;
 }
@@ -1973,7 +1967,13 @@ void cliKeys(cli_args_t *args)
     cliPrintf("             [Ctrl + ESC]   취소 (저장하지 않음)\n\n");
     rows = keysLayoutRows();
 
-    while (keysCliKeep())
+    /*
+     * ★ 여기만 keysCliKeep() 을 쓰지 않는다.
+     *
+     *   cal 은 Ctrl+Esc(취소)와 Ctrl+Enter(저장)를 스스로 구분해서 처리한다.
+     *   공용 탈출로 빠져나가면 cancel 플래그가 서지 않아 "취소인데 저장"이 된다.
+     */
+    while (cliKeepLoop())
     {
       keysUpdate();
 
