@@ -1758,6 +1758,9 @@ void cliKeys(cli_args_t *args)
     cliPrintf("keys raw\n");
     cliPrintf("keys time\n");
   }
+
+  /* ★ 반드시 되돌린다. 안 그러면 keys 명령을 한 번 쓴 뒤로 키보드가 죽는다. */
+  report_off = false;
 }
 #endif
 
