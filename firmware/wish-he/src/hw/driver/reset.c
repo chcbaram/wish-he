@@ -3,7 +3,7 @@
  *
  * 리셋 원인 조회와 부트로더(IAP) 진입.
  *
- * 이 보드는 상용 IAP 부트로더 위에 얹혀 있고, IAP 는 부팅할 때마다
+ * 이 보드는 기존 IAP 부트로더 위에 얹혀 있고, IAP 는 부팅할 때마다
  * 플래시 BOOT_FLAG_ADDR 워드를 본다 — 0xFFFFFFFF 가 아니면 앱으로 가지 않고
  * USB 업데이트 모드로 남는다. 그래서 "부트로더로 재부팅" 은 그 워드를 쓰고
  * 소프트 리셋하는 것이다. (docs/03-reset-boot.md)
@@ -34,10 +34,10 @@ static void cliReset(cli_args_t *args);
 #define BOOT_FLAG_ADDR        0x0001D000UL
 #define BOOT_FLAG_XIP_ADDR    (0x80000000UL + BOOT_FLAG_ADDR)
 
-/* IAP 는 != 0xFFFFFFFF 만 본다. 상용 펌웨어와 같은 값을 쓴다. */
+/* IAP 는 != 0xFFFFFFFF 만 본다. */
 #define BOOT_REQUEST_MAGIC    0x0000FFFFUL
 
-/* ppor_sw_reset() 카운터. 24MHz 기준이며 상용 펌웨어도 10 을 쓴다. */
+/* ppor_sw_reset() 카운터. 24MHz 기준이다. */
 #define RESET_SW_COUNTER      10
 
 /*

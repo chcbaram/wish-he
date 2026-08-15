@@ -43,7 +43,7 @@
 /*
  * option[1] 하위 4비트 = 주파수 옵션
  *   1:30MHz  2:50MHz  3:66MHz  4:80MHz  5:100MHz  6:120MHz  7:133MHz  8:166MHz
- * 5(100MHz) -> 6(120MHz). 동일 MCU 상용 보드(HPM5361)도 6을 쓴다.
+ * 5(100MHz) -> 6(120MHz).
  * 부팅 실패 시 BOOT0 스트랩으로 USB ISP 복구.
  */
 __attribute__ ((section(".nor_cfg_option"), used)) const uint32_t option[4] = {0xfcf90002, 0x00000006, 0x1000, 0x0};
@@ -190,10 +190,10 @@ void board_init_clock(void)
      *   "When using an external DCDC, don't set the internal DCDC voltage.
      *    The following call of pcfg_dcdc_set_voltage() should be commented out."
      *
-     * 상용 펌웨어도 같은 값(1175)을 쓰지만 구버전 SDK 라 READY 를 기다리지 않아
+     * 값 자체는 1175 로 같지만 구버전 SDK 는 READY 를 기다리지 않아
      * 그냥 넘어갔던 것으로 보인다.
      *
-     * 보드가 공급하는 전압 그대로 400MHz 로 돈다. 상용 펌웨어도 400MHz 대역이므로
+     * 보드가 공급하는 전압 그대로 400MHz 로 돈다. 이 전압에서 400MHz 는 규격 안이므로
      * 하드웨어가 지원하는 동작점이다. 480MHz 로 올리려면 VDD_SOC 실측이 먼저다.
      */
 

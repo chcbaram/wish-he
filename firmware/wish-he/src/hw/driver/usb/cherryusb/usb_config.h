@@ -49,7 +49,7 @@ void logPrintf(const char *fmt, ...);
  */
 #define USBD_VID           0x0483
 #define USBD_PID           0x5304      /* WISH60-HE */
-#define USBD_MAX_POWER     500      /* 상용 보드와 동일 (bMaxPower 0xFA). WS2812 83개 구동분 포함 */
+#define USBD_MAX_POWER     500      /* bMaxPower 0xFA. WS2812 83개 구동분 포함 */
 #define USBD_LANGID_STRING 1033
 
 #define CONFIG_USBDEV_REQUEST_BUFFER_LEN 512
