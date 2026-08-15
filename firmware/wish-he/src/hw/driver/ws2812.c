@@ -52,9 +52,21 @@ static void cliWs2812(cli_args_t *args);
 #define WS2812_BIT_1          0xFC
 
 #define WS2812_BYTES_PER_LED  24              /* 8bit x 3색 x 1byte */
-#define WS2812_RESET_BYTES    60              /* 60us low = latch (규격 50us 이상) */
+#define WS2812_RESET_BYTES    60              /* 60us low (규격 50us 이상) */
 
-#define WS2812_BUF_LEN        ((HW_WS2812_MAX_CH * WS2812_BYTES_PER_LED) + WS2812_RESET_BYTES)
+/*
+ * 프레임 앞뒤에 모두 리셋 구간을 둔다.
+ *
+ * 뒤쪽만 두면 첫 LED 가 색을 잘못 받는다 — 실제로 LED 1개가 초록으로 남았고,
+ * WS2812 는 GRB 순서라 초록이 첫 바이트다. 즉 전송 시작 시점의 라인 상태가
+ * 불확실해 첫 비트가 깨진 것이다. 앞에 60us low 를 깔면 LED 가 확실히
+ * 리셋 상태에서 데이터를 받기 시작한다.
+ */
+#define WS2812_LEAD_BYTES     WS2812_RESET_BYTES
+#define WS2812_DATA_OFF       WS2812_LEAD_BYTES
+#define WS2812_DATA_LEN       (HW_WS2812_MAX_CH * WS2812_BYTES_PER_LED)
+
+#define WS2812_BUF_LEN        (WS2812_LEAD_BYTES + WS2812_DATA_LEN + WS2812_RESET_BYTES)
 
 
 static bool     is_init = false;
@@ -109,12 +121,20 @@ bool ws2812Init(void)
 
   clock_add_to_group(clock_spi1, 0);
 
+  /*
+   * IAP 도 SPI1 로 LED 를 켠다. 넘어온 직후에는 전송이 아직 안 끝나 SPI 가
+   * active 일 수 있고, 그러면 첫 spi_setup_dma_transfer() 가 busy 로 거부된다.
+   * 실제로 부팅 시 소등만 안 되고 나중의 'ws2812 off' 는 되는 증상이 있었다.
+   */
+  (void)spi_wait_for_idle_status(WS2812_SPI);
+  (void)spi_poll_reset_complete(WS2812_SPI, spi_reset_all, 1000);
+
   spi_master_get_default_timing_config(&timing_config);
   timing_config.master_config.clk_src_freq_in_hz = clock_get_frequency(clock_spi1);
   timing_config.master_config.sclk_freq_in_hz    = WS2812_SPI_HZ;
   if (spi_master_timing_init(WS2812_SPI, &timing_config) != status_success)
   {
-    cliPrintf("[NG] ws2812Init() timing\n");
+    cliPrintf("[E_] ws2812Init() timing\n");
     return false;
   }
 
@@ -148,6 +168,13 @@ bool ws2812Init(void)
   ws2812Clear();
 
   is_init = true;
+
+  /*
+   * 버퍼만 지우면 소용없다 — WS2812 는 마지막으로 받은 값을 래치하고 있으므로
+   * 실제로 밀어내야 꺼진다. IAP 가 켜둔 색이 그대로 남는 것을 막는다.
+   */
+  ws2812Refresh();
+
   cliPrintf("[OK] ws2812Init()\n");
   cliPrintf("     ch : %d\n", HW_WS2812_MAX_CH);
 
@@ -164,7 +191,7 @@ void ws2812SetColor(uint16_t ch, uint8_t red, uint8_t green, uint8_t blue)
 
   if (ch >= HW_WS2812_MAX_CH) return;
 
-  p_buf = &frame_buf[ch * WS2812_BYTES_PER_LED];
+  p_buf = &frame_buf[WS2812_DATA_OFF + ch * WS2812_BYTES_PER_LED];
 
   /* WS2812 는 GRB 순서다 */
   ws2812WriteByte(&p_buf[0],  green);
@@ -184,10 +211,14 @@ void ws2812Clear(void)
 {
   ws2812SetColorAll(0, 0, 0);
 
-  /* latch 구간은 항상 low */
+  /* 앞뒤 리셋 구간은 항상 low */
+  for (int i = 0; i < WS2812_LEAD_BYTES; i++)
+  {
+    frame_buf[i] = 0x00;
+  }
   for (int i = 0; i < WS2812_RESET_BYTES; i++)
   {
-    frame_buf[HW_WS2812_MAX_CH * WS2812_BYTES_PER_LED + i] = 0x00;
+    frame_buf[WS2812_DATA_OFF + WS2812_DATA_LEN + i] = 0x00;
   }
 }
 

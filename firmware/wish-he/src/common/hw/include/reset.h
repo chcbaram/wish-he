@@ -32,7 +32,7 @@ void resetToReset(void);
 
 uint32_t resetGetBits(void);
 void     resetSetBits(uint32_t data);
-void     resetSetBootMode(uint32_t data);
+bool     resetSetBootMode(uint32_t data);   /* 기록+검증 성공 여부 */
 uint32_t resetGetBootMode(void);
 
 #endif

@@ -22,6 +22,7 @@
 #include "hpm_romapi.h"
 #include "hpm_ppor_drv.h"
 #include "hpm_interrupt.h"
+#include "hpm_l1c_drv.h"
 
 
 #if CLI_USE(HW_RESET)
@@ -39,10 +40,23 @@ static void cliReset(cli_args_t *args);
 /* ppor_sw_reset() 카운터. 24MHz 기준이며 상용 펌웨어도 10 을 쓴다. */
 #define RESET_SW_COUNTER      10
 
+/*
+ * XPI NOR 설정 옵션 — board.c 의 nor_cfg_option 과 반드시 같아야 한다.
+ * header 하위 4비트가 뒤따르는 옵션 워드 개수다. 2 로 주지 않으면 option1
+ * (핀그룹)이 무시돼 엉뚱한 플래시를 잡는다.
+ */
+#define NOR_CFG_HEADER        0xFCF90002U
+#define NOR_CFG_OPTION0       0x00000006U   /* 120MHz */
+#define NOR_CFG_OPTION1       0x00001000U   /* 2번 핀그룹 (PX00~PX07) */
+
 
 static bool     is_init    = false;
 static uint32_t reset_bits = 0;
 static uint32_t boot_mode  = 0;
+
+/* 진단: 어느 ROM API 에서 실패했는지 */
+static volatile uint32_t nor_step = 0;   /* 1=get_config 2=erase 3=program */
+static volatile hpm_stat_t nor_stat = 0;
 
 
 static const char *mode_bit_str[] =
@@ -54,6 +68,13 @@ static const char *mode_bit_str[] =
 
 static uint32_t resetGetBootFlag(void)
 {
+  /*
+   * ROM API 로 플래시를 고친 직후에는 D-cache 가 옛 값을 들고 있다.
+   * 무효화하지 않으면 방금 쓴 값을 못 읽는다 — 실제로 기록은 됐는데
+   * "실패" 로 오판했다. 주소는 4KB 정렬이라 캐시 라인 경계에 걸리지 않는다.
+   */
+  l1c_dc_invalidate(BOOT_FLAG_XIP_ADDR, 64);
+
   return *(volatile uint32_t *)BOOT_FLAG_XIP_ADDR;
 }
 
@@ -71,9 +92,9 @@ static bool resetEraseBootFlag(void)
   hpm_stat_t              status;
   uint32_t                mask;
 
-  cfg_option.header.U = 0xFCF90001U;
-  cfg_option.option0.U = 0x00000006U;   /* board.c 의 nor_cfg_option 과 동일 */
-  cfg_option.option1.U = 0x00001000U;   /* 2번 핀그룹 (PX00~PX07) */
+  cfg_option.header.U  = NOR_CFG_HEADER;
+  cfg_option.option0.U = NOR_CFG_OPTION0;
+  cfg_option.option1.U = NOR_CFG_OPTION1;
 
   mask = disable_global_irq(CSR_MSTATUS_MIE_MASK);
 
@@ -97,12 +118,13 @@ static bool resetWriteBootFlag(uint32_t data)
   uint32_t                mask;
   uint32_t                value = data;
 
-  cfg_option.header.U = 0xFCF90001U;
-  cfg_option.option0.U = 0x00000006U;
-  cfg_option.option1.U = 0x00001000U;
+  cfg_option.header.U  = NOR_CFG_HEADER;
+  cfg_option.option0.U = NOR_CFG_OPTION0;
+  cfg_option.option1.U = NOR_CFG_OPTION1;
 
   mask = disable_global_irq(CSR_MSTATUS_MIE_MASK);
 
+  nor_step = 1;
   status = rom_xpi_nor_get_config(HPM_XPI0, &nor_cfg, &cfg_option);
   if (status == status_success)
   {
@@ -112,15 +134,18 @@ static bool resetWriteBootFlag(uint32_t data)
      */
     if (*(volatile uint32_t *)BOOT_FLAG_XIP_ADDR != 0xFFFFFFFFUL)
     {
+      nor_step = 2;
       status = rom_xpi_nor_erase_sector(HPM_XPI0, xpi_xfer_channel_auto,
                                         &nor_cfg, BOOT_FLAG_ADDR);
     }
   }
   if (status == status_success)
   {
+    nor_step = 3;
     status = rom_xpi_nor_program(HPM_XPI0, xpi_xfer_channel_auto,
                                  &nor_cfg, &value, BOOT_FLAG_ADDR, sizeof(value));
   }
+  nor_stat = status;
 
   restore_global_irq(mask);
 
@@ -167,7 +192,10 @@ void resetLog(void)
 
 void resetToBoot(void)
 {
-  resetSetBootMode(1 << MODE_BIT_BOOT);
+  if (resetSetBootMode(1 << MODE_BIT_BOOT) == false)
+  {
+    return;                 /* 플래그를 못 썼으면 리셋하지 않는다 */
+  }
   resetToReset();
 }
 
@@ -190,10 +218,17 @@ void resetSetBits(uint32_t data)
   reset_bits = data;
 }
 
-void resetSetBootMode(uint32_t data)
+bool resetSetBootMode(uint32_t data)
 {
   boot_mode = data;
-  resetWriteBootFlag(BOOT_REQUEST_MAGIC);
+
+  if (resetWriteBootFlag(BOOT_REQUEST_MAGIC) == false)
+  {
+    return false;
+  }
+
+  /* 되읽어 확인한다 — 기록이 실패한 채로 리셋하면 그냥 앱으로 되돌아온다. */
+  return (resetGetBootFlag() != 0xFFFFFFFFUL);
 }
 
 uint32_t resetGetBootMode(void)
@@ -213,6 +248,8 @@ void cliReset(cli_args_t *args)
     cliPrintf("reset flag  : 0x%08X\n", (unsigned int)reset_bits);
     cliPrintf("boot flag   : 0x%08X (0xFFFFFFFF = 앱 부팅)\n",
               (unsigned int)resetGetBootFlag());
+    cliPrintf("nor step    : %d (1=get_config 2=erase 3=program)\n", (int)nor_step);
+    cliPrintf("nor stat    : 0x%X\n", (unsigned int)nor_stat);
     for (int i = 0; i < MODE_BIT_MAX; i++)
     {
       if (boot_mode & (1 << i))
@@ -225,9 +262,18 @@ void cliReset(cli_args_t *args)
 
   if (args->argc == 1 && args->isStr(0, "boot"))
   {
-    cliPrintf("jumping to iap...\n");
-    delay(100);                 /* CDC 로 문구가 나갈 시간 */
-    resetToBoot();
+    if (resetSetBootMode(1 << MODE_BIT_BOOT) == false)
+    {
+      cliPrintf("[E_] boot flag 기록 실패 (0x%08X)\n",
+                (unsigned int)resetGetBootFlag());
+    }
+    else
+    {
+      cliPrintf("boot flag = 0x%08X, jumping to iap...\n",
+                (unsigned int)resetGetBootFlag());
+      delay(100);               /* CDC 로 문구가 나갈 시간 */
+      resetToReset();
+    }
     ret = true;
   }
 

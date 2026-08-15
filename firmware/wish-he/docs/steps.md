@@ -12,79 +12,31 @@
 
 | | 단계 | 상태 |
 |---|---|---|
-| 1 | IAP 위에서 부팅 | ✅ |
-| 2 | 콘솔 확보 (RAM 로그 · USB CDC · CLI) | ✅ |
-| 3 | 리셋 / 부트로더 진입 | ✅ |
-| 4 | WS2812 (SPI + DMA) | ✅ |
+| 1 | [IAP 위에서 부팅](steps/01-boot-on-iap.md) | ✅ |
+| 2 | [콘솔 확보 (RAM 로그 · USB CDC · CLI)](steps/02-console.md) | ✅ |
+| 3 | [리셋 / 부트로더 진입](steps/03-reset-boot.md) | ✅ |
+| 4 | [WS2812 (SPI + DMA)](steps/04-ws2812.md) | ✅ |
 | 5 | ADC + MUX 원시값 스캔 | ⬜ **다음** |
 | 6 | 키 판정 — 임계값 on/off | ⬜ |
 | 7 | USB HID 키보드 + 키맵 | ⬜ |
 | 8 | VIA 지원 | ⬜ |
-| 9 | 파이썬 IAP 업데이터 | ⬜ |
+| 9 | [파이썬 IAP 업데이터](steps/09-iap-updater.md) | ✅ |
 | 10 | 고속화 — 8kHz 리포트 | ⬜ |
 | 11 | HE 고유 기능 — 래피드 트리거 | ⬜ |
 | 12 | LED 효과 · 전류 리미터 | ⬜ |
 
 ---
 
-## 1. IAP 위에서 부팅 ✅
+## 완료된 단계
 
-벤더 IAP 부트로더를 보존한 채 `0x80020000` 부터만 쓴다. 복구망이 세 겹으로 남는다.
+각 단계의 상세 — 무엇을 만들었고 어떻게 검증했으며 어떤 함정이 있었는지 — 는
+개별 문서에 있다.
 
-- 링커 `ORIGIN=0x80020000 / LENGTH=384KB`, 매직 `"HPM\n"`, 진입점 `+4`
-- `hpm_bootheader.c` 제외, `.start` 선두 `ALIGN(8)` 제거
-- 외부 전원 보드라 `pcfg_dcdc_set_voltage()` 호출 제거 (호출하면 무한 대기)
-- **IAP 인계 정리** — `mie` 클리어 / PLIC enable 클리어 / **PLIC pending 배수**
-
-**검증** — 콜드 부팅(전원 재인가)으로 ROM → IAP → 앱 경로 확인. 400MHz 동작 확인.
-자세한 내용은 [README.md](README.md) 6절.
-
-## 2. 콘솔 확보 ✅
-
-이 보드에는 UART 헤더도 디버그 LED 도 없다. 출력 수단부터 만든다.
-
-- `.noinit` RAM 링버퍼 — JTAG 로 읽는다. 리셋해도 남아 크래시 로그도 본다
-- USB CDC + CLI (`0483:5304`, `WISH60-HE`)
-
-**검증** — 부팅 로그를 JTAG 로 덤프, CDC 로 `help` 응답 확인.
-macOS 에서는 `/dev/cu.*` 를 써야 한다(`/dev/tty.*` 는 캐리어 대기로 블록).
-
-## 3. 리셋 / 부트로더 진입 ✅
-
-`m483-fw` 의 `reset` 모듈과 같은 인터페이스로 맞췄다.
-
-```
-reset info    리셋 플래그 · 부트 플래그
-reset boot    IAP 업데이트 모드로 재부팅
-reset reset   소프트 리셋
-```
-
-- `resetToReset()` → `ppor_sw_reset(HPM_PPOR, 10)`
-- `resetToBoot()` → 플래시 `0x8001D000` 에 매직 기록 후 리셋
-  (IAP 가 플래시만 확인하므로 선택의 여지가 없다. 자체 부트로더로 가면
-  PMIC GPR `0xF4110000` 로 옮기는 편이 낫다 — 플래시 마모가 없다)
-
-**검증** — `reset info` 동작 확인. **`reset boot` 은 아직 미실증.**
-
-## 4. WS2812 (SPI + DMA) ✅
-
-외부 LED 가 없으므로 네오픽셀이 유일한 시각 표시다. 스캔에 들어가기 전에
-**DMA 사용법을 먼저 검증**하는 목적도 있었다.
-
-![WS2812 데이터 경로](images/ws2812-dma.svg)
-
-- PA29 = SPI1.MOSI, 8MHz, SPI 1바이트 = WS2812 1비트 (`0`→`0xE0`, `1`→`0xFC`)
-- 83개, 프레임 2052 B, GRB 순서
-- HDMA 채널 2 로 논블로킹 전송 (2.05ms 동안 CPU 는 다른 일을 한다)
-
-**검증** — 전체 파랑·초록 발광, 무지개/흐르는 점 패턴, 소등 확인.
-
-**여기서 미리 잡은 것 (5단계 전에 발견해서 이득이 컸다)**
-1. **HDMA 채널은 전역 자원** — `uart.c` 가 ch0 을 쓰고 있어 충돌했다.
-   이제 `hw_def.h` 에서 일괄 배분한다. 우선순위는 채널 번호와 무관하며
-   `CHCTRL[n].CTRL` bit29 로 따로 준다(LOW/HIGH 2단계).
-2. **`dma_check_transfer_status()` 는 유휴 판정용이 아니다** — 완료 플래그가 없으면
-   `ONGOING` 을 반환한다. 자체 `is_busy` 플래그가 필요하다.
+- **[1. IAP 위에서 부팅](steps/01-boot-on-iap.md)** — 링커 · 외부 전원 DCDC 함정 · IAP 인계 정리
+- **[2. 콘솔 확보](steps/02-console.md)** — USB CDC + CLI · JTAG 로 읽는 RAM 링버퍼
+- **[3. 리셋 / 부트로더 진입](steps/03-reset-boot.md)** — `reset boot` · ROM API 플래시 · 캐시 함정
+- **[4. WS2812](steps/04-ws2812.md)** — SPI1 + HDMA 논블로킹 · DMA 채널 배분 · 전류 예산
+- **[9. 파이썬 IAP 업데이터](steps/09-iap-updater.md)** — JTAG 없는 USB 업데이트 (84KB / 1.2초)
 
 ---
 
@@ -144,12 +96,10 @@ uint16_t keysGetRow(uint16_t row);      /* row = MUX 스텝, col = ADC 채널 */
 - [ ] IF1 = raw HID, usage page `0xFF60`, 32B IN/OUT
 - [ ] VIA JSON (VID/PID 일치 필요)
 
-## 9. 파이썬 IAP 업데이터 ⬜
+## 9. 파이썬 IAP 업데이터 ✅
 
-JTAG 없이 USB 만으로 펌웨어를 교체한다.
-
-- [ ] `reset boot` 으로 IAP 진입 → `0x81`(시작) → `0x80`/`0x82`(데이터/페이지) → `0x83`(종료)
-- [ ] 프로토콜 상세는 `../hpm5361-fw/docs/board-iap.md` 3절
+완료 — [steps/09-iap-updater.md](steps/09-iap-updater.md) 참조.
+84,840 B 기록에 1.2초. `reset boot` → IAP → `tools/iap_update.py` → 앱 재부팅.
 
 ## 10. 고속화 — 8kHz 리포트 ⬜
 
