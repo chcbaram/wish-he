@@ -738,24 +738,64 @@ void cliKeys(cli_args_t *args)
   }
 
   /* 눌린 키를 실시간으로 본다 */
-  if (args->argc == 0)
+  if (args->argc == 1 && args->isStr(0, "show"))
   {
     while (cliKeepLoop())
     {
-      keysUpdate();
+      /* 헤더와 데이터 모두 열 폭 5, 앞 라벨 폭 6 으로 맞춘다 */
+      cliPrintf("      ");
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++) cliPrintf(" ch%d ", (int)c);
+      cliPrintf("   row\n");
+
       for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
       {
         cliPrintf("  s%-2d ", (int)st);
         for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
         {
-          cliPrintf(" %s", keysGetPressed(st, c) ? "[#]" : " . ");
+          cliPrintf(" %s ", keysGetPressed(st, c) ? "[#]" : " . ");
         }
         cliPrintf("   0x%02X\n", (int)keysGetRow(st));
       }
-      cliMoveUp(KEYS_STEP_MAX);
+      keysUpdate();
+      cliMoveUp(KEYS_STEP_MAX + 1);
       delay(30);
     }
-    cliMoveDown(KEYS_STEP_MAX);
+    cliMoveDown(KEYS_STEP_MAX + 1);
+    ret = true;
+  }
+
+  /*
+   * 매핑 측정 — 키를 누를 때마다 한 줄씩 순번을 붙여 기록한다.
+   *
+   * keys map 은 누르는 내내 찍혀 로그가 길어진다. 물리 배치와 (s, ch) 를 짝지을 때는
+   * "몇 번째로 누른 키가 어느 셀인가" 만 있으면 되므로 눌림 에지에서만 한 줄 낸다.
+   * 이 목록을 via.json 의 매트릭스 주소로 그대로 옮긴다.
+   */
+  if (args->argc == 1 && args->isStr(0, "learn"))
+  {
+    static uint16_t prev[KEYS_STEP_MAX];
+    uint32_t n = 0;
+
+    memset(prev, 0, sizeof(prev));
+    cliPrintf("키를 순서대로 누르세요. 누를 때마다 한 줄씩 기록합니다.\n\n");
+
+    while (cliKeepLoop())
+    {
+      keysUpdate();
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        uint16_t now  = keysGetRow(st);
+        uint16_t rise = now & (uint16_t)~prev[st];
+
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          if (rise & (1U << c)) cliPrintf("  #%02d  %d,%d\n", (int)++n, (int)st, (int)c);
+        }
+        prev[st] = now;
+      }
+      delay(5);
+    }
+    cliPrintf("\n%d 개 기록\n", (int)n);
     ret = true;
   }
 
@@ -995,7 +1035,8 @@ void cliKeys(cli_args_t *args)
   {
     cliPrintf("keys info\n");
     cliPrintf("keys adc\n");
-    cliPrintf("keys           눌린 키 표시\n");
+    cliPrintf("keys show      눌린 키 표시\n");
+    cliPrintf("keys learn     매핑 측정 — 누를 때마다 \"s,ch\" 한 줄\n");
     cliPrintf("keys base\n");
     cliPrintf("keys map\n");
     cliPrintf("keys watch\n");
