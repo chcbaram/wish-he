@@ -5,6 +5,8 @@
 5편에서 얻은 원시값을 눌림/해제로 바꾼다. 결과는 QMK 의 `matrix_row_t` 와 비트 순서가
 같은 행 비트마스크라, 상위 계층은 이 보드가 홀이펙트인지 일반 매트릭스인지 모른다.
 
+![키 신호 처리 경로](images/keys-pipeline.svg)
+
 ```c
 bool     keysGetPressed(uint16_t row, uint16_t col);   /* row = MUX 스텝, col = ADC 채널 */
 uint16_t keysGetRow(uint16_t row);

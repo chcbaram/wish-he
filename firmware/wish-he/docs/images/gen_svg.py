@@ -161,5 +161,120 @@ def ws2812_dma():
     s.save("ws2812-dma.svg")
 
 
+
+# ────────────────────────────────────────── 키 신호 처리 경로 (ADC -> 판정)
+def keys_pipeline():
+    W, H = 1180, 636
+    s = Svg(W, H, "키 신호 처리 경로")
+
+    s.text(40, 38, "키 하나가 눌리기까지 — 신호가 거치는 단계", size=17, weight="700")
+    s.text(40, 60, "숫자는 전부 실측값. 괄호 안은 12비트로 내리기 전 원시 16비트.",
+           size=12, fill=MUTED)
+
+    # ── 파이프라인 5단
+    bx, by, bw, bh, gap = 40, 88, 200, 132, 32
+    stages = [
+        ("① ADC 시퀀스",      PER_F,  PER_S, [
+            "ADC0 4채널", "ADC1 4채널", "동시 변환", "", "16비트 원시값"]),
+        ("② 12비트로",        ROM_F,  ROM_S, [
+            "raw >> 4", "", "하위 4비트는", "노이즈뿐이라", "버려도 손실 없음"]),
+        ("③ 데드밴드 ±7",     RAM_F,  RAM_S, [
+            "밴드 밖 → 즉시", "밴드 안 → 무시", "", "지연 0", "노이즈 p-p 12→5"]),
+        ("④ 기준값 추적",     FLASH_F, FLASH_S, [
+            "무압 = 물리적 극단", "", "큰 변화 → 즉시", "잔파도 → 512ms당 1", "누른 채 부팅 복구"]),
+        ("⑤ 판정",            APP_F,  APP_S, [
+            "d = base - raw", "", "d > 250 → 눌림", "d < 156 → 해제", "히스테리시스"]),
+    ]
+    for i, (title, f, st, lines) in enumerate(stages):
+        x = bx + i * (bw + gap)
+        s.rect(x, by, bw, bh, f, st, rx=6, sw=1.6)
+        s.text(x + bw/2, by + 24, title, size=13.5, anchor="middle", weight="700")
+        s.line(x + 12, by + 34, x + bw - 12, by + 34, stroke=st, sw=1)
+        for j, ln in enumerate(lines):
+            if ln:
+                s.text(x + 14, by + 54 + j*17, ln, size=11.5, mono=True)
+        if i < len(stages) - 1:
+            s.line(x + bw + 5, by + bh/2, x + bw + gap - 5, by + bh/2, sw=1.8, marker=True)
+
+    # 단계별 값의 크기
+    vy = by + bh + 34
+    s.text(40, vy, "각 단계에서 값이 얼마나 되나", size=13, weight="700")
+    cols = ["", "무압 기준값", "풀 스트로크", "노이즈 p-p", "누름 임계"]
+    rows = [
+        ("16비트 (①)",  "40,000 ~ 46,000", "13,400", "200", "4,000"),
+        ("12비트 (② ~)", "2,490 ~ 2,880",  "838",    "12",  "250"),
+    ]
+    cw = [130, 200, 150, 130, 130]
+    tx0, ty0 = 40, vy + 14
+    cx = tx0
+    for i, c in enumerate(cols):
+        s.text(cx + 8, ty0 + 16, c, size=11.5, fill=MUTED, weight="700")
+        cx += cw[i]
+    for r, row in enumerate(rows):
+        y = ty0 + 24 + r * 26
+        s.rect(tx0, y, sum(cw), 24, "#fafbfc" if r % 2 == 0 else BG, "#e5e7eb", rx=3, sw=0.8)
+        cx = tx0
+        for i, v in enumerate(row):
+            s.text(cx + 8, y + 17, v, size=11.5, mono=(i > 0),
+                   weight="700" if i == 0 else "400")
+            cx += cw[i]
+
+    # ── 실제 파형
+    gx, gy, gw, gh = 40, 402, 700, 196
+    s.text(gx, gy - 14, "키 하나를 눌렀다 뗄 때 (실측, 12비트)", size=13, weight="700")
+    s.rect(gx, gy, gw, gh, BG, "#e5e7eb", rx=4, sw=1)
+
+    base_y  = gy + 22
+    floor_y = gy + gh - 22
+
+    def lvl(d):                       # 편차 d(0~838) -> y
+        return base_y + (floor_y - base_y) * d / 838.0
+
+    press_y, rel_y = lvl(250), lvl(156)
+
+    s.line(gx, base_y, gx + gw, base_y, stroke=FLASH_S, sw=1.6)
+    s.text(gx + gw - 6, base_y - 7, "기준값 2524  (무압)", size=11, anchor="end",
+           fill=FLASH_S, weight="700", mono=True)
+    s.text(gx + 10, base_y - 7, "손 뗀 상태", size=11, fill=FLASH_S, mono=True)
+
+    s.line(gx, press_y, gx + gw, press_y, stroke=APP_S, sw=1.3, dash="5 4")
+    s.text(gx + 10, press_y - 6, "누름 250  여기서 눌림 판정", size=11,
+           fill=APP_S, weight="700", mono=True)
+    s.line(gx, rel_y, gx + gw, rel_y, stroke="#0ea5e9", sw=1.3, dash="5 4")
+    s.text(gx + gw - 6, rel_y + 15, "해제 156  (히스테리시스)", size=11, anchor="end",
+           fill="#0ea5e9", weight="700", mono=True)
+
+    # 실측 샘플 (keys map 출력)
+    seq = [0, 86, 429, 832, 247, 0]
+    n   = len(seq)
+    pts = [(gx + 40 + i * (gw - 120) / (n - 1), lvl(d)) for i, d in enumerate(seq)]
+    s.path("M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in pts), stroke=RAM_S, sw=2.4)
+    for (x, y), d in zip(pts, seq):
+        s.p.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.2" fill="{RAM_S}"/>')
+        if d:
+            s.text(x, y + 17, f"-{d}", size=11, anchor="middle", fill=RAM_S,
+                   weight="700", mono=True)
+
+    s.text(gx + 10, floor_y + 14, "바닥 = 스트로크 838", size=10.5, fill=MUTED, mono=True)
+
+    # 오른쪽 설명
+    nx = gx + gw + 26
+    s.rect(nx, gy, W - nx - 40, gh, "#fafbfc", "#e5e7eb", rx=5, sw=1)
+    boxlines(s, nx, gy, W - nx - 40, [
+        "샘플 간격이 넓은 건",
+        "필터 지연이 없기 때문이다.",
+        "",
+        "IIR 을 쓰던 때는 같은 속도로",
+        "눌러도 -652 까지밖에 못 갔다.",
+        "필터가 못 따라온 것이다.",
+        "",
+        "데드밴드는 밴드보다 큰 변화를",
+        "같은 샘플에서 반영한다.",
+    ], dy=16, size=11.5, mono=False)
+
+    s.save("keys-pipeline.svg")
+
+
 print("생성:")
 ws2812_dma()
+keys_pipeline()
