@@ -157,17 +157,27 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  */
 #define KEYS_CAL_OUTLIER        500
 
-/*
- * 평활 계수. 1/(2^n) 씩 따라간다. 스트로크 대비 지연은 무시할 수준이다.
- *
- * ★ 필터 상태는 16비트로 유지하고 결과만 12비트로 내린다.
- *   12비트 값에 직접 1/4 필터를 걸면 차이가 4 미만일 때 시프트가 0 이 되어 필터가
- *   마지막 몇 카운트를 영영 못 따라간다. 상태를 원래 정밀도로 두면 그 함정이 없다.
- */
-#define KEYS_SMOOTH_SHIFT       2
-
 /* 원시 16비트를 이만큼 내려 12비트 영역으로 쓴다 */
 #define KEYS_RAW_SHIFT          4
+
+/*
+ * 데드밴드 폭.
+ *
+ * ★ 왜 IIR 이 아니라 데드밴드인가 — 지연 때문이다.
+ *
+ *   처음에는 1차 IIR(1/4)을 썼다. 노이즈는 잘 줄었지만 정착이 63% 에 4스캔(152us),
+ *   90% 에 9스캔(342us) 걸린다. 키를 누르는 내내 뒤처진 값을 내므로 그대로 입력
+ *   지연이 된다. 8kHz 저지연이 이 보드의 존재 이유인데 필터 하나로 절반을 까먹는다.
+ *
+ *   데드밴드는 밴드보다 큰 변화에는 같은 샘플에서 즉시 따라간다 — 지연 0. 대신
+ *   ±BAND 로 양자화된다. 밴드 7 이면 스트로크 838 을 120단계로 나누므로 충분하다.
+ *
+ *   기준값 추적이 노이즈 꼭대기를 붙잡는 걸 막는다는 목적도 그대로 달성된다.
+ *   밴드 안쪽 움직임은 출력에 아예 반영되지 않아 추적기가 노이즈를 보지 못한다.
+ *
+ *   상용 보드가 쓰는 값과 같다 (12비트 영역에서 ±7). 실측 노이즈 ±6 바로 위다.
+ */
+#define KEYS_DEADBAND           7
 
 
 /*
@@ -186,7 +196,6 @@ static uint32_t adc1_buf[KEYS_SEQ_LEN];
 static volatile bool adc0_done = false;
 static volatile bool adc1_done = false;
 
-static uint16_t smooth[KEYS_STEP_MAX][KEYS_CH_MAX]; /* 16비트 필터 상태 (내부 전용) */
 static uint16_t raw[KEYS_STEP_MAX][KEYS_CH_MAX];    /* 12비트 — 판정·표시는 전부 이걸 쓴다 */
 static uint16_t base[KEYS_STEP_MAX][KEYS_CH_MAX];   /* 무압 기준값 (러닝 최대) */
 static uint16_t pressed[KEYS_STEP_MAX];             /* 행별 눌림 비트마스크 */
@@ -200,7 +209,7 @@ static bool     drift_due    = false;
 
 static void keysCalRejectOutlier(void);
 static void keysTrack(uint32_t step);
-static inline void keysSmooth(uint32_t step, uint32_t ch, uint32_t packed);
+static inline void keysFilter(uint32_t step, uint32_t ch, uint32_t packed);
 
 #if CLI_USE(HW_KEYS)
 static void cliKeys(cli_args_t *args);
@@ -413,22 +422,20 @@ static inline bool keysWaitDone(void)
 }
 
 /*
- * 1차 IIR 평활.
+ * 데드밴드 필터.
  *
- * 기준값이 러닝 최대값이라 노이즈 꼭대기를 그대로 붙잡는다. 생값을 그냥 넣으면
- * 기준값이 노이즈만큼 들리고, 그만큼 평상시 편차가 남는다. 근원에서 줄이는 게 낫다.
- *
- * 계수 1/4 이면 노이즈가 절반 이하로 줄고 지연은 스캔 몇 번(38us x 4)뿐이다.
+ * 밴드보다 크게 움직일 때만 출력이 따라간다. 큰 변화는 같은 샘플에서 즉시 반영되므로
+ * 지연이 없다. 밴드 안쪽 잔파도는 출력에 아예 나타나지 않는다.
  */
-static inline void keysSmooth(uint32_t step, uint32_t ch, uint32_t packed)
+static inline void keysFilter(uint32_t step, uint32_t ch, uint32_t packed)
 {
-  int32_t v = (int32_t)(packed & 0xFFFF);
-  int32_t p = (int32_t)smooth[step][ch];
+  int32_t v = (int32_t)((packed & 0xFFFF) >> KEYS_RAW_SHIFT);
+  int32_t o = (int32_t)raw[step][ch];
 
-  p += (v - p) >> KEYS_SMOOTH_SHIFT;
+  if      (v > o + KEYS_DEADBAND) o = v - KEYS_DEADBAND;
+  else if (v < o - KEYS_DEADBAND) o = v + KEYS_DEADBAND;
 
-  smooth[step][ch] = (uint16_t)p;
-  raw[step][ch]    = (uint16_t)(p >> KEYS_RAW_SHIFT);
+  raw[step][ch] = (uint16_t)o;
 }
 
 /*
@@ -525,8 +532,8 @@ bool keysUpdate(void)
 
     for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++)
     {
-      keysSmooth(step, i,                adc0_buf[i]);
-      keysSmooth(step, KEYS_SEQ_LEN + i, adc1_buf[i]);
+      keysFilter(step, i,                adc0_buf[i]);
+      keysFilter(step, KEYS_SEQ_LEN + i, adc1_buf[i]);
     }
 
     if (is_calibrated) keysTrack(step);
