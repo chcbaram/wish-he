@@ -113,13 +113,29 @@ static struct usbd_interface hid_intf;
  * 응답에서 인자 뒤가 곧 페이로드 자리다. 실패할 수 있는 명령이 생기면 그 첫
  * 바이트를 상태로 쓰면 된다 — 지금 명령들은 실패할 여지가 없어 안 쓴다.
  */
-static uint32_t hidCmdArgLen(uint8_t cmd)
+/*
+ * 되돌려 줄 인자 길이.
+ *
+ * ★ 보낸 만큼 그대로 돌려줘야 한다.
+ *
+ *   VIA 클라이언트는 응답이 [명령, 보낸 인자...] 로 시작하는지 확인하고, 안 맞으면
+ *   오류로 버린다. 키별 설정 쓰기는 인자가 16바이트인데 2바이트만 돌려주다가
+ *   전부 오류가 났다. 읽기는 인자가 2바이트뿐이라 통과해서, 읽기만 되고 쓰기가
+ *   안 되는 모양으로 나타났다.
+ *
+ *   그래서 명령만 보고는 정할 수 없다 — 같은 명령이라도 하위 명령에 따라 다르다.
+ */
+static uint32_t hidCmdArgLen(const uint8_t *p_rx)
 {
-  switch (cmd)
+  switch (p_rx[0])
   {
     case HID_CMD_LAYOUT: return 1;   /* 시작 인덱스 */
     case HID_CMD_TRACK:  return 1;   /* on/off */
-    case HID_CMD_KEYCFG: return 2;   /* get/set + 키 인덱스 */
+
+    case HID_CMD_KEYCFG:
+      /* get: [하위, idx]   set: [하위, idx] + 값 14바이트 */
+      return (p_rx[1] == HID_KEYCFG_SET) ? (2 + HID_KEYCFG_LEN) : 2;
+
     default:             return 0;
   }
 }
@@ -141,7 +157,7 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
    * 헷갈린다. 명령마다 인자 길이가 정해져 있으므로 딱 그만큼만 에코한다.
    */
   memset(p_tx, 0, HID_EP_MPS);
-  memcpy(p_tx, p_rx, hidCmdArgLen(cmd) + 1);
+  memcpy(p_tx, p_rx, hidCmdArgLen(p_rx) + 1);
 
   switch (cmd)
   {

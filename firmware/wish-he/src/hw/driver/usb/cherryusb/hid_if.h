@@ -51,6 +51,7 @@ extern "C" {
 #define HID_KEYCFG_GET            0x00
 #define HID_KEYCFG_SET            0x01
 #define HID_KEYCFG_OFF            3       /* 값이 시작하는 자리 */
+#define HID_KEYCFG_LEN            14      /* 쓰기가 싣는 값 바이트 수 */
 
 #define HID_CMD_INFO              0xC0    /* 보드 정보 */
 #define HID_CMD_RESET             0xC1    /* 그냥 리셋 */
