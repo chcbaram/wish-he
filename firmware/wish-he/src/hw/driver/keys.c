@@ -118,11 +118,15 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
 #define KEYS_CAL_STROKE_MIN     500
 
 /*
- * 보정 종료 조합. 터미널 없이 키보드만 있을 때도 끝낼 수 있어야 한다.
- * 보정 중에는 리포트를 막아두므로 이 조합이 호스트로 새어나가지 않는다.
+ * 보정 종료 제스처. 터미널 없이 키보드만 있을 때도 끝낼 수 있어야 한다.
+ * 보정 중에는 리포트를 막아두므로 조합이 호스트로 새어나가지 않는다.
+ *
+ * ★ 저장과 취소를 갈라야 한다. 조합을 누르는 순간 그 키들도 보정되므로, 하나로
+ *   묶어두면 "취소하려고 눌렀는데 두 키짜리 보정이 저장되는" 일이 생긴다.
  */
-#define KEYS_EXIT_KC1           0xE0   /* Left Ctrl */
-#define KEYS_EXIT_KC2           0x29   /* Esc */
+#define KEYS_MOD_KC             0xE0   /* Left Ctrl */
+#define KEYS_CANCEL_KC          0x29   /* Esc   — 취소 (저장 안 함) */
+#define KEYS_SAVE_KC            0x28   /* Enter — 여기까지 저장하고 끝 */
 
 /*
  * keys bar — 눌린 깊이를 가로 막대로.
@@ -1186,9 +1190,10 @@ void cliKeys(cli_args_t *args)
    */
   if (args->argc == 1 && args->isStr(0, "cal"))
   {
-    uint32_t total = 0;
-    uint32_t done  = 0;
+    uint32_t total  = 0;
+    uint32_t done   = 0;
     uint32_t rows;
+    bool     cancel = false;
 
     for (uint32_t i = 0; i < KEYS_MAX; i++) cal_min_tmp[i] = 0xFFFF;
     for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
@@ -1198,8 +1203,8 @@ void cliKeys(cli_args_t *args)
 
     cliPrintf("모든 키를 끝까지 한 번씩 눌러주세요.\n");
     cliPrintf("채워진 자리가 끝난 키입니다.\n");
-    cliPrintf("다 눌렀으면 키보드에서 [왼쪽 Ctrl + ESC] 를 함께 누르면 끝납니다.\n");
-    cliPrintf("(터미널에서는 Ctrl+C 도 됩니다. 그때까지 끝난 것만 저장합니다.)\n\n");
+    cliPrintf("키보드에서   [Ctrl + Enter] 여기까지 저장하고 끝\n");
+    cliPrintf("             [Ctrl + ESC]   취소 (저장하지 않음)\n\n");
     rows = keysLayoutRows();
 
     while (cliKeepLoop())
@@ -1227,8 +1232,15 @@ void cliKeys(cli_args_t *args)
       cliPrintf("  %d / %d 완료    \n", (int)done, (int)total);
       cliMoveUp(rows + 1);
 
-      if (done >= total)                                break;   /* 전부 끝남 */
-      if (keysComboHeld(KEYS_EXIT_KC1, KEYS_EXIT_KC2))  break;   /* 사용자가 끝냄 */
+      if (done >= total) break;                                  /* 전부 끝남 -> 저장 */
+
+      if (keysComboHeld(KEYS_MOD_KC, KEYS_CANCEL_KC))
+      {
+        cancel = true;
+        break;
+      }
+      if (keysComboHeld(KEYS_MOD_KC, KEYS_SAVE_KC)) break;
+
       delay(30);
     }
     cliMoveDown(rows + 1);
@@ -1241,7 +1253,11 @@ void cliKeys(cli_args_t *args)
      *   저장할 수 없다. 끝난 키만 보정됨으로 표시하고, 나머지는 종류표의 공칭값을
      *   계속 쓰면 된다.
      */
-    if (done > 0)
+    if (cancel)
+    {
+      cliPrintf("\n취소 — 저장하지 않는다 (기존 보정 유지)\n");
+    }
+    else if (done > 0)
     {
       uint32_t n_skip = 0;
 
