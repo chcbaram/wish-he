@@ -40,9 +40,6 @@ void     hidKbdPollTest(bool on);
 uint32_t hidKbdGetPollMin(void);
 uint32_t hidKbdGetPollMax(void);
 
-/* SOF 카운트 — 버스 마이크로프레임. HS 면 8000/s 가 나와야 한다. */
-uint32_t hidKbdGetSofCount(void);
-
 
 #endif
 #endif

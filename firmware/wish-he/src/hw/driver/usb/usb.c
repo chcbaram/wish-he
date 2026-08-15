@@ -208,11 +208,10 @@ void cliUsb(cli_args_t *args)
   if (args->argc == 1 && args->isStr(0, "poll"))
   {
     uint32_t sec = 1;
-    uint32_t c0, c1, t0, t1, r, s0;
+    uint32_t c0, c1, t0, t1, r;
 
     cliPrintf("%d 초 동안 매 폴링마다 전송한다...\n", (int)sec);
 
-    s0 = hidKbdGetSofCount();
     c0 = hidKbdGetSentCount();
     hidKbdPollTest(true);
 
@@ -227,9 +226,7 @@ void cliUsb(cli_args_t *args)
     c1 = hidKbdGetSentCount();
 
     r = (c1 - c0) * 1000 / (t1 - t0);
-    cliPrintf("SOF    : %d /s   <- 버스 마이크로프레임 (HS 면 8000)\n",
-              (int)((hidKbdGetSofCount() - s0) * 1000 / (t1 - t0)));
-    cliPrintf("전송   : %d /s   <- 실제로 데이터가 나간 횟수\n", (int)r);
+    cliPrintf("전송   : %d 회 / %d ms  ->  %d /s\n", (int)(c1 - c0), (int)(t1 - t0), (int)r);
     cliPrintf("간격   : 최소 %d us, 최대 %d us\n",
               (int)hidKbdGetPollMin(), (int)hidKbdGetPollMax());
     ret = true;

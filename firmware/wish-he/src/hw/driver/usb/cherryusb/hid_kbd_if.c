@@ -104,8 +104,6 @@ static volatile uint32_t poll_last = 0;
 static volatile uint32_t poll_min  = 0xFFFFFFFF;
 static volatile uint32_t poll_max  = 0;
 
-/* SOF — 버스 마이크로프레임. HS 면 데이터와 무관하게 125us 마다 뜬다. */
-static volatile uint32_t sof_cnt = 0;
 
 
 
@@ -210,11 +208,6 @@ void hidKbdEventHandler(uint8_t busid, uint8_t event)
       is_tx_busy    = false;
       break;
 
-    /* 초당 8000번 온다. 세는 것 말고는 하지 않는다. */
-    case USBD_EVENT_SOF:
-      sof_cnt++;
-      break;
-
     case USBD_EVENT_CONFIGURED:
       is_configured = true;
       is_tx_busy    = false;
@@ -252,11 +245,6 @@ bool hidKbdIsConfigured(void)
 uint32_t hidKbdGetSentCount(void)
 {
   return sent_cnt;
-}
-
-uint32_t hidKbdGetSofCount(void)
-{
-  return sof_cnt;
 }
 
 void hidKbdPollTest(bool on)
