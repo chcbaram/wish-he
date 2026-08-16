@@ -19,6 +19,86 @@
 #include "eeprom.h"
 #include "keys.h"
 #include "log.h"
+#include "dynamic_keymap.h"
+
+/*
+ * ── 키맵도 프로파일마다 한 벌 ────────────────────────────────────────────
+ *
+ * dynamic_keymap 의 주소 계산이 이 오프셋을 더한다. 키맵을 읽고 쓰는 길이 거기
+ * 하나로 모이므로 VIA 프로토콜도 상위 코드도 손댈 것이 없다 — 프로파일을 바꾸면
+ * 같은 (레이어, 행, 열) 이 다른 블록을 가리킬 뿐이다.
+ *
+ * ★ 초기화 때는 잠시 다른 프로파일을 가리켜야 한다.
+ *
+ *   dynamic_keymap_reset() 은 "지금 프로파일" 한 벌만 채운다. 그대로 두면 2~4번
+ *   프로파일의 키맵이 전부 KC_NO 라, 옮기는 순간 키보드가 죽는다. 초기화에서는
+ *   네 벌을 돌며 다 채운다.
+ */
+#define KEYMAP_BLOCK_SIZE                                                      \
+  (DYNAMIC_KEYMAP_LAYER_COUNT * MATRIX_ROWS * MATRIX_COLS * 2)
+
+static uint8_t km_prof_override = 0xFF;   /* 0xFF = 지금 프로파일을 따른다 */
+
+static void keymapFillEmptyProfiles(void);
+
+void via_init_kb(void)
+{
+  keymapFillEmptyProfiles();
+}
+
+uint32_t keymapProfileOffset(void)
+{
+  uint8_t p = (km_prof_override != 0xFF) ? km_prof_override : keysProfGet();
+
+  if (p >= KEYMAP_PROFILE_COUNT) p = 0;
+  return (uint32_t)p * KEYMAP_BLOCK_SIZE;
+}
+
+/* 네 벌을 모두 기본 키맵으로 채운다 — via.c 의 초기화가 부른다 */
+void eeconfig_init_keymap_profiles_kb(void)
+{
+  for (uint8_t p = 0; p < KEYMAP_PROFILE_COUNT; p++)
+  {
+    km_prof_override = p;
+    dynamic_keymap_reset();
+  }
+  km_prof_override = 0xFF;
+}
+
+/*
+ * ★ 이미 쓰던 보드를 위한 뒤처리.
+ *
+ *   EEPROM 이 이미 유효하면 위 초기화는 **안 돈다**. 그러면 0번 프로파일만 키맵을
+ *   갖고 2~4번은 통째로 0(KC_NO) 이라, 옮기는 순간 아무 키도 안 먹는 키보드가 된다.
+ *   기능을 넣으면서 보드를 죽이는 셈이다.
+ *
+ *   그렇다고 VIA 버전을 올려 전체를 초기화하면 사용자가 짜 둔 키맵이 날아간다.
+ *   비어 있는 블록만 골라 기본 키맵으로 채운다 — 쓰던 것은 그대로 두고 빈 칸만
+ *   메운다.
+ *
+ *   판정은 "전부 0" 이다. 레이어 0의 첫 줄이 전부 KC_NO 인 키맵은 정상적으로는
+ *   나올 수 없다 — 그 줄에 키가 하나도 없다는 뜻이기 때문이다.
+ */
+static void keymapFillEmptyProfiles(void)
+{
+  for (uint8_t p = 1; p < KEYMAP_PROFILE_COUNT; p++)
+  {
+    bool empty = true;
+
+    km_prof_override = p;
+    for (uint8_t col = 0; col < MATRIX_COLS && empty; col++)
+    {
+      if (dynamic_keymap_get_keycode(0, 0, col) != KC_NO) empty = false;
+    }
+
+    if (empty)
+    {
+      logPrintf("[  ] 프로파일 %d 키맵이 비어 있다 — 기본값으로 채운다\n", p + 1);
+      dynamic_keymap_reset();
+    }
+  }
+  km_prof_override = 0xFF;
+}
 
 
 /* 채널 ID. 다른 보드와 겹쳐도 상관없지만, 도구를 공유하려고 같은 값을 쓴다. */
@@ -264,4 +344,58 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length)
   }
 
   *p_cmd = id_unhandled;
+}
+
+
+/*
+ * ── 프로파일 전환 키코드 ────────────────────────────────────────────────
+ *
+ * ★ 키보드만으로 바꿀 수 있어야 한다.
+ *
+ *   게임 중에 프로파일을 바꾸려고 브라우저를 띄울 수는 없다. VIA 의 커스텀
+ *   키코드(QK_KB_0..)로 내면 사용자가 키 선택기에서 원하는 자리에 붙인다.
+ *   layout-via.json 의 customKeycodes 순서와 **여기 순서가 같아야 한다.**
+ *
+ * ★ 뗄 때가 아니라 **누를 때** 바꾼다.
+ *
+ *   바뀌는 순간 그 키가 속한 키맵도 함께 바뀐다. 뗄 때 처리하면 이미 새 프로파일의
+ *   키맵을 보고 있어 "뗀 키" 가 무엇인지 어긋난다.
+ *
+ * ★ 플래시 쓰기는 미룬다.
+ *
+ *   전환은 메모리 한 줄이라 싸지만 남기기는 2~3ms 다. 키를 누른 그 자리에서 쓰면
+ *   그동안 스캔이 멎는다 — 게임 중에 쓰라고 만든 키에서 그러면 안 된다.
+ *   메인 루프가 조용해진 뒤에 쓴다 (keysCfgTouch 와 같은 방식).
+ */
+enum {
+  KC_PROF_1 = QK_KB_0,
+  KC_PROF_2,
+  KC_PROF_3,
+  KC_PROF_4,
+  KC_PROF_NEXT,
+};
+
+bool process_record_kb(uint16_t keycode, keyrecord_t *record)
+{
+  if (record->event.pressed)
+  {
+    switch (keycode)
+    {
+      case KC_PROF_1:
+      case KC_PROF_2:
+      case KC_PROF_3:
+      case KC_PROF_4:
+        if (keysProfSelect((uint8_t)(keycode - KC_PROF_1))) keysProfTouch();
+        return false;
+
+      case KC_PROF_NEXT:
+        if (keysProfSelect((uint8_t)((keysProfGet() + 1) % keysProfCount())))
+          keysProfTouch();
+        return false;
+
+      default:
+        break;
+    }
+  }
+  return process_record_user(keycode, record);
 }

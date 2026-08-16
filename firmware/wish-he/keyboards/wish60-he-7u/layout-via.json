@@ -248,5 +248,32 @@
         }
       ]
     }
+  ],
+  "customKeycodes": [
+    {
+      "name": "Profile 1",
+      "title": "Switch to profile 1",
+      "shortName": "PF1"
+    },
+    {
+      "name": "Profile 2",
+      "title": "Switch to profile 2",
+      "shortName": "PF2"
+    },
+    {
+      "name": "Profile 3",
+      "title": "Switch to profile 3",
+      "shortName": "PF3"
+    },
+    {
+      "name": "Profile 4",
+      "title": "Switch to profile 4",
+      "shortName": "PF4"
+    },
+    {
+      "name": "Profile Next",
+      "title": "Switch to the next profile, wrapping around",
+      "shortName": "PF>"
+    }
   ]
 }

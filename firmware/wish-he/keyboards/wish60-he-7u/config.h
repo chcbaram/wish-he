@@ -22,11 +22,32 @@
 /*
  * EEPROM — 플래시 0x0C4000 에 16KB.
  *
- * 8편에서 정한 값이다. 레이어 8개에 63키면 키맵만 8 x 64 x 2 = 8KB 고, 나머지가
- * 매크로와 사용자 영역이다.
+ * 8편에서 정한 값이다. 레이어 8개에 64키면 키맵 한 벌이 8 x 64 x 2 = 1KB 고,
+ * 나머지가 매크로와 사용자 영역이다.
  */
 #define TOTAL_EEPROM_BYTE_COUNT     16384
 #define DYNAMIC_KEYMAP_LAYER_COUNT  8
+
+/*
+ * ★ 키맵도 프로파일마다 한 벌 둔다.
+ *
+ *   프로파일이 갈리는 이유가 손끝 감각만은 아니다 — 게임용에서는 키 배치도 함께
+ *   달라진다. 상용 제품도 프로파일에 배치를 포함한다.
+ *
+ *   값이 싸다. 키맵 한 벌이 1KB 라 네 벌이 4KB 고, 16KB 중 나머지 12KB 가 그대로
+ *   매크로에 남는다.
+ *
+ * ★ 0번은 자리를 안 옮긴다.
+ *
+ *   첫 블록이 예전과 같은 주소라 지금 쓰던 키맵이 그대로 0번 프로파일이 된다.
+ *   뒤로 밀리는 것은 매크로 영역뿐이다 — 매크로를 쓰고 있었다면 그건 지워진다.
+ */
+#define KEYMAP_PROFILE_COUNT        4
+
+#define DYNAMIC_KEYMAP_ENCODER_EEPROM_ADDR                                     \
+  (DYNAMIC_KEYMAP_EEPROM_ADDR +                                                \
+   (KEYMAP_PROFILE_COUNT * DYNAMIC_KEYMAP_LAYER_COUNT * MATRIX_ROWS *          \
+    MATRIX_COLS * 2))
 #define EECONFIG_USER_DATA_SIZE     512
 
 #define VIA_FIRMWARE_VERSION        1

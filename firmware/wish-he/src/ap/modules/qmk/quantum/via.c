@@ -89,6 +89,13 @@ void via_eeprom_set_valid(bool valid) {
 // the caller also needs to check the valid state.
 __attribute__((weak)) void via_init_kb(void) {}
 
+#ifdef KEYMAP_PROFILE_COUNT
+/* 키보드 코드가 네 벌을 돌며 채운다 (wish60-he-7u/via_port.c) */
+__attribute__((weak)) void eeconfig_init_keymap_profiles_kb(void) {
+    dynamic_keymap_reset();
+}
+#endif
+
 // Called by QMK core to initialize dynamic keymaps etc.
 void via_init(void) {
     // Let keyboard level test EEPROM valid state,
@@ -108,8 +115,19 @@ void eeconfig_init_via(void) {
     via_eeprom_set_valid(false);
     // This resets the layout options
     via_set_layout_options(VIA_EEPROM_LAYOUT_OPTIONS_DEFAULT);
-    // This resets the keymaps in EEPROM to what is in flash.
+    /*
+     * 키맵을 플래시의 기본값으로 되돌린다.
+     *
+     * ★ 프로파일이 있으면 **네 벌을 다** 채운다.
+     *
+     *   dynamic_keymap_reset() 은 지금 가리키는 블록 하나만 채운다. 그대로 두면
+     *   2~4번 프로파일이 전부 KC_NO 라 옮기는 순간 키보드가 죽는다.
+     */
+#ifdef KEYMAP_PROFILE_COUNT
+    eeconfig_init_keymap_profiles_kb();
+#else
     dynamic_keymap_reset();
+#endif
     // This resets the macros in EEPROM to nothing.
     dynamic_keymap_macro_reset();
     // Save the magic number last, in case saving was interrupted

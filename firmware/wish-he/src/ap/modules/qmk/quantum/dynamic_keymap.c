@@ -105,9 +105,28 @@ uint8_t dynamic_keymap_get_layer_count(void) {
     return DYNAMIC_KEYMAP_LAYER_COUNT;
 }
 
+/*
+ * ★ 프로파일마다 키맵 한 벌.
+ *
+ *   키맵을 읽고 쓰는 길이 전부 이 함수 하나로 모인다. 여기에 프로파일 오프셋만
+ *   더하면 VIA 프로토콜도, 상위 코드도 손댈 것이 없다 — 프로파일을 바꾸면 같은
+ *   (레이어, 행, 열) 이 다른 블록을 가리킬 뿐이다.
+ *
+ *   오프셋을 내주는 쪽은 키보드 코드다 (via_port.c 의 keymapProfileOffset).
+ *   여기서 keys.c 를 알 필요가 없고, 초기화 때 네 벌을 다 채우려고 잠시 다른
+ *   프로파일을 가리키는 일도 그쪽이 맡는다.
+ */
+#ifdef KEYMAP_PROFILE_COUNT
+uint32_t keymapProfileOffset(void);
+#endif
+
 void *dynamic_keymap_key_to_eeprom_address(uint8_t layer, uint8_t row, uint8_t column) {
     // TODO: optimize this with some left shifts
-    return ((void *)DYNAMIC_KEYMAP_EEPROM_ADDR) + (layer * MATRIX_ROWS * MATRIX_COLS * 2) + (row * MATRIX_COLS * 2) + (column * 2);
+    return ((void *)DYNAMIC_KEYMAP_EEPROM_ADDR)
+#ifdef KEYMAP_PROFILE_COUNT
+           + keymapProfileOffset()
+#endif
+           + (layer * MATRIX_ROWS * MATRIX_COLS * 2) + (row * MATRIX_COLS * 2) + (column * 2);
 }
 
 uint16_t dynamic_keymap_get_keycode(uint8_t layer, uint8_t row, uint8_t column) {

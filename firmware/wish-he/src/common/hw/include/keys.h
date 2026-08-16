@@ -57,6 +57,7 @@ void     keysCfgUpdate(void);           /* 메인 루프에서 — ISR 금지 (�
 
 bool     keysProfSelect(uint8_t idx);   /* 메모리에서 갈아 끼우기만 — 싸다 */
 bool     keysProfSave(void);            /* 플래시에 남기기 — ISR 밖에서 */
+void     keysProfTouch(void);           /* 나중에 남겨라 (키로 바꿀 때) */
 bool     keysProfSet(uint8_t idx);      /* 둘 다 (CLI 용) */
 bool     keysProfCopy(uint8_t dst);     /* 지금 것을 dst 에 붓는다 */
 

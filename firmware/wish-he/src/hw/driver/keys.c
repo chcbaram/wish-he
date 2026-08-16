@@ -2084,6 +2084,17 @@ bool keysProfSave(void)
   return keysCfgSave();
 }
 
+/*
+ * 전환을 나중에 남기라고 표시만 한다.
+ *
+ * 키로 바꿀 때 쓴다 — 누른 자리에서 플래시를 쓰면 그동안 스캔이 멎는다. 게임 중에
+ * 쓰라고 만든 키에서 그러면 안 된다.
+ */
+void keysProfTouch(void)
+{
+  keysCfgTouch();
+}
+
 bool keysProfSet(uint8_t idx)
 {
   if (keysProfSelect(idx) == false) return (idx < KEYS_PROF_CNT);
