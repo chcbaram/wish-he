@@ -781,15 +781,40 @@ static uint32_t acc_idx = 0;
  * 나눗셈이 들어가는데, 그걸 35kHz x 64셀 루프 안에서 할 수는 없다. 설정이나
  * 보정이 바뀔 때만 다시 만든다.
  */
+/*
+ * ★ RT 문턱은 하나가 아니라 **깊이 구역마다 하나**다.
+ *
+ *   입력지점 같은 절대 위치는 곡선을 태우면 그만이다. 그런데 RT 의 두 값은 위치가
+ *   아니라 **이동량**이라, 곡선에서는 같은 이동량이라도 어디서 움직였느냐에 따라
+ *   카운트가 딴판이다. 하나로 잡으면 한 지점에서만 맞는다.
+ *
+ *   RT 0.50mm 를 카운트 하나로 잡았을 때 실제 되돌림 거리 —
+ *
+ *     깊이 1.0mm -> 1.00mm    깊이 2.0mm -> 0.60mm    깊이 3.3mm -> 0.24mm
+ *
+ *   깊이 눌린 상태일수록 두 배로 예민해진다. 타이핑에서 손가락이 머무는 곳이 거기다.
+ *
+ * ★ 매 표본마다 역변환을 할 수는 없다 (35kHz x 64셀). 그래서 미리 구워 둔다.
+ *
+ *   구역은 정규화 값 u 의 상위 3비트다. 뜨거운 루프에서 하는 일은 곱셈 하나와
+ *   시프트 하나 — 나눗셈도 탐색도 없다.
+ *
+ *   구역을 정하는 자리는 지금 깊이가 아니라 **기준점(peak)** 이다. 되돌림은 거기서
+ *   시작하는 이동이라, 문턱도 그 자리의 기울기로 재야 맞다.
+ */
+#define KEYS_RT_ZONE_BITS   3
+#define KEYS_RT_ZONE_CNT    (1 << KEYS_RT_ZONE_BITS)   /* 8 */
+
 typedef struct
 {
   uint16_t press;        /* 입력지점 (깊이 카운트) */
   uint16_t release;      /* 해제지점 */
-  uint16_t rt_press;     /* RT 재입력 반응 행정 */
-  uint16_t rt_release;   /* RT 입력 해제 반응 행정 */
   uint16_t bottom_lo;    /* 이 깊이 이상이면 바닥 보호 구간 */
   uint16_t dead;         /* 이 깊이 미만은 아예 안 본다 */
   uint8_t  rt_flags;     /* 키별 KEYS_RT_* */
+
+  uint16_t rt_press[KEYS_RT_ZONE_CNT];     /* RT 재입력 반응 행정 — 구역별 */
+  uint16_t rt_release[KEYS_RT_ZONE_CNT];   /* RT 입력 해제 반응 행정 — 구역별 */
 } keys_thr_t;
 
 static keys_thr_t thr[KEYS_MAX];
@@ -1550,9 +1575,10 @@ static void keysThrRebuild(void)
   for (uint32_t i = 0; i < KEYS_MAX; i++)
   {
     const keys_key_set_t *k = KS(i);
+    uint32_t sw     = keysSwType(i);
     uint32_t stroke = keysStrokeCnt(i);
-    uint32_t travel = keys_switch[keysSwType(i)].travel_um;
-    const uint16_t *curve = keys_switch[keysSwType(i)].curve;
+    uint32_t travel = keys_switch[sw].travel_um;
+    const uint16_t *curve = keys_switch[sw].curve;
     keys_thr_t *t   = &thr[i];
 
     if (travel == 0) travel = 400;
@@ -1577,10 +1603,74 @@ static void keysThrRebuild(void)
 
     t->press      = UM2CNT(k->press_um);
     t->release    = UM2CNT(k->release_um);
-    t->rt_press   = UM2CNT_LIN(k->rt_press_um);
-    t->rt_release = UM2CNT_LIN(k->rt_release_um);
     t->dead       = UM2CNT(k->dead_um);
     t->rt_flags   = k->rt_flags;
+
+    /*
+     * RT 문턱을 깊이 구역마다 굽는다.
+     *
+     * 구역 한가운데의 정규화 값 u 를 잡고, 거기서 rt_um 만큼 움직였을 때 u 가 얼마나
+     * 변하는지를 카운트로 옮긴다. 곡선이 없으면 어느 구역이나 같은 값이 나오므로
+     * 갈래를 나눌 필요가 없다 — 식 하나가 두 경우를 다 덮는다.
+     */
+    for (uint32_t z = 0; z < KEYS_RT_ZONE_CNT; z++)
+    {
+      uint32_t u0 = z * (KEYS_CURVE_ONE / KEYS_RT_ZONE_CNT)
+                  + (KEYS_CURVE_ONE / KEYS_RT_ZONE_CNT) / 2;
+      uint32_t m0 = curve ? keysCurveToUm(sw, u0, travel)
+                          : (u0 * travel) / KEYS_CURVE_ONE;
+      uint32_t up, dn;
+
+      #define Z_U(mm)  (curve ? keysCurveToU(curve, (mm), travel)             \
+                              : (((uint32_t)(mm) * KEYS_CURVE_ONE) / travel))
+
+      /*
+       * 되뗌 — 기준점에서 이만큼 올라온다.
+       *
+       * 맨 위 구역에서는 그만큼 올라갈 자리가 없어 무압까지가 전부다. 그게 맞다 —
+       * 더 올라갈 데가 없으면 무압으로 돌아온 것이 곧 해제다.
+       */
+      up = (m0 > k->rt_release_um) ? (m0 - k->rt_release_um) : 0;
+      t->rt_release[z] = (uint16_t)(((u0 - Z_U(up)) * stroke) / KEYS_CURVE_ONE);
+
+      /*
+       * 되눌림 — 기준점에서 이만큼 내려간다.
+       *
+       * ★ 바닥 구역은 뒤에서 재야 한다.
+       *
+       *   그냥 더하면 행정을 넘어가고, 넘어간 값은 바닥에서 잘린다. 그러면 문턱이
+       *   커지기는커녕 **작아져서** (실측 481 -> 160) 바닥에서 재입력이 제일 쉽게
+       *   걸린다 — 고치려던 것과 정반대다.
+       *
+       *   넘어가면 바닥 바로 앞 구간의 기울기로 잰다. "여기서 0.30mm 는 몇 카운트인가"
+       *   라는 물음의 답은 그것이고, 실제로 그만큼 더 내려갈 수 없으니 바닥에 붙은
+       *   채로는 재입력이 안 걸린다. 그게 옳은 동작이다.
+       */
+      dn = m0 + k->rt_press_um;
+      if (dn > travel)
+      {
+        uint32_t lo = (travel > k->rt_press_um) ? (travel - k->rt_press_um) : 0;
+
+        t->rt_press[z] = (uint16_t)(((KEYS_CURVE_ONE - Z_U(lo)) * stroke)
+                                    / KEYS_CURVE_ONE);
+      }
+      else
+      {
+        t->rt_press[z] = (uint16_t)(((Z_U(dn) - u0) * stroke) / KEYS_CURVE_ONE);
+      }
+
+      #undef Z_U
+
+      /*
+       * 반응 행정이 잡음보다 작으면 RT 가 잡음을 방향 반전으로 읽는다. 실측 잡음
+       * p-p 가 40 이므로 그 위로 올린다. 사용자가 0 으로 내려도 여기서 막힌다.
+       *
+       * ★ 구역마다 걸린다. 바닥 근처는 같은 mm 라도 카운트가 커서 안 걸리지만,
+       *   맨 위 구역은 걸리는 일이 잦다 — 거기가 원래 신호가 약한 자리다.
+       */
+      if (t->rt_release[z] < KEYS_RT_MIN_CNT) t->rt_release[z] = KEYS_RT_MIN_CNT;
+      if (t->rt_press[z]   < KEYS_RT_MIN_CNT) t->rt_press[z]   = KEYS_RT_MIN_CNT;
+    }
 
     /*
      * 바닥 보호는 "바닥에서 이만큼 안쪽" 이다.
@@ -1599,14 +1689,7 @@ static void keysThrRebuild(void)
     #undef UM2CNT
     #undef UM2CNT_LIN
 
-    /*
-     * 최소 폭을 지킨다.
-     *
-     *   반응 행정이 잡음보다 작으면 RT 가 잡음을 방향 반전으로 읽는다. 실측 잡음
-     *   p-p 가 40 이므로 그 위로 올린다. 사용자가 0 으로 내려도 여기서 막힌다.
-     */
-    if (t->rt_press   < KEYS_RT_MIN_CNT) t->rt_press   = KEYS_RT_MIN_CNT;
-    if (t->rt_release < KEYS_RT_MIN_CNT) t->rt_release = KEYS_RT_MIN_CNT;
+    /*  RT 반응 행정의 하한은 구역마다 이미 걸었다 (위 반복문)  */
 
     /*
      * 입력지점의 하한 — **문턱이 잡음보다 낮으면 안 된다.**
@@ -1670,6 +1753,22 @@ static void keysThrRebuild(void)
   }
 }
 
+/*
+ * 그 기준점이 어느 깊이 구역인가 (0 ~ 7).
+ *
+ * 정규화 값 u 의 상위 3비트다. u = (cnt * 역수) >> 12 이고 u 가 15비트이므로,
+ * 한 번에 >> 24 하면 구역이 나온다 — 곱셈 하나와 시프트 하나다.
+ *
+ * ★ 스캔 루프 안이라 나눗셈을 쓸 수 없다. 역수는 keysThrRebuild 가 미리 잡아 둔다.
+ */
+ATTR_RAMFUNC static inline uint32_t keysRtZone(uint32_t idx, uint16_t cnt)
+{
+  uint32_t z = ((uint32_t)cnt * stroke_recip[idx])
+               >> (KEYS_STROKE_RECIP_SH + 15 - KEYS_RT_ZONE_BITS);
+
+  return (z >= KEYS_RT_ZONE_CNT) ? (KEYS_RT_ZONE_CNT - 1) : z;
+}
+
 ATTR_RAMFUNC static void keysTrack(uint32_t step)
 {
   bool do_drift = drift_due;
@@ -1679,7 +1778,8 @@ ATTR_RAMFUNC static void keysTrack(uint32_t step)
     /* 스위치가 없는 자리는 판정하지 않는다. 기준값 추적은 그대로 둬도 무해하다. */
     if ((keys_present[step] & (1U << c)) == 0) continue;
 
-    const keys_thr_t *t = &thr[step * KEYS_CH_MAX + c];
+    const uint32_t    idx = step * KEYS_CH_MAX + c;
+    const keys_thr_t *t = &thr[idx];
     bool     rt_on   = (t->rt_flags & KEYS_RT_ON)     != 0;
     bool     rt_cont = (t->rt_flags & KEYS_RT_CONT)   != 0;
     bool     bot_on  = (t->rt_flags & KEYS_RT_BOTTOM) != 0;
@@ -1748,7 +1848,8 @@ ATTR_RAMFUNC static void keysTrack(uint32_t step)
       bool rt_active  = rt_on && (rt_cont || (rt_arm[step] & bit));
 
       if (rt_active && !in_bottom &&
-          (int32_t)peak[step][c] - d >= (int32_t)t->rt_release)
+          (int32_t)peak[step][c] - d >=
+            (int32_t)t->rt_release[keysRtZone(idx, peak[step][c])])
       {
         pressed[step] &= (uint16_t)~bit;
         peak[step][c]  = (uint16_t)d;
@@ -1785,7 +1886,8 @@ ATTR_RAMFUNC static void keysTrack(uint32_t step)
 
       if (rt_active)
       {
-        if (d - (int32_t)peak[step][c] >= (int32_t)t->rt_press)
+        if (d - (int32_t)peak[step][c] >=
+              (int32_t)t->rt_press[keysRtZone(idx, peak[step][c])])
         {
           pressed[step] |= bit;
           peak[step][c]  = (uint16_t)d;
@@ -3165,10 +3267,22 @@ void cliKeys(cli_args_t *args)
               (f & KEYS_RT_ON)     ? "켬" : "끔",
               (f & KEYS_RT_CONT)   ? "켬" : "끔",
               (f & KEYS_RT_BOTTOM) ? "켬" : "끔");
-    cliPrintf("재입력    : %d.%02d mm  (%d 카운트)\n",
-              keysGetRtPressUm() / 100, keysGetRtPressUm() % 100, thr[0].rt_press);
-    cliPrintf("입력 해제 : %d.%02d mm  (%d 카운트)\n",
-              keysGetRtReleaseUm() / 100, keysGetRtReleaseUm() % 100, thr[0].rt_release);
+    /*
+     * ★ RT 문턱은 하나가 아니다 — 깊이 구역마다 다르다.
+     *
+     *   같은 mm 라도 바닥 근처는 카운트가 몇 배 크다. 대표값 하나만 찍으면 "왜
+     *   설정대로 안 되지" 를 영영 못 본다. 여덟 개를 다 늘어놓는다.
+     */
+    cliPrintf("재입력    : %d.%02d mm  (구역별 카운트)\n",
+              keysGetRtPressUm() / 100, keysGetRtPressUm() % 100);
+    cliPrintf("            ");
+    for (uint32_t z = 0; z < KEYS_RT_ZONE_CNT; z++) cliPrintf("%5d", thr[0].rt_press[z]);
+    cliPrintf("\n");
+    cliPrintf("입력 해제 : %d.%02d mm  (구역별 카운트)\n",
+              keysGetRtReleaseUm() / 100, keysGetRtReleaseUm() % 100);
+    cliPrintf("            ");
+    for (uint32_t z = 0; z < KEYS_RT_ZONE_CNT; z++) cliPrintf("%5d", thr[0].rt_release[z]);
+    cliPrintf("\n");
     cliPrintf("바닥 보호 : %d.%02d mm  (깊이 %d 이상이면 RT 해제 끔)\n",
               keysGetBottomUm() / 100, keysGetBottomUm() % 100, thr[0].bottom_lo);
     cliPrintf("데드존    : %d.%02d mm  (%d 카운트)\n",

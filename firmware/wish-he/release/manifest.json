@@ -2,6 +2,17 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R25",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R25/wish60-he-V260816R25.bin",
+      "size": 138328,
+      "crc": "0x547A624D",
+      "notes": [
+        "래피드 트리거를 깊이 구역마다 재단 — 되돌림 거리가 전 구간에서 설정대로"
+      ]
+    },
+    {
       "version": "V260816R23",
       "board": "WISH60-HE",
       "date": "2026-08-16",
