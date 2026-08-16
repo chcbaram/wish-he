@@ -5,8 +5,6 @@
 #include "ap_def.h"
 
 void apInit(void);
-bool apQmkStart(void);
-bool apQmkIsOn(void);
 void apMain(void);
 
 

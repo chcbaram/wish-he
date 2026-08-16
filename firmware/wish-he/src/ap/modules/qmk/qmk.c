@@ -21,7 +21,6 @@
 #include "via_hid.h"
 #include "cli.h"
 #include "log.h"
-#include "ap.h"
 #include "usb/cherryusb/hid_kbd_if.h"
 #include "matrix.h"
 #include "dynamic_keymap.h"
@@ -31,6 +30,11 @@
 #endif
 #include <string.h>
 
+
+/* 125us = 8kHz 마이크로프레임. 이걸 넘긴 회차는 리포트가 한 프레임 늦는다. */
+#define QMK_OVER_US   125
+
+
 extern void viaPortInit(void);   /* keyboards/<보드>/via_port.c */
 
 
@@ -38,6 +42,10 @@ extern host_driver_t usb_driver;   /* port/driver_usb.c */
 
 static void cliQmk(cli_args_t *args);
 static void qmkIdleTask(void);
+
+
+/* QMK 코어가 올라와 있나 — 안 올라왔으면 qmkUpdate() 를 돌리면 안 된다 */
+static bool is_qmk_on = false;
 
 /*
  * keyboard_task() 한 바퀴 시간.
@@ -58,20 +66,55 @@ static volatile uint32_t task_us_cnt  = 0;
  *
  *   max 308us 를 보고도 대응을 못 골랐다. 180만 번 중 3번이면 부팅 잡음이고
  *   5000번이면 구조 문제인데, 최대치는 그 둘을 구분해 주지 않는다. 그래서
- *   "폴링 주기를 넘긴 횟수"를 같이 센다.
- *
- *   125us = 8kHz 마이크로프레임. 이걸 넘긴 회차는 리포트가 한 프레임 늦는다.
+ *   "폴링 주기를 넘긴 횟수"(QMK_OVER_US)를 같이 센다.
  */
-#define QMK_OVER_US   125
 static volatile uint32_t task_over_cnt = 0;
 
 /* 넘긴 순간이 언제였나 — 부팅 직후만인지 계속인지 가른다 */
+static volatile uint32_t task_over_ms_first = 0;
+static volatile uint32_t task_over_ms_last  = 0;
+
 /* rgb_matrix_task 몫. keyboard_task 평균에 묻혀 안 보이므로 따로 센다. */
 static volatile uint32_t rgb_us_last = 0;
 static volatile uint32_t rgb_us_max  = 0;
 static volatile uint32_t rgb_us_sum  = 0;
 static volatile uint32_t rgb_us_cnt  = 0;
 static volatile uint32_t rgb_over_cnt = 0;
+
+
+static bool qmkInit(void)
+{
+  /*
+   * 단계마다 로그를 남긴다. 어딘가에서 죽으면 마지막으로 찍힌 줄이 범인이다.
+   * (로그는 .noinit RAM 링버퍼라 워엄 리셋 뒤에도 `log` 로 읽을 수 있다)
+   */
+  logPrintf("[  ] qmk 1 eeprom_init\n");
+  eeprom_init();
+
+  logPrintf("[  ] qmk 2 via_hid_init\n");
+  via_hid_init();
+
+  logPrintf("[  ] qmk 3 host_set_driver\n");
+  host_set_driver(&usb_driver);
+
+  logPrintf("[  ] qmk 4 keyboard_setup\n");
+  keyboard_setup();
+
+  logPrintf("[  ] qmk 5 keyboard_init\n");
+  keyboard_init();
+
+  /* 보드별 VIA 커스텀 메뉴 초기화 (있으면) — EEPROM 이 준비된 뒤여야 한다 */
+  viaPortInit();
+
+  logPrintf("[  ] qmk 6 done\n");
+
+  logPrintf("[  ] qmkInit()\n");
+  logPrintf("     MATRIX %d x %d, 디바운스 없음\n", MATRIX_ROWS, MATRIX_COLS);
+  logPrintf("     레이어 %d, EEPROM %d B\n",
+            DYNAMIC_KEYMAP_LAYER_COUNT, TOTAL_EEPROM_BYTE_COUNT);
+
+  return true;
+}
 
 /*
  * 루프 통계를 한 덩어리로. keys 쪽과 같은 이유로 함께 준다.
@@ -112,10 +155,6 @@ void qmkRgbStat(uint32_t us)
   if (us > QMK_OVER_US) rgb_over_cnt++;
 }
 
-static volatile uint32_t task_over_ms_first = 0;
-static volatile uint32_t task_over_ms_last  = 0;
-
-
 /* CLI 만 먼저 등록한다. QMK 를 켜기 전에도 `qmk start` 를 칠 수 있어야 한다. */
 bool qmkCliInit(void)
 {
@@ -125,41 +164,30 @@ bool qmkCliInit(void)
    * 여기서 QMK 를 켠다. CLI 등록을 먼저 하는 것은, 기동에 실패해도 `qmk info` 로
    * 상태를 볼 수 있게 하기 위해서다.
    */
-  return apQmkStart();
+  return qmkStart();
 }
 
-bool qmkInit(void)
+/*
+ * QMK 기동.
+ *
+ * 이식 중에는 부팅 때 켜지 않고 `qmk start` 로만 켰다. qmkInit() 안에서 죽으면
+ * USB 가 통째로 안 올라와 부트로더 핀을 눌러야만 살아나기 때문이다. 지금은
+ * 동작이 확인돼서 부팅 때 켠다.
+ *
+ * `qmk start` 는 남겨둔다 — 앞으로 QMK 쪽을 건드리다 부팅이 막히면 다시
+ * 수동으로 돌릴 수 있게 하는 게 싸다.
+ */
+bool qmkStart(void)
 {
-  /*
-   * 단계마다 로그를 남긴다. 어딘가에서 죽으면 마지막으로 찍힌 줄이 범인이다.
-   * (로그는 .noinit RAM 링버퍼라 워엄 리셋 뒤에도 `log` 로 읽을 수 있다)
-   */
-  logPrintf("[  ] qmk 1 eeprom_init\n");
-  eeprom_init();
+  if (is_qmk_on) return true;
 
-  logPrintf("[  ] qmk 2 via_hid_init\n");
-  via_hid_init();
+  is_qmk_on = qmkInit();
+  return is_qmk_on;
+}
 
-  logPrintf("[  ] qmk 3 host_set_driver\n");
-  host_set_driver(&usb_driver);
-
-  logPrintf("[  ] qmk 4 keyboard_setup\n");
-  keyboard_setup();
-
-  logPrintf("[  ] qmk 5 keyboard_init\n");
-  keyboard_init();
-
-  /* 보드별 VIA 커스텀 메뉴 초기화 (있으면) — EEPROM 이 준비된 뒤여야 한다 */
-  viaPortInit();
-
-  logPrintf("[  ] qmk 6 done\n");
-
-  logPrintf("[  ] qmkInit()\n");
-  logPrintf("     MATRIX %d x %d, 디바운스 없음\n", MATRIX_ROWS, MATRIX_COLS);
-  logPrintf("     레이어 %d, EEPROM %d B\n",
-            DYNAMIC_KEYMAP_LAYER_COUNT, TOTAL_EEPROM_BYTE_COUNT);
-
-  return true;
+bool qmkIsOn(void)
+{
+  return is_qmk_on;
 }
 
 void qmkUpdate(void)
@@ -221,7 +249,7 @@ static void cliQmk(cli_args_t *args)
   if (args->argc == 1 && args->isStr(0, "start"))
   {
     cliPrintf("qmkInit() ...\n");
-    cliPrintf("%s\n", apQmkStart() ? "OK" : "실패");
+    cliPrintf("%s\n", qmkStart() ? "OK" : "실패");
     ret = true;
   }
 

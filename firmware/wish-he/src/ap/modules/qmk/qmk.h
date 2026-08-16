@@ -30,7 +30,8 @@ void qmkClearStat(void);
 
 
 bool qmkCliInit(void);
-bool qmkInit(void);
+bool qmkStart(void);
+bool qmkIsOn(void);
 void qmkUpdate(void);
 void qmkRgbStat(uint32_t us);
 

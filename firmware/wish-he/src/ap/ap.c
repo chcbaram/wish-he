@@ -40,37 +40,12 @@ void updateLED(void)
  *   둘의 주기가 달라도 된다는 게 요점이다. 나중에 래피드 트리거를 넣으면 판정은
  *   스캔 주기에서 돌아야 하는데, QMK 루프가 느려져도 그쪽은 영향을 안 받는다.
  */
-/*
- * QMK 기동.
- *
- * 이식 중에는 부팅 때 켜지 않고 `qmk start` 로만 켰다. qmkInit() 안에서 죽으면
- * USB 가 통째로 안 올라와 부트로더 핀을 눌러야만 살아나기 때문이다. 지금은
- * 동작이 확인돼서 부팅 때 켠다.
- *
- * `qmk start` 는 남겨둔다 — 앞으로 QMK 쪽을 건드리다 부팅이 막히면 다시
- * 수동으로 돌릴 수 있게 하는 게 싸다.
- */
-static bool is_qmk_on = false;
-
-bool apQmkStart(void)
-{
-  if (is_qmk_on) return true;
-
-  is_qmk_on = qmkInit();
-  return is_qmk_on;
-}
-
-bool apQmkIsOn(void)
-{
-  return is_qmk_on;
-}
-
 void update(void const *arg)
 {
   updateLED();
 
   keysUpdate();                       /* ADC 스캔 + 눌림 판정 */
-  if (is_qmk_on) qmkUpdate();         /* 키맵 · 레이어 · 매크로 · VIA -> HID 리포트 */
+  if (qmkIsOn()) qmkUpdate();         /* 키맵 · 레이어 · 매크로 · VIA -> HID 리포트 */
 
   usbUpdate();                        /* HID 로 들어온 부트/리셋/트래킹 요청 처리 */
   keysCfgUpdate();                    /* 바뀐 설정을 조용해진 뒤 한 번 저장 */
