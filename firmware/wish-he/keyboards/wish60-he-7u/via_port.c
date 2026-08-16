@@ -399,3 +399,80 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record)
   }
   return process_record_user(keycode, record);
 }
+
+
+/*
+ * ── 조명 설정도 프로파일마다 ────────────────────────────────────────────
+ *
+ * ★ 키맵과 다루는 법이 다르다.
+ *
+ *   키맵은 쓸 때마다 EEPROM 을 직접 읽으므로 주소만 바꾸면 그 순간부터 새것이다.
+ *   조명 설정은 부팅 때 RAM(rgb_matrix_config)으로 읽어 두고 거기서 쓴다. 주소를
+ *   바꿔 봐야 RAM 에 든 옛 값이 계속 나온다.
+ *
+ *   그래서 옮겨 담는다 — 바뀌기 전에 지금 값을 그 프로파일 칸에 내려놓고, 바뀐 뒤에
+ *   새 칸에서 올려 RAM 을 다시 채운다.
+ *
+ * ★ 칸은 사용자 데이터 영역에 둔다.
+ *
+ *   EECONFIG_USER_DATABLOCK 512B 가 우리 몫으로 비어 있다. 여덟 바이트짜리 네 칸이면
+ *   32B 라, EEPROM 을 넓히거나 주소를 옮길 것이 없다.
+ */
+#define PROF_RGB_SIZE   ((uint16_t)sizeof(rgb_config_t))
+#define PROF_RGB_SLOT(p) ((void *)(EECONFIG_USER_DATABLOCK + (p) * PROF_RGB_SIZE))
+
+_Static_assert(KEYMAP_PROFILE_COUNT * sizeof(rgb_config_t) <= EECONFIG_USER_DATA_SIZE,
+               "조명 프로파일 칸이 사용자 데이터 영역을 넘는다");
+
+/*
+ * 지금 조명 설정을 그 프로파일 칸에 내려놓는다.
+ *
+ * RAM 에 든 것을 먼저 표준 자리에 쓴 다음(eeconfig_update_rgb_matrix) 그 바이트를
+ * 칸으로 옮긴다. RAM 을 바로 칸에 쓰면 표준 자리가 낡은 채로 남아, 다음 부팅 때
+ * 옛 값으로 시작한다.
+ */
+static void profRgbStore(uint8_t p)
+{
+  uint8_t buf[sizeof(rgb_config_t)];
+
+  if (p >= KEYMAP_PROFILE_COUNT) return;
+
+  eeconfig_update_rgb_matrix();
+  eeprom_read_block(buf, (const void *)EECONFIG_RGB_MATRIX, sizeof(buf));
+  eeprom_update_block(buf, PROF_RGB_SLOT(p), sizeof(buf));
+}
+
+/*
+ * 그 프로파일 칸의 조명 설정을 꺼내 쓴다.
+ *
+ * 칸이 비어 있으면(한 번도 저장한 적 없음) 지금 것을 그대로 둔다 — 처음 옮겨 간
+ * 프로파일이 캄캄해지는 것보다 쓰던 조명이 따라오는 편이 낫다.
+ */
+static void profRgbApply(uint8_t p)
+{
+  uint8_t buf[sizeof(rgb_config_t)];
+  bool    blank = true;
+
+  if (p >= KEYMAP_PROFILE_COUNT) return;
+
+  eeprom_read_block(buf, PROF_RGB_SLOT(p), sizeof(buf));
+  for (uint32_t i = 0; i < sizeof(buf); i++)
+  {
+    if (buf[i] != 0x00 && buf[i] != 0xFF) { blank = false; break; }
+  }
+  if (blank)
+  {
+    profRgbStore(p);      /* 지금 것을 그 칸의 첫 값으로 삼는다 */
+    return;
+  }
+
+  eeprom_update_block(buf, (void *)EECONFIG_RGB_MATRIX, sizeof(buf));
+  rgb_matrix_reload_from_eeprom();
+}
+
+/* keys.c 가 프로파일을 바꿀 때 부른다. 0xFF = 바뀌기 직전 */
+void keysProfChanged_kb(uint8_t idx)
+{
+  if (idx == 0xFF) profRgbStore(keysProfGet());
+  else             profRgbApply(idx);
+}

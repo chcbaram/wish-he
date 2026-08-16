@@ -2063,13 +2063,36 @@ uint8_t keysProfCount(void){ return KEYS_PROF_CNT; }
  *   판정은 카운트로 하고 그 카운트는 설정에서 나온다. 프로파일이 바뀌면 설정이
  *   통째로 바뀌므로 여기서 다시 만들지 않으면 옛 프로파일의 임계값으로 계속 돈다.
  */
+/*
+ * 프로파일이 바뀌었다고 키보드 코드에 알린다.
+ *
+ * ★ keys.c 는 QMK 를 몰라야 한다.
+ *
+ *   조명이나 키맵처럼 프로파일을 따라가야 하는 것들이 QMK 쪽에 있는데, 여기서
+ *   그것들을 직접 부르면 스캔 코드가 QMK 에 묶인다. 알리기만 하고 무엇을 할지는
+ *   그쪽이 정한다 (keyboards/<모델>/via_port.c).
+ */
+__attribute__((weak)) void keysProfChanged_kb(uint8_t idx)
+{
+  (void)idx;
+}
+
 bool keysProfSelect(uint8_t idx)
 {
   if (idx >= KEYS_PROF_CNT) return false;
   if (idx == set_st.active) return false;      /* 바뀐 게 없으면 남길 것도 없다 */
 
+  /*
+   * ★ 바뀌기 **전에** 한 번, 바뀐 **뒤에** 한 번 알린다.
+   *
+   *   조명 설정처럼 RAM 에 들고 쓰는 값은 옮기기 전에 지금 프로파일 자리에
+   *   내려놓아야 한다. 바꾼 뒤에 내려놓으면 새 프로파일 자리에 옛 값을 덮어쓴다.
+   */
+  keysProfChanged_kb(0xFF);          /* 0xFF = "곧 바뀐다, 지금 것을 내려놓아라" */
   set_st.active = idx;
   keysThrRebuild();
+  keysProfChanged_kb(idx);
+
   return true;
 }
 
@@ -2298,6 +2321,36 @@ bool keysSetKeyCfg(uint32_t idx, const uint8_t *p_buf, uint32_t len)
     /* 눌린 채로 굳지 않게 — 표를 만들 때도 막지만 저장값 자체를 바로잡는다 */
     if (k->release_um >= k->press_um && k->press_um > 0)
       k->release_um = (uint16_t)(k->press_um - 1);
+  }
+
+  /*
+   * ★ 전 키에 쓸 때는 **전역 값도 같이 맞춘다.**
+   *
+   *   쓰기와 읽기가 서로 다른 곳을 보고 있었다.
+   *
+   *     쓰기   키별 명령(0xC5) -> KS(i)->*      키마다
+   *     읽기   VIA 채널        -> P()->*        프로파일 전역
+   *
+   *   전역은 아무도 안 고치므로, 화면에서 래피드 트리거를 켜고 다시 연결하면 옛
+   *   값이 나온다. 저장이 안 된 것처럼 보이지만 실제로는 키별 값이 잘 저장돼 있고
+   *   RT 도 켜져 있다 — 체크박스만 거짓말을 한다.
+   *
+   *   전 키에 쓴다는 것은 곧 "전역을 이 값으로 한다" 는 뜻이므로 여기서 맞춘다.
+   *   일부 키만 쓸 때는 안 건드린다 — 그건 전역이 아니라 그 키들 이야기다.
+   */
+  if (idx >= KEYS_MAX)
+  {
+    P()->press_um      = keysGet16(&p_buf[0]);
+    P()->release_um    = keysGet16(&p_buf[2]);
+    P()->rt_press_um   = keysGet16(&p_buf[4]);
+    P()->rt_release_um = keysGet16(&p_buf[6]);
+    P()->bottom_um     = keysGet16(&p_buf[8]);
+    P()->dead_um       = keysGet16(&p_buf[10]);
+    P()->rt_flags      = p_buf[12] & (KEYS_RT_ON | KEYS_RT_BOTTOM | KEYS_RT_CONT);
+    if (p_buf[13] < KEYS_SWITCH_CNT) P()->sw_type_def = p_buf[13];
+
+    if (P()->release_um >= P()->press_um && P()->press_um > 0)
+      P()->release_um = (uint16_t)(P()->press_um - 1);
   }
 
   keysThrRebuild();
