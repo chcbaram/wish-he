@@ -2,6 +2,18 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R28",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R28/wish60-he-V260816R28.bin",
+      "size": 139048,
+      "crc": "0x840AFAA1",
+      "notes": [
+        "데드존을 표시에도 적용 — 판정과 화면이 같은 것을 본다",
+        "데드존 기본값 0 -> 0.12mm (실측 잡음 바닥 0.10 위)"
+      ]
+    },
+    {
       "version": "V260816R27",
       "board": "WISH60-HE",
       "date": "2026-08-16",

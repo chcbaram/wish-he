@@ -2393,7 +2393,21 @@ static void keysCfgDefault(void)
     pf->rt_press_um   = 50;    /* 0.50mm */
     pf->rt_release_um = 50;    /* 0.50mm */
     pf->bottom_um     = 10;    /* 0.10mm */
-    pf->dead_um       = 0;
+    /*
+     * 데드존 기본값 — 쉬는 위치 근처는 안 본다.
+     *
+     * ★ 0 이었는데 실측하고 바꿨다.
+     *
+     *   `keys noise 60000` 으로 60초(175만 회 스캔) 재니 가만히 둔 키의 깊이가
+     *   최악 셀에서 0.10mm 까지 떴다. 카운트로는 20 남짓이라 작아 보이지만, 곡선은
+     *   행정 맨 위가 평평해서 거리로는 그만큼 부풀려진다.
+     *
+     *   그 위에서 자른다. 판정은 원래 이 구간을 무시했고, 이제 표시도 같이 무시한다.
+     *
+     *   참고 보드의 공장 기본값 배열에도 같은 자리에 10 이 들어 있었다. 우연이
+     *   아니라 같은 물리에서 나온 같은 답으로 보인다.
+     */
+    pf->dead_um       = 12;    /* 0.12mm — 실측 잡음 바닥 0.10 위 */
     pf->rt_flags      = KEYS_RT_BOTTOM;   /* 바닥 보호만 켜 둔다 (RT 는 꺼짐) */
     pf->sw_type_def   = KEYS_SWITCH_DEFAULT;
 
@@ -2725,6 +2739,18 @@ uint16_t keysGetDepthUm(uint16_t row, uint16_t col)
   d = (int32_t)base[row][col] - (int32_t)raw[row][col];   /* 누를수록 양수 */
   if (d <= 0) return 0;
 
+  /*
+   * ★ 데드존은 표시에도 걸어야 한다.
+   *
+   *   판정(keysTrack)은 이 구간을 이미 0 으로 본다. 그런데 여기서 안 걸어서
+   *   **펌웨어가 무시하기로 한 움직임을 화면이 보여주고 있었다** — "가만히 뒀는데
+   *   0.1mm 가 뜬다" 가 그것이다.
+   *
+   *   둘이 다르면 사용자는 어느 쪽을 믿어야 할지 알 수 없다. 재는 쪽과 보여주는
+   *   쪽은 같은 것을 말해야 한다.
+   */
+  if (d < (int32_t)thr[i].dead) return 0;
+
   travel = keys_switch[keysSwType(i)].travel_um;
   stroke = keysStrokeCnt(i);
   if (stroke == 0) return 0;
@@ -2794,6 +2820,7 @@ uint8_t keysGetLevel8(uint16_t row, uint16_t col)
 
   d = (int32_t)base[row][col] - (int32_t)raw[row][col];
   if (d <= 0) return 0;
+  if (d < (int32_t)thr[i].dead) return 0;   /* 판정과 같은 것을 본다 */
 
   v = ((uint32_t)d * stroke_recip[i]) >> KEYS_STROKE_RECIP_SH;   /* 0 ~ 32767 */
   v = (v * 255U) >> 15;
