@@ -654,6 +654,148 @@ static bool keysComboHeld(uint8_t kc1, uint8_t kc2)
   return (a && b);
 }
 
+/*
+ * ── 보정 핵 ────────────────────────────────────────────────────────────
+ *
+ * ★ CLI 루프 안에 있던 것을 밖으로 뺐다.
+ *
+ *   `keys cal` 이 수집·판정·저장을 한 함수 안에서 다 했다. CLI 로만 쓸 때는
+ *   문제가 없었는데, 웹 도구에서 부르려니 통째로 다시 짜야 할 판이었다.
+ *   같은 일을 두 벌 두면 반드시 갈라진다 — 핵을 빼서 둘이 나눠 쓰게 한다.
+ *
+ * 무압 기준값은 러닝 최대값이 늘 추적하므로 여기서 할 일이 없다. 바닥값만
+ * 모은다 — 그건 실제로 끝까지 눌러야만 알 수 있다.
+ */
+static bool cal_active = false;
+
+static bool keysCalIsDone(uint16_t row, uint16_t col);
+static bool keysCfgSave(void);
+
+bool keysCalIsActive(void)
+{
+  return cal_active;
+}
+
+void keysCalStart(void)
+{
+  for (uint32_t i = 0; i < KEYS_MAX; i++) cal_min_tmp[i] = 0xFFFF;
+  cal_active = true;
+}
+
+void keysCalCancel(void)
+{
+  cal_active = false;
+}
+
+/*
+ * 표본 하나를 더한다. 스캔마다 불려도 되게 싸게 짰다 — 64칸 최소값 갱신뿐이다.
+ * 켜져 있을 때만 도므로 평상시 비용은 분기 하나다.
+ */
+void keysCalCollect(void)
+{
+  if (cal_active == false) return;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      uint32_t i = st * KEYS_CH_MAX + c;
+      uint16_t v;
+
+      if (keysIsPresent(st, c) == false) continue;
+
+      v = raw[st][c];
+      if (v < cal_min_tmp[i]) cal_min_tmp[i] = v;
+    }
+  }
+}
+
+uint32_t keysCalTotal(void)
+{
+  uint32_t n = 0;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++) if (keysIsPresent(st, c)) n++;
+  }
+  return n;
+}
+
+uint32_t keysCalDone(void)
+{
+  uint32_t n = 0;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      if (keysIsPresent(st, c) && keysCalIsDone(st, c)) n++;
+    }
+  }
+  return n;
+}
+
+/* 키별 완료 여부를 비트로 채운다. 비트 i = 키 인덱스 i. */
+uint32_t keysCalBitmap(uint8_t *p_buf, uint32_t len)
+{
+  uint32_t need = (KEYS_MAX + 7) / 8;
+
+  if (len < need) return 0;
+  for (uint32_t i = 0; i < need; i++) p_buf[i] = 0;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      uint32_t i = st * KEYS_CH_MAX + c;
+
+      if (keysIsPresent(st, c) && keysCalIsDone(st, c)) p_buf[i / 8] |= (uint8_t)(1u << (i % 8));
+    }
+  }
+  return need;
+}
+
+/*
+ * 끝난 키만 저장한다.
+ *
+ * ★ 부분 저장을 허용한다. 레이아웃에는 옵션 소켓(스플릿 백스페이스 등)이 다 들어
+ *   있지만 실제로는 그중 하나만 끼운다. "전부 끝나야 저장" 으로 막으면 영영
+ *   저장할 수 없다. 나머지는 종류표의 공칭값을 계속 쓰면 된다.
+ */
+bool keysCalSave(uint32_t *p_done, uint32_t *p_skip)
+{
+  uint32_t done = 0, skip = 0;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      uint32_t i = st * KEYS_CH_MAX + c;
+
+      if (keysIsPresent(st, c) == false) continue;
+
+      if (keysCalIsDone(st, c))
+      {
+        cfg.key[i].cal_max = base[st][c];
+        cfg.key[i].cal_min = cal_min_tmp[i];
+        cfg.key[i].flags  |= 0x01;
+        done++;
+      }
+      else
+      {
+        skip++;
+      }
+    }
+  }
+
+  cal_active = false;
+  if (p_done) *p_done = done;
+  if (p_skip) *p_skip = skip;
+
+  if (done == 0) return false;
+  return keysCfgSave();
+}
+
 static bool keysCalIsDone(uint16_t row, uint16_t col)
 {
   uint32_t i = row * KEYS_CH_MAX + col;
@@ -1228,6 +1370,8 @@ ATTR_RAMFUNC bool keysUpdate(void)
 
   /* 링 칸은 스캔 단위로 돈다 — 한 스캔 안에서는 64셀이 같은 칸을 덮는다 */
   if (++acc_idx >= KEYS_ACC_CNT) acc_idx = 0;
+
+  keysCalCollect();   /* 보정 중일 때만 돈다. 평상시 분기 하나 */
 
 #if _USE_HW_PERF_STAT
   scan_time_us = micros() - t_begin;
@@ -2105,16 +2249,12 @@ void cliKeys(cli_args_t *args)
    */
   if (args->argc == 1 && args->isStr(0, "cal"))
   {
-    uint32_t total  = 0;
+    uint32_t total  = keysCalTotal();
     uint32_t done   = 0;
     uint32_t rows;
     bool     cancel = false;
 
-    for (uint32_t i = 0; i < KEYS_MAX; i++) cal_min_tmp[i] = 0xFFFF;
-    for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
-    {
-      for (uint32_t c = 0; c < KEYS_CH_MAX; c++) if (keysIsPresent(st, c)) total++;
-    }
+    keysCalStart();
 
     cliPrintf("모든 키를 끝까지 한 번씩 눌러주세요.\n");
     cliPrintf("채워진 자리가 끝난 키입니다.\n");
@@ -2130,25 +2270,9 @@ void cliKeys(cli_args_t *args)
      */
     while (cliKeepLoop())
     {
-      keysUpdate();
+      keysUpdate();                 /* 표본 수집은 keysUpdate 안에서 한다 */
 
-      done = 0;
-      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
-      {
-        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
-        {
-          uint32_t i = st * KEYS_CH_MAX + c;
-          uint16_t v;
-
-          if (keysIsPresent(st, c) == false) continue;
-
-          v = raw[st][c];
-          if (v < cal_min_tmp[i]) cal_min_tmp[i] = v;
-
-          if ((int32_t)base[st][c] - (int32_t)cal_min_tmp[i] >= KEYS_CAL_STROKE_MIN) done++;
-        }
-      }
-
+      done = keysCalDone();
       keysDrawLayout(keysCalIsDone);
       cliPrintf("  %d / %d 완료    \n", (int)done, (int)total);
       cliMoveUp(rows + 1);
@@ -2166,83 +2290,24 @@ void cliKeys(cli_args_t *args)
     }
     cliMoveDown(rows + 1);
 
-    /*
-     * ★ 부분 저장을 허용한다.
-     *
-     *   레이아웃에는 레이아웃 옵션 소켓(스플릿 백스페이스 등)이 다 들어 있지만
-     *   실제로는 그중 하나만 끼운다. 그래서 "전부 끝나야 저장"으로 막으면 영영
-     *   저장할 수 없다. 끝난 키만 보정됨으로 표시하고, 나머지는 종류표의 공칭값을
-     *   계속 쓰면 된다.
-     */
     if (cancel)
     {
+      keysCalCancel();
       cliPrintf("\n취소 — 저장하지 않는다 (기존 보정 유지)\n");
-    }
-    else if (done > 0)
-    {
-      uint32_t n_skip = 0;
-
-      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
-      {
-        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
-        {
-          uint32_t i = st * KEYS_CH_MAX + c;
-
-          if (keysIsPresent(st, c) == false) continue;
-
-          if (keysCalIsDone(st, c))
-          {
-            cfg.key[i].cal_max = base[st][c];
-            cfg.key[i].cal_min = cal_min_tmp[i];
-            cfg.key[i].flags  |= 0x01;
-          }
-          else
-          {
-            n_skip++;
-          }
-        }
-      }
-
-      cliPrintf("\n보정 %d / %d 저장", (int)done, (int)total);
-      if (n_skip) cliPrintf("  (%d개는 스위치가 없거나 덜 눌림 — 공칭값 유지)", (int)n_skip);
-      cliPrintf("\n");
-
-      cliPrintf("save : %s  seq %d\n", keysCfgSave() ? "OK" : "E_", (int)cfg.seq);
-
-      /* 어느 자리가 빠졌는지 알려준다. 예상과 다르면 배선이나 장착을 봐야 한다. */
-      if (n_skip)
-      {
-        cliPrintf("빠진 자리 : ");
-        for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
-        {
-          for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
-          {
-            if (keysIsPresent(st, c) && keysCalIsDone(st, c) == false)
-            {
-              cliPrintf("%d,%d ", (int)st, (int)c);
-            }
-          }
-        }
-        cliPrintf("\n");
-      }
     }
     else
     {
-      cliPrintf("\n눌린 키가 없어 저장하지 않는다\n");
+      uint32_t n_done = 0, n_skip = 0;
+      bool     ok     = keysCalSave(&n_done, &n_skip);
+
+      cliPrintf("\n보정 %d / %d 저장", (int)n_done, (int)total);
+      if (n_skip) cliPrintf("  (%d개는 스위치가 없거나 덜 눌림 — 공칭값 유지)", (int)n_skip);
+      cliPrintf("\n");
+      cliPrintf("save : %s  seq %d\n", ok ? "OK" : "E_", (int)cfg.seq);
     }
     ret = true;
   }
 
-  /*
-   * 한 키만 지켜보며 누름 한 번마다 한 줄.
-   *
-   * ★ "덜 눌렸다" 와 "눌렸는데 판정이 안 났다" 는 다른 문제다. 에지만 찍는 learn 은
-   *   빠진 입력을 아예 못 보고, 실시간 깊이만 보여주는 bar 는 지나간 것을 못 남긴다.
-   *   그래서 **도달한 최대 깊이**와 **판정 여부**를 같이 남긴다.
-   *
-   *   기준값이 흐르는 것도 같이 찍는다 — 깊이는 기준값 대비라 기준값이 밀리면
-   *   같은 세기로 눌러도 깊이가 줄어든다.
-   */
   if (args->argc == 3 && args->isStr(0, "key"))
   {
     uint32_t st  = (uint32_t)args->getData(1);

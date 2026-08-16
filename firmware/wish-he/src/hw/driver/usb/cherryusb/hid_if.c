@@ -96,6 +96,17 @@ static volatile uint32_t rx_count       = 0;
  */
 static hid_raw_recv_t    raw_recv    = NULL;
 static uint8_t           raw_pending_buf[HID_EP_MPS];
+
+/*
+ * 보정 저장 요청.
+ *
+ * ★ ISR 에서 플래시를 쓰면 안 된다. keysCalSave() 는 2~3ms 걸린다. 요청만 세워
+ *   두고 메인 루프(hidUpdate)가 처리한다 — 03편에서 부팅 경로에 플래시 작업을
+ *   넣었다가 벽돌을 만든 뒤로 이 경계를 지킨다.
+ */
+static volatile bool     cal_save_req  = false;
+static volatile uint8_t  cal_save_ok   = 0;
+static volatile uint8_t  cal_save_skip = 0;
 static volatile bool     raw_pending = false;
 
 static struct usbd_interface hid_intf;
@@ -132,6 +143,7 @@ static uint32_t hidCmdArgLen(const uint8_t *p_rx)
     case HID_CMD_LAYOUT: return 1;   /* 시작 인덱스 */
     case HID_CMD_TRACK:  return 1;   /* on/off */
     case HID_CMD_SWITCH: return 1;   /* 인덱스 */
+    case HID_CMD_CAL:    return 1;   /* 하위 명령 */
 
     case HID_CMD_KEYCFG:
       /* get: [하위, idx]   set: [하위, idx] + 값 14바이트 */
@@ -233,6 +245,34 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
     }
 
     /*
+     * 보정 — 시작·상태·저장·취소.
+     *
+     * 표본 수집은 keysUpdate() 안에서 돈다. 여기서는 켜고 끄고 진행 상황만 준다 —
+     * ISR 컨텍스트라 오래 걸리는 일을 하면 안 된다.
+     *
+     * ★ 저장은 플래시를 쓴다. keysCalSave() 가 2~3ms 걸리므로 ISR 에서 부르면
+     *   안 된다. 그래서 요청만 세워 두고 메인 루프가 처리한다.
+     */
+    case HID_CMD_CAL:
+    {
+      switch (p_rx[1])
+      {
+        case HID_CAL_START:  keysCalStart();  break;
+        case HID_CAL_CANCEL: keysCalCancel(); break;
+        case HID_CAL_SAVE:   cal_save_req = true; break;
+        default: break;                       /* 상태만 */
+      }
+
+      p_tx[2] = keysCalIsActive() ? 1 : 0;
+      p_tx[3] = (uint8_t)keysCalDone();
+      p_tx[4] = (uint8_t)keysCalTotal();
+      p_tx[5] = cal_save_ok;
+      p_tx[6] = cal_save_skip;
+      keysCalBitmap(&p_tx[HID_CAL_MAP_OFF], HID_EP_MPS - HID_CAL_MAP_OFF);
+      break;
+    }
+
+    /*
      * 스위치 종류표 — 한 번에 하나씩 준다.
      *
      * 항목이 열 개도 안 되므로 페이지를 나눌 것 없이 인덱스로 하나씩 묻는다.
@@ -327,6 +367,23 @@ void hidIfSetRawReceiveFunc(hid_raw_recv_t func)
 /* 메인 루프에서 부른다. 미뤄둔 VIA 명령과 예약된 리셋을 실제로 수행한다. */
 void hidIfUpdate(void)
 {
+  /*
+   * 보정 저장 — ISR 이 아니라 여기서 한다.
+   *
+   * keysCalSave() 는 플래시를 쓰고 2~3ms 걸린다. ISR 에서 부르면 USB 가 밀린다.
+   * 03편에서 부팅 경로에 플래시 작업을 넣었다가 벽돌을 만든 뒤로 이 경계를 지킨다.
+   */
+  if (cal_save_req)
+  {
+    uint32_t done = 0, skip = 0;
+
+    cal_save_req  = false;
+    cal_save_ok   = keysCalSave(&done, &skip) ? 1 : 0;
+    cal_save_skip = (uint8_t)skip;
+    logPrintf("[  ] 보정 저장 %d 키, %d 건너뜀, %s\n",
+              (int)done, (int)skip, cal_save_ok ? "OK" : "실패");
+  }
+
   if (raw_pending)
   {
     raw_pending = false;

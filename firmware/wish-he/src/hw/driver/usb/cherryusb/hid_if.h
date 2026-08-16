@@ -62,6 +62,25 @@ extern "C" {
  *   일반형 개수를 같이 주는 것은 도구가 목록에 구분선을 그으려고다.
  */
 #define HID_SWITCH_NAME_OFF       6
+
+#define HID_CMD_CAL               0xC7    /* 보정 — 시작·상태·저장·취소 */
+
+/*
+ * 보정.
+ *
+ *   OUT [1] = 0 상태만  1 시작  2 저장  3 취소
+ *   IN  [1] = 에코   [2] = 진행 중(1/0)   [3] = 끝난 키   [4] = 대상 키
+ *       [5] = 저장 결과 (2 일 때만: 1 성공)   [6] = 저장 때 건너뛴 키
+ *       [8..15] = 키별 완료 비트맵 (64키 = 8바이트, 비트 i = 키 i)
+ *
+ * ★ 무압 기준값은 여기서 다루지 않는다. 러닝 최대값이 늘 추적하므로 손댈 일이
+ *   없고, 여기서 모으는 것은 **바닥값**뿐이다 — 끝까지 눌러야만 알 수 있는 값.
+ */
+#define HID_CAL_STATUS            0
+#define HID_CAL_START             1
+#define HID_CAL_SAVE              2
+#define HID_CAL_CANCEL            3
+#define HID_CAL_MAP_OFF           8
 #define HID_KEYCFG_GET            0x00
 #define HID_KEYCFG_SET            0x01
 #define HID_KEYCFG_OFF            3       /* 값이 시작하는 자리 */

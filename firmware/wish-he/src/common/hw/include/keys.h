@@ -44,6 +44,21 @@ bool     keysIsReportEnabled(void);
  */
 bool     keysCalibrate(void);
 
+/*
+ * 보정 — 바닥값 모으기. CLI 와 HID 가 같은 핵을 쓴다.
+ *
+ * 무압 기준값은 러닝 최대값이 늘 추적하므로 여기서 할 일이 없다. 바닥값만 모은다 —
+ * 그건 실제로 끝까지 눌러야만 알 수 있다.
+ */
+void     keysCalStart(void);
+void     keysCalCancel(void);
+void     keysCalCollect(void);        /* keysUpdate 안에서 불린다 */
+bool     keysCalIsActive(void);
+uint32_t keysCalTotal(void);
+uint32_t keysCalDone(void);
+uint32_t keysCalBitmap(uint8_t *p_buf, uint32_t len);   /* 비트 i = 키 i 완료 */
+bool     keysCalSave(uint32_t *p_done, uint32_t *p_skip);
+
 /* 눌림 판정. row = MUX 스텝, col = ADC 채널 */
 bool     keysGetPressed(uint16_t row, uint16_t col);
 
