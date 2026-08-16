@@ -2,6 +2,28 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R30",
+      "board": "WISH60-HE",
+      "date": "2026-08-17",
+      "bin": "V260816R30/wish60-he-V260816R30.bin",
+      "size": 139280,
+      "crc": "0x4007ACC0",
+      "notes": [
+        "데드존과 표시 스퀄치를 분리 — 데드존 기본값 0 으로 되돌림"
+      ]
+    },
+    {
+      "version": "V260816R29",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R29/wish60-he-V260816R29.bin",
+      "size": 139032,
+      "crc": "0x3C99BE4A",
+      "notes": [
+        "데드존을 자르지 말고 깨우기 — 누르는 처음 0.12mm 가 사라지던 것"
+      ]
+    },
+    {
       "version": "V260816R28",
       "board": "WISH60-HE",
       "date": "2026-08-16",
