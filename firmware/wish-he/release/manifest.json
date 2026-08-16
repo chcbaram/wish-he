@@ -2,6 +2,17 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R5",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R5/wish60-he-V260816R5.bin",
+      "size": 134136,
+      "crc": "0xB8E045E8",
+      "notes": [
+        "웹에서 바꾼 설정이 전원을 꺼도 남는다 — 조용해지면 한 번 저장"
+      ]
+    },
+    {
       "version": "V260816R4",
       "board": "WISH60-HE",
       "date": "2026-08-16",

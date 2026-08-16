@@ -47,6 +47,14 @@ bool     keysCalibrate(void);
 /* 프로파일 — 설정 한 벌을 통째로 갈아 끼운다 (보정값은 공유한다) */
 uint8_t  keysProfGet(void);
 uint8_t  keysProfCount(void);
+/*
+ * 설정이 바뀌었다고 표시한다. 실제 저장은 메인 루프가 조용해진 뒤에 한 번 한다.
+ * 값을 바꾸는 길이 여럿이라(VIA 채널·키별 명령·CLI) 저장을 그 자리마다 붙이면
+ * 반드시 하나를 빠뜨린다.
+ */
+void     keysCfgTouch(void);
+void     keysCfgUpdate(void);           /* 메인 루프에서 — ISR 금지 (플래시) */
+
 bool     keysProfSelect(uint8_t idx);   /* 메모리에서 갈아 끼우기만 — 싸다 */
 bool     keysProfSave(void);            /* 플래시에 남기기 — ISR 밖에서 */
 bool     keysProfSet(uint8_t idx);      /* 둘 다 (CLI 용) */

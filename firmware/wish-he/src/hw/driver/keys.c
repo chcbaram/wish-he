@@ -2293,8 +2293,52 @@ bool keysSetKeyCfg(uint32_t idx, const uint8_t *p_buf, uint32_t len)
   return true;
 }
 
+/*
+ * ── 설정이 바뀌었다고 표시만 해 둔다 ────────────────────────────────────
+ *
+ * ★ 쓰는 자리에서 바로 저장하지 않는다.
+ *
+ *   설정을 바꾸는 길이 여럿이다 — VIA 커스텀 채널, 키별 명령(0xC5), CLI. 저장을
+ *   그 자리마다 붙이면 하나를 반드시 빠뜨린다. 실제로 웹 도구로 바꾼 값이 전원을
+ *   끄면 전부 사라졌다 — VIA 가 보내는 저장 명령에만 기대고 있었는데, 우리 HE
+ *   화면은 그 명령을 안 보낸다.
+ *
+ *   그리고 슬라이더를 끄는 동안에는 값이 초당 수십 번 바뀐다. 그때마다 플래시를
+ *   지우고 쓰면 수명이 순식간에 닳고 2~3ms 씩 스캔이 멎는다.
+ *
+ *   그래서 바뀌면 표시만 하고, **조용해지면** 메인 루프가 한 번 쓴다. 누가 어느
+ *   길로 바꾸든 저장되고, 한 번의 조작은 한 번의 쓰기가 된다.
+ */
+#define KEYS_CFG_SAVE_QUIET_MS   1000
+
+static volatile bool     cfg_dirty    = false;
+static          uint32_t cfg_dirty_ms = 0;
+
+void keysCfgTouch(void)
+{
+  cfg_dirty    = true;
+  cfg_dirty_ms = millis();
+}
+
+/*
+ * 메인 루프에서 부른다. **ISR 에서 부르면 안 된다** — 플래시를 쓴다.
+ *
+ * 보정 중에는 미룬다. 보정은 63키를 도는 동안 스캔이 한 번도 끊기면 안 되는
+ * 작업이고, 어차피 끝날 때 자기 저장소에 따로 쓴다.
+ */
+void keysCfgUpdate(void)
+{
+  if (cfg_dirty == false)                                return;
+  if (cal_active)                                        return;
+  if (millis() - cfg_dirty_ms < KEYS_CFG_SAVE_QUIET_MS)  return;
+
+  cfg_dirty = false;
+  keysCfgSave();
+}
+
 bool keysSave(void)
 {
+  cfg_dirty = false;
   return keysCfgSave();
 }
 
@@ -2329,6 +2373,7 @@ void keysSetPressUm(uint16_t um)
 
   keysCfgFanout();
   keysThrRebuild();
+  keysCfgTouch();
 }
 
 void keysSetReleaseUm(uint16_t um)
@@ -2339,6 +2384,7 @@ void keysSetReleaseUm(uint16_t um)
 
   keysCfgFanout();
   keysThrRebuild();
+  keysCfgTouch();
 }
 
 void keysSetSwitchType(uint8_t type)
@@ -2349,6 +2395,7 @@ void keysSetSwitchType(uint8_t type)
   for (uint32_t i = 0; i < KEYS_MAX; i++) KS(i)->sw_type = type;
 
   keysThrRebuild();
+  keysCfgTouch();
 }
 
 
@@ -2364,16 +2411,17 @@ uint16_t keysGetBottomUm(void)    { return P()->bottom_um; }
 uint16_t keysGetDeadUm(void)      { return P()->dead_um; }
 uint8_t  keysGetRtFlags(void)     { return P()->rt_flags; }
 
-void keysSetRtPressUm(uint16_t um)   { P()->rt_press_um   = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }
-void keysSetRtReleaseUm(uint16_t um) { P()->rt_release_um = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }
-void keysSetBottomUm(uint16_t um)    { P()->bottom_um     = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }
-void keysSetDeadUm(uint16_t um)      { P()->dead_um       = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }
+void keysSetRtPressUm(uint16_t um)   { P()->rt_press_um   = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); keysCfgTouch(); }
+void keysSetRtReleaseUm(uint16_t um) { P()->rt_release_um = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); keysCfgTouch(); }
+void keysSetBottomUm(uint16_t um)    { P()->bottom_um     = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); keysCfgTouch(); }
+void keysSetDeadUm(uint16_t um)      { P()->dead_um       = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); keysCfgTouch(); }
 
 void keysSetRtFlags(uint8_t flags)
 {
   P()->rt_flags = flags & (KEYS_RT_ON | KEYS_RT_BOTTOM | KEYS_RT_CONT);
   keysCfgFanout();
   keysThrRebuild();
+  keysCfgTouch();
 
   /*
    * RT 를 끄거나 켤 때 상태를 초기화한다. 안 그러면 직전 peak 이 남아

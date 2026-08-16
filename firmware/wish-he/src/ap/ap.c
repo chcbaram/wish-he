@@ -73,6 +73,7 @@ void update(void const *arg)
   if (is_qmk_on) qmkUpdate();         /* 키맵 · 레이어 · 매크로 · VIA -> HID 리포트 */
 
   usbUpdate();                        /* HID 로 들어온 부트/리셋/트래킹 요청 처리 */
+  keysCfgUpdate();                    /* 바뀐 설정을 조용해진 뒤 한 번 저장 */
 }
 
 void cliLoopIdle(void)
