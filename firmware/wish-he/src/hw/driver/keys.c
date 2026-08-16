@@ -317,6 +317,83 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  * 값의 근거는 8편의 실측이다: 61키 보정에서 최소 757 / 최대 893 / 평균 836.
  * 그래서 4.0mm 자리에 836 을 넣고 나머지는 행정에 비례시켰다.
  */
+/*
+ * ── 거리 환산 곡선 ────────────────────────────────────────────────────────
+ *
+ * ★ 홀 출력은 거리에 대해 직선이 아니다.
+ *
+ *   자석이 멀어지면 자기장은 거리의 세제곱에 가깝게 떨어진다. 그런데 여기서는 두
+ *   점(무압·바닥) 사이를 곧게 이어 읽고 있었다. 그러면 **가운데가 크게 어긋난다** —
+ *   하필 그 가운데가 사람이 실제로 쓰는 액추에이션 구간이다.
+ *
+ *   이 보드에 꽂힌 GEON RAW HE (160 -> 720 Gs, 3.4mm) 기준으로 —
+ *
+ *     입력지점 0.50mm 로 잡으면 실제로는 1.10mm 에서 눌렸다  (+0.60)
+ *     입력지점 1.00mm 로 잡으면 실제로는 1.79mm 에서 눌렸다  (+0.79)
+ *
+ * ★ 재지 않고 계산으로 얻는다.
+ *
+ *   축방향 자화 원통 자석의 축상 자기장은 식이 알려져 있고 미지수가 둘(유효 갭,
+ *   잔류자속)이다. 제조사가 주는 두 점이면 둘 다 풀린다. 63키를 심 끼워 눌러
+ *   재야 할 이유가 없다 (docs/ref/he-magnet-model.md, tools/he_magnet_fit.py).
+ *
+ * ★ 정규화하면 개체차가 사라진다.
+ *
+ *   u = (읽은값 - 무압) / (바닥 - 무압) 에서 곡선 **모양**은 자석 세기와 센서
+ *   오프셋에 무관하다 — 아핀 변환이 분자·분모에서 소거되기 때문이다. 그래서
+ *   종류당 표 하나면 되고, 키별로는 두 점만 있으면 된다 (이미 보정에서 얻는다).
+ *
+ * ★ 거리를 균일 분할한다. u 를 균일 분할하면 곡선이 가파른 구간에서 해상도가
+ *   무너진다 — 첫 칸 하나가 거리로 0.6mm 를 덮어 버린다.
+ *
+ * 표는 33칸, 값은 Q15 (32767 = 1.0). 칸 i 가 곧 i/32 행정이다. 데이터시트에서
+ * 계산되는 값이라 EEPROM 에 둘 이유가 없다 — 여기 상수로 둔다.
+ */
+#define KEYS_CURVE_N     33
+#define KEYS_CURVE_SEG   (KEYS_CURVE_N - 1)   /* 칸 사이 구간 수 = 32 */
+#define KEYS_CURVE_ONE   32767                /* Q15 의 1.0 */
+
+/* 160 -> 720 Gs, 3.4mm. 직선으로 읽으면 최대 0.80mm 어긋난다 */
+static const uint16_t curve_geon_raw_he[KEYS_CURVE_N] =
+{
+      0,   362,   743,  1144,  1565,  2010,  2478,  2973,
+   3494,  4045,  4628,  5244,  5896,  6586,  7318,  8094,
+   8918,  9793, 10724, 11713, 12767, 13890, 15087, 16365,
+  17730, 19188, 20748, 22419, 24208, 26126, 28184, 30393,
+  32767,
+};
+
+/* 120 -> 700 Gs, 3.5mm. 최대 0.95mm */
+static const uint16_t curve_gateron_jade[KEYS_CURVE_N] =
+{
+      0,   300,   617,   954,  1311,  1689,  2091,  2518,
+   2973,  3457,  3972,  4522,  5109,  5737,  6407,  7125,
+   7894,  8719,  9605, 10557, 11581, 12684, 13873, 15155,
+  16541, 18040, 19662, 21421, 23328, 25399, 27651, 30100,
+  32767,
+};
+
+/* 102 -> 905 Gs, 4.1mm. 최대 1.37mm — 비가 클수록 더 휜다 */
+static const uint16_t curve_gateron_ks20[KEYS_CURVE_N] =
+{
+      0,   213,   440,   683,   943,  1223,  1523,  1845,
+   2193,  2567,  2971,  3408,  3881,  4393,  4949,  5554,
+   6213,  6932,  7717,  8577,  9520, 10555, 11695, 12952,
+  14340, 15877, 17581, 19474, 21580, 23929, 26551, 29484,
+  32767,
+};
+
+/* 120 -> 800 Gs, 4.0mm. 최대 1.18mm */
+static const uint16_t curve_gateron_fox[KEYS_CURVE_N] =
+{
+      0,   267,   550,   851,  1171,  1512,  1875,  2263,
+   2677,  3120,  3594,  4102,  4646,  5231,  5860,  6537,
+   7266,  8053,  8903,  9823, 10819, 11899, 13073, 14349,
+  15739, 17255, 18910, 20720, 22703, 24876, 27261, 29883,
+  32767,
+};
+
+
 typedef struct
 {
   const char *name;
@@ -337,6 +414,14 @@ typedef struct
    */
   uint16_t    flux_rest_gs;
   uint16_t    flux_bottom_gs;
+
+  /*
+   * 거리 환산 곡선. NULL 이면 직선으로 읽는다.
+   *
+   * 위 두 점에서 계산한 것이라 둘이 늘 짝이다 — 두 점을 아는데 곡선이 없거나 그
+   * 반대이면 표를 잘못 적은 것이다.
+   */
+  const uint16_t *curve;
 } keys_switch_t;
 
 static const keys_switch_t keys_switch[] =
@@ -348,9 +433,9 @@ static const keys_switch_t keys_switch[] =
    * 보정(keys cal)을 하면 키별 실측 카운트가 이 값을 대신하므로, 여기 stroke_cnt 는
    * 미보정 키의 임시 기준일 뿐이다.
    */
-  { "generic 4.0mm", 400, 836 * KEYS_ACC_CNT, 0, 0 },
-  { "generic 3.5mm", 350, 731 * KEYS_ACC_CNT, 0, 0 },
-  { "generic 3.0mm", 300, 627 * KEYS_ACC_CNT, 0, 0 },
+  { "generic 4.0mm", 400, 836 * KEYS_ACC_CNT, 0, 0, NULL },
+  { "generic 3.5mm", 350, 731 * KEYS_ACC_CNT, 0, 0, NULL },
+  { "generic 3.0mm", 300, 627 * KEYS_ACC_CNT, 0, 0, NULL },
 
   /*
    * ── 제원을 아는 제품 ────────────────────────────────────────
@@ -362,7 +447,7 @@ static const keys_switch_t keys_switch[] =
    * (최소 2275, 최대 2683, 평균 2514).
    */
   /* 제조사 공개 제원 — 초기 160Gs, 바닥 720Gs (검색으로 확인) */
-  { "GEON RAW HE",      340, 838 * KEYS_ACC_CNT, 160, 720 },
+  { "GEON RAW HE",      340, 838 * KEYS_ACC_CNT, 160, 720, curve_geon_raw_he },
 
   /*
    * ── 두 점 제원을 아는 제품 ──────────────────────────────────────
@@ -373,10 +458,10 @@ static const keys_switch_t keys_switch[] =
    * stroke_cnt 는 여전히 이 보드에서 재야 하는 값이라 일반형과 같은 어림값을
    * 쓴다 — 보정하면 키별 실측이 대신한다.
    */
-  { "Gateron Jade",     350, 731 * KEYS_ACC_CNT, 120, 700 },
-  { "Gateron Jade Pro", 350, 731 * KEYS_ACC_CNT, 120, 700 },
-  { "Gateron KS-20",    410, 857 * KEYS_ACC_CNT, 102, 905 },
-  { "Gateron Fox",      400, 836 * KEYS_ACC_CNT, 120, 800 },
+  { "Gateron Jade",     350, 731 * KEYS_ACC_CNT, 120, 700, curve_gateron_jade },
+  { "Gateron Jade Pro", 350, 731 * KEYS_ACC_CNT, 120, 700, curve_gateron_jade },
+  { "Gateron KS-20",    410, 857 * KEYS_ACC_CNT, 102, 905, curve_gateron_ks20 },
+  { "Gateron Fox",      400, 836 * KEYS_ACC_CNT, 120, 800, curve_gateron_fox },
 };
 
 /*
@@ -713,6 +798,7 @@ static void            keysThrRebuild(void);
 static void            keysCfgFanout(void);
 static uint16_t        keysStrokeCnt(uint32_t i);
 static inline uint8_t  keysSwType(uint32_t i);
+static void            keysCurveRecipInit(void);
 
 /*
  * RT 반응 행정의 하한 (카운트).
@@ -1198,6 +1284,7 @@ bool keysInit(void)
    * 없거나 깨졌으면 기본값으로 계속 간다 — 여기서 멈추면 복구가 막힌다.
    */
   is_cfg_loaded = keysCfgLoad();
+  keysCurveRecipInit();      /* 곡선 역수 — 임계값보다 먼저 (여기에 기댄다) */
   keysThrRebuild();          /* 설정을 읽었으니 임계값을 푼다 */
 
   if (ret)
@@ -1309,10 +1396,151 @@ static inline void keysFilter(uint32_t step, uint32_t ch, uint32_t packed)
  *   - 개체 편차     -> 셀마다 제 기준을 갖는다
  */
 /*
+ * 거리(0.01mm) -> 정규화 값 u (Q15). 곡선을 앞으로 읽는 일이다.
+ *
+ * 표가 거리를 균일 분할해 두었으므로 자리는 곱셈 하나로 나온다 — 탐색이 필요 없다.
+ * 판정 문턱을 만들 때 쓴다.
+ */
+static uint32_t keysCurveToU(const uint16_t *c, uint32_t um, uint32_t travel)
+{
+  uint32_t pos, idx, frac;
+
+  if (um == 0 || travel == 0) return 0;
+  if (um >= travel)           return KEYS_CURVE_ONE;
+
+  /* um <= travel <= 410 이라 um * 32 << 16 은 32비트 안이다 (최대 8.6e8) */
+  pos  = (((uint32_t)um * KEYS_CURVE_SEG) << 16) / travel;
+  idx  = pos >> 16;
+  frac = pos & 0xFFFF;
+
+  if (idx >= KEYS_CURVE_SEG) return KEYS_CURVE_ONE;
+
+  return c[idx] + ((((uint32_t)c[idx + 1] - c[idx]) * frac) >> 16);
+}
+
+/*
+ * 키별 스트로크의 역수 — 설정·보정이 바뀔 때 다시 만든다 (keysThrRebuild).
+ *
+ * u = d * 32767 / stroke 의 나눗셈을 없앤다. 시프트를 12 로 두면 남는 곱이
+ * 최대 12285 x 89475 = 1.1e9 라 32비트 안이고, u 오차는 32767 분의 1 이다 —
+ * 우리 단위(0.01mm)의 양자화보다 작아서 안 보인다.
+ */
+#define KEYS_STROKE_RECIP_SH   12
+
+static uint32_t stroke_recip[KEYS_MAX];
+
+/*
+ * 곡선 칸 간격의 역수 — 부팅 때 한 번 만든다. Q31 (2^31 / 간격).
+ *
+ * ★ 나눗셈을 없애려고 둔다.
+ *
+ *   상용 펌웨어를 뜯어 보니 같은 수를 쓰고 있었다. 부팅 때 32768/i 표(i=1..255)를
+ *   채워 두고 스캔 경로에서는 곱셈+시프트만 한다. 우리도 그대로 가져온다.
+ *
+ * ★ 상수로 박지 않고 부팅 때 만든다.
+ *
+ *   곡선에서 계산되는 값이라 손으로 적어 두면 **곡선을 고칠 때 짝이 어긋난다.**
+ *   32칸 나눗셈 몇 번은 부팅에서 보이지도 않는다.
+ *
+ * 곡선이 없는 종류(일반형)는 칸이 0 이라 안 쓴다.
+ */
+static uint32_t curve_recip[KEYS_SWITCH_CNT][KEYS_CURVE_SEG];
+
+static void keysCurveRecipInit(void)
+{
+  for (uint32_t s = 0; s < KEYS_SWITCH_CNT; s++)
+  {
+    const uint16_t *c = keys_switch[s].curve;
+
+    if (c == NULL) continue;
+
+    for (uint32_t i = 0; i < KEYS_CURVE_SEG; i++)
+    {
+      uint32_t span = (uint32_t)c[i + 1] - c[i];
+
+      curve_recip[s][i] = (span > 0) ? ((uint32_t)0x80000000U / span) : 0;
+    }
+  }
+}
+
+/*
+ * 정규화 값 u (Q15) -> 거리(0.01mm). 곡선을 거꾸로 읽는 일이다.
+ *
+ * 33칸이라 이진 탐색이 비교 5회다.
+ *
+ * ★ **여기는 생각보다 뜨거운 자리다.**
+ *
+ *   표시 경로라 한가한 줄 알았는데, RGB 의 HE 효과가 매 프레임 65키의 깊이를
+ *   묻는다 (rgb_matrix_kb.inc). 처음에 편하다고 64비트 나눗셈을 썼더니 RGB 태스크
+ *   평균이 21 -> 34us 로 뛰었다 — RV32 에서 64비트 나눗셈은 소프트웨어 루틴이다.
+ *
+ *   지금은 나눗셈이 하나도 없다. 곱셈 하나와 시프트뿐이다.
+ *
+ * ★ 64비트 곱은 남겨 둔다. 나눗셈과 달리 명령 두 개(mul + mulhu)라 싸고, 전 행정을
+ *   넘어선 구간에서 32비트를 넘길 수 있다. 가지를 치는 것보다 이쪽이 낫다.
+ */
+#define KEYS_CURVE_POS_MAX  (160U << 16)   /* 전 행정의 5배. 32비트 곱을 지킨다 */
+
+static uint32_t keysCurveToUm(uint32_t sw, uint32_t u, uint32_t travel)
+{
+  const uint16_t *c = keys_switch[sw].curve;
+  uint32_t lo = 0;
+  uint32_t hi = KEYS_CURVE_SEG;
+  uint32_t pos;
+
+  if (u == 0) return 0;
+
+  if (u >= c[hi])
+  {
+    /*
+     * 전 행정을 넘었다 — 마지막 칸의 기울기로 늘린다.
+     *
+     * ★ 여기서 자르면 안 된다. 보정은 "공칭 행정이 맞나" 를 재는 일인데, 실제로
+     *   더 깊이 들어가는 키가 있어도 잘려서 그 사실이 안 보인다.
+     */
+    lo = hi - 1;
+  }
+  else
+  {
+    while (hi - lo > 1)
+    {
+      uint32_t mid = (lo + hi) / 2;
+
+      if (c[mid] <= u) lo = mid;
+      else             hi = mid;
+    }
+  }
+
+  /* (u - c[lo]) / span 을 Q16 으로. 역수가 Q31 이라 >> 15 면 Q16 이다 */
+  pos = (lo << 16)
+      + (uint32_t)(((uint64_t)(u - c[lo]) * curve_recip[sw][lo]) >> 15);
+
+  if (pos > KEYS_CURVE_POS_MAX) pos = KEYS_CURVE_POS_MAX;
+
+  /* pos 는 칸 단위 Q16. 32칸이 전 행정이므로 >> (16 + 5) */
+  return (pos * travel) >> 21;
+}
+
+/*
  * 설정(0.01mm)을 키별 카운트로 풀어 둔다.
  *
  * ★ 이걸 넣기 전까지 판정은 전역 상수(KEYS_PRESS_LEVEL 등)를 썼다.
  *   VIA 입력지점 슬라이더가 EEPROM 만 바꾸고 판정에는 닿지 않았다는 뜻이다.
+ *
+ * ★ **여기가 감각을 정하는 자리다.** 곡선이 있으면 여기서 쓴다.
+ *
+ *   화면에 보이는 깊이(keysGetDepthUm)만 곡선으로 고치면 표시만 맞고 실제 눌리는
+ *   자리는 그대로다. 사용자가 정하는 것은 "몇 mm 에서 눌리나" 이고, 그것이 카운트로
+ *   번역되는 자리가 바로 여기다.
+ *
+ * ★ 래피드 트리거의 두 값(rt_press·rt_release)은 **위치가 아니라 이동량**이다.
+ *
+ *   곡선에서는 같은 이동량이라도 어디서 움직였느냐에 따라 카운트가 다르다 —
+ *   바닥 근처에서 0.5mm 는 위쪽 0.5mm 보다 훨씬 많은 카운트다. 제대로 하려면 매
+ *   표본마다 역변환을 해야 하는데 35kHz x 64셀 루프에는 못 넣는다.
+ *
+ *   그래서 이동량은 지금처럼 직선으로 둔다. 절대 위치(입력·해제·데드존·바닥)는
+ *   곡선으로 정확해지고, 이동량은 예전과 같은 어림이다 — 나빠지는 것은 없다.
  *
  * 환산에 키별 스트로크가 필요해 나눗셈이 들어간다. 35kHz x 64셀 루프 안에서는 못
  * 하므로 설정·보정이 바뀔 때만 다시 만든다.
@@ -1324,26 +1552,52 @@ static void keysThrRebuild(void)
     const keys_key_set_t *k = KS(i);
     uint32_t stroke = keysStrokeCnt(i);
     uint32_t travel = keys_switch[keysSwType(i)].travel_um;
+    const uint16_t *curve = keys_switch[keysSwType(i)].curve;
     keys_thr_t *t   = &thr[i];
 
     if (travel == 0) travel = 400;
 
-    /* um -> 카운트. um 400, stroke 2700 이라도 32비트 안이다. */
-    #define UM2CNT(um)  ((uint16_t)(((uint32_t)(um) * stroke) / travel))
+    /* 깊이 환산이 쓸 역수. 여기서 만들어 두면 그쪽에 나눗셈이 안 남는다 */
+    stroke_recip[i] = (stroke > 0)
+                    ? (((uint32_t)KEYS_CURVE_ONE << KEYS_STROKE_RECIP_SH) / stroke)
+                    : 0;
+
+    /*
+     * um -> 카운트. um 400, stroke 2700 이라도 32비트 안이다.
+     *
+     * 여기는 설정이 바뀔 때만 도는 자리라 나눗셈을 그냥 둔다 — 없앨 값어치가 없다.
+     */
+    #define UM2CNT(um)                                                       \
+      ((uint16_t)(curve                                                      \
+        ? ((keysCurveToU(curve, (um), travel) * stroke) / KEYS_CURVE_ONE)    \
+        : (((uint32_t)(um) * stroke) / travel)))
+
+    /* 이동량은 곡선을 안 쓴다 — 위 주석 참고 */
+    #define UM2CNT_LIN(um)  ((uint16_t)(((uint32_t)(um) * stroke) / travel))
 
     t->press      = UM2CNT(k->press_um);
     t->release    = UM2CNT(k->release_um);
-    t->rt_press   = UM2CNT(k->rt_press_um);
-    t->rt_release = UM2CNT(k->rt_release_um);
+    t->rt_press   = UM2CNT_LIN(k->rt_press_um);
+    t->rt_release = UM2CNT_LIN(k->rt_release_um);
     t->dead       = UM2CNT(k->dead_um);
     t->rt_flags   = k->rt_flags;
 
-    /* 바닥 보호는 "바닥에서 이만큼 안쪽" 이므로 깊이 기준으로 뒤집는다 */
+    /*
+     * 바닥 보호는 "바닥에서 이만큼 안쪽" 이다.
+     *
+     * ★ 뒤집는 자리가 카운트가 아니라 **거리**여야 한다.
+     *
+     *   예전에는 카운트로 바꾼 뒤 stroke 에서 뺐다. 직선일 때는 같은 값이지만
+     *   곡선에서는 다르다 — 위쪽 0.2mm 와 바닥쪽 0.2mm 는 카운트가 딴판이다.
+     *   거리에서 먼저 뒤집어 절대 위치로 만든 다음 곡선을 태운다.
+     */
     {
-      uint32_t b = UM2CNT(k->bottom_um);
-      t->bottom_lo = (uint16_t)((stroke > b) ? (stroke - b) : 0);
+      uint32_t b_um = (travel > k->bottom_um) ? (travel - k->bottom_um) : 0;
+
+      t->bottom_lo = UM2CNT(b_um);
     }
     #undef UM2CNT
+    #undef UM2CNT_LIN
 
     /*
      * 최소 폭을 지킨다.
@@ -1354,8 +1608,28 @@ static void keysThrRebuild(void)
     if (t->rt_press   < KEYS_RT_MIN_CNT) t->rt_press   = KEYS_RT_MIN_CNT;
     if (t->rt_release < KEYS_RT_MIN_CNT) t->rt_release = KEYS_RT_MIN_CNT;
 
-    /* 해제가 입력보다 깊으면 눌린 채로 굳는다 */
-    if (t->release >= t->press && t->press > 0) t->release = (uint16_t)(t->press - 1);
+    /*
+     * 입력과 해제 사이에 잡음보다 넓은 틈을 남긴다.
+     *
+     * ★ 곡선으로 바꾸면서 이게 필요해졌다.
+     *
+     *   예전에는 "해제가 입력보다 깊으면 한 칸 아래로" 만 했다. 카운트 문턱이
+     *   넉넉해서 한 칸 차이가 현실적으로 안 나왔기 때문이다. 그런데 곡선을 태우면
+     *   같은 mm 설정이 카운트로 2.7배 작아진다 — 0.30mm 가 221 에서 82 카운트다.
+     *   틈이 잡음 p-p 40 보다 좁아지면 키가 제멋대로 눌렸다 떼진다.
+     *
+     *   RT 하한과 같은 근거를 쓴다.
+     */
+    if (t->press > KEYS_RT_MIN_CNT)
+    {
+      uint16_t lo = (uint16_t)(t->press - KEYS_RT_MIN_CNT);
+
+      if (t->release > lo) t->release = lo;
+    }
+    else if (t->release >= t->press && t->press > 0)
+    {
+      t->release = (uint16_t)(t->press - 1);
+    }
   }
 }
 
@@ -2283,7 +2557,30 @@ uint16_t keysGetDepthUm(uint16_t row, uint16_t col)
   stroke = keysStrokeCnt(i);
   if (stroke == 0) return 0;
 
-  d = (int32_t)(((uint32_t)d * travel) / stroke);
+  {
+    uint32_t sw = keysSwType(i);
+
+    if (keys_switch[sw].curve)
+    {
+      /*
+       * 정규화하고 곡선을 거꾸로 읽는다.
+       *
+       * ★ u 를 만들 때 개체차가 사라진다. 자석 세기도 센서 오프셋도 분자·분모에서
+       *   소거되므로, 종류당 표 하나로 63키가 다 맞는다. 키별로 필요한 두 점은
+       *   이미 base(살아 있는 무압)와 stroke(보정)로 갖고 있다.
+       *
+       * ★ 여기도 나눗셈이 없다. 스트로크는 키마다 고정이라 역수를 미리 잡아 둔다
+       *   (keysThrRebuild). 곡선 역수와 합쳐 이 경로에 나눗셈이 하나도 안 남는다.
+       */
+      uint32_t u = ((uint32_t)d * stroke_recip[i]) >> KEYS_STROKE_RECIP_SH;
+
+      d = (int32_t)keysCurveToUm(sw, u, travel);
+    }
+    else
+    {
+      d = (int32_t)(((uint32_t)d * travel) / stroke);
+    }
+  }
 
   /*
    * ★ 전 행정을 넘어도 자르지 않는다.
