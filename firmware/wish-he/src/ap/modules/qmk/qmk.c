@@ -90,6 +90,19 @@ void qmkGetStat(qmk_stat_t *p_stat)
   p_stat->rgb_us_avg   = rgb_us_cnt ? (rgb_us_sum / rgb_us_cnt) : 0;
 }
 
+/* 누적값만 지운다 — keys 쪽과 같은 규칙 */
+void qmkClearStat(void)
+{
+  task_us_max   = 0;
+  task_us_sum   = 0;
+  task_us_cnt   = 0;
+  task_over_cnt = 0;
+  rgb_us_max    = 0;
+  rgb_us_sum    = 0;
+  rgb_us_cnt    = 0;
+  rgb_over_cnt  = 0;
+}
+
 void qmkRgbStat(uint32_t us)
 {
   rgb_us_last = us;

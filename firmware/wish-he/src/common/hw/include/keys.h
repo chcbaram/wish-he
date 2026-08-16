@@ -39,6 +39,7 @@ typedef struct
 } keys_stat_t;
 
 void     keysGetStat(keys_stat_t *p_stat);
+void     keysClearStat(void);
 
 uint32_t keysGetScanTime(void);
 

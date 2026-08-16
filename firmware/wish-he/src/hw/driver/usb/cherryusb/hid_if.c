@@ -179,7 +179,8 @@ static uint32_t hidCmdArgLen(const uint8_t *p_rx)
     case HID_CMD_SWITCH: return 1;   /* 인덱스 */
     /* 상태만 물으면 하위 하나, 바꾸는 것은 인덱스가 더 붙는다 */
     case HID_CMD_PROF:   return (p_rx[1] == HID_PROF_STATUS) ? 1 : 2;
-    case HID_CMD_STAT:   return 0;
+    /* 그냥 읽기는 인자가 없고, 지우기만 하위 명령이 붙는다 */
+    case HID_CMD_STAT:   return (p_rx[1] == HID_STAT_CLEAR) ? 1 : 0;
 
     /* 하위 명령. 행정 읽기만 시작 인덱스가 더 붙는다 */
     case HID_CMD_CAL:    return (p_rx[1] == HID_CAL_STROKE) ? 2 : 1;
@@ -313,6 +314,18 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
       keys_stat_t k;
       qmk_stat_t  q;
       uint32_t    v[HID_STAT_CNT];
+
+      /*
+       * ★ 지우고 나서 읽는다.
+       *
+       *   지운 뒤의 값을 그대로 돌려주면 화면이 한 번 더 물을 필요가 없다. 따로
+       *   물으면 그 사이에 몇 회가 더 쌓여 "지웠는데 0 이 아닌" 화면이 나온다.
+       */
+      if (p_rx[1] == HID_STAT_CLEAR)
+      {
+        keysClearStat();
+        qmkClearStat();
+      }
 
       keysGetStat(&k);
       qmkGetStat(&q);

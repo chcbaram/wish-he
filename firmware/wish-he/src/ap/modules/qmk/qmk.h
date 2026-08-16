@@ -21,6 +21,7 @@ typedef struct
 } qmk_stat_t;
 
 void qmkGetStat(qmk_stat_t *p_stat);
+void qmkClearStat(void);
 
 
 

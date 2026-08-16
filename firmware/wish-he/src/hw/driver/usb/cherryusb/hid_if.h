@@ -85,6 +85,9 @@ extern "C" {
  */
 #define HID_CMD_STAT              0xC9
 
+#define HID_STAT_READ             0
+#define HID_STAT_CLEAR            1       /* 누적값을 0 부터 다시 */
+
 #define HID_STAT_OFF              4       /* 값이 시작하는 자리 (4바이트 정렬) */
 #define HID_STAT_CNT              14      /* LE32 몇 개인가 */
 

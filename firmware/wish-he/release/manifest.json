@@ -2,6 +2,17 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R14",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R14/wish60-he-V260816R14.bin",
+      "size": 136176,
+      "crc": "0x534A1DC3",
+      "notes": [
+        "진단 누적값 지우기 (디버그 화면의 Clear)"
+      ]
+    },
+    {
       "version": "V260816R13",
       "board": "WISH60-HE",
       "date": "2026-08-16",

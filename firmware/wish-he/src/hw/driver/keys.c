@@ -1617,6 +1617,27 @@ void keysGetStat(keys_stat_t *p_stat)
   p_stat->calibrated  = is_calibrated ? 1 : 0;
 }
 
+/*
+ * 누적값을 0 부터 다시 센다.
+ *
+ * ★ 지금 값(scan_time_us)은 안 지운다.
+ *
+ *   그건 누적이 아니라 "마지막 한 바퀴" 다. 지워 봐야 다음 스캔에 바로 채워지고,
+ *   0 으로 잠깐 보이는 것이 오히려 거짓말이다.
+ *
+ * ★ 최대치는 지운다.
+ *
+ *   지우는 이유가 대개 "방금 뭔가 고쳤는데 나아졌나" 이고, 그때 최대치가 옛날
+ *   기록으로 남아 있으면 판단을 막는다.
+ */
+void keysClearStat(void)
+{
+  scan_us_max   = 0;
+  scan_over_cnt = 0;
+  scan_cnt      = 0;
+  timeout_cnt   = 0;
+}
+
 uint32_t keysGetScanTime(void)
 {
   return scan_time_us;
