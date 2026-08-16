@@ -523,8 +523,14 @@ def cmd_gen():
       게임 중에 프로파일을 바꾸려고 브라우저를 띄울 수는 없다. VIA 의 커스텀
       키코드로 내면 사용자가 키 선택기에서 원하는 자리에 붙일 수 있다.
 
-      NEXT 를 같이 둔다 — 네 개를 다 배치할 자리가 없는 60% 에서는 한 키로 도는
-      쪽이 실제로 쓰인다.
+      NEXT·PREV 를 같이 둔다 — 네 개를 다 배치할 자리가 없는 60% 에서는 한 키로 도는
+      쪽이 실제로 쓰인다. 앞으로만 도는 것은 반쪽이다. 4번에서 1번으로 가려고 세 번
+      더 누르는 것보다 한 번 되돌리는 쪽이 빠르다.
+
+    ★ 순서는 **뒤에만 더한다.**
+
+      이 목록의 자리가 곧 키코드(QK_KB_0..)다. 가운데에 끼워 넣으면 사용자가 이미
+      배치해 둔 키가 조용히 다른 뜻으로 바뀐다.
     """
     via["customKeycodes"] = [
         {"name": f"Profile {i + 1}",
@@ -533,7 +539,10 @@ def cmd_gen():
         for i in range(4)
     ] + [{"name": "Profile Next",
           "title": "Switch to the next profile, wrapping around",
-          "shortName": "PF>"}]
+          "shortName": "PF>"},
+         {"name": "Profile Prev",
+          "title": "Switch to the previous profile, wrapping around",
+          "shortName": "PF<"}]
 
     VIA_PATH.write_text(json.dumps(via, indent=2, ensure_ascii=False) + "\n")
 

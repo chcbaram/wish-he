@@ -373,6 +373,7 @@ enum {
   KC_PROF_3,
   KC_PROF_4,
   KC_PROF_NEXT,
+  KC_PROF_PREV,
 };
 
 bool process_record_kb(uint16_t keycode, keyrecord_t *record)
@@ -390,6 +391,15 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record)
 
       case KC_PROF_NEXT:
         if (keysProfSelect((uint8_t)((keysProfGet() + 1) % keysProfCount())))
+          keysProfTouch();
+        return false;
+
+      /*
+       * 뒤로. 빼기 대신 (개수 - 1) 을 더한다 — uint8_t 라 0 에서 빼면 뒤집힌다.
+       */
+      case KC_PROF_PREV:
+        if (keysProfSelect((uint8_t)((keysProfGet() + keysProfCount() - 1) %
+                                     keysProfCount())))
           keysProfTouch();
         return false;
 

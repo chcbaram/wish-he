@@ -2,6 +2,17 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R10",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R10/wish60-he-V260816R10.bin",
+      "size": 135400,
+      "crc": "0xC89FAE8D",
+      "notes": [
+        "프로파일 이전(PF<) 키코드 추가"
+      ]
+    },
+    {
       "version": "V260816R9",
       "board": "WISH60-HE",
       "date": "2026-08-16",

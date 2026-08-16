@@ -274,6 +274,11 @@
       "name": "Profile Next",
       "title": "Switch to the next profile, wrapping around",
       "shortName": "PF>"
+    },
+    {
+      "name": "Profile Prev",
+      "title": "Switch to the previous profile, wrapping around",
+      "shortName": "PF<"
     }
   ]
 }
