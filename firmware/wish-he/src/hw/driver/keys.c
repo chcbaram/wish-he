@@ -2679,6 +2679,39 @@ static uint16_t keysStrokeCnt(uint32_t i)
  *   당시의 cal_max 를 영점으로 쓰면 몇 시간 뒤에는 안 눌러도 0 이 아니게 된다.
  *   보정에서 가져오는 것은 "몇 카운트가 전 행정인가"(기울기)뿐이다.
  */
+/*
+ * 카운트 편차를 그 키의 거리(0.01mm)로. 깊이 환산의 알맹이다.
+ *
+ * ★ 따로 뺀 이유 — **잡음도 mm 로 봐야 한다.**
+ *
+ *   화면이 보여주는 것은 계산된 거리다. 그런데 곡선은 맨 위가 평평해서 같은 카운트
+ *   편차라도 거기서는 거리로 크게 부풀려진다 — 바닥의 여섯 배쯤 된다. 카운트로만
+ *   재면 "잡음 22" 라 작아 보이지만 화면에는 0.10mm 로 뜬다.
+ *
+ *   진단(keys noise)도 같은 식을 타야 화면과 말이 맞는다.
+ */
+static uint16_t keysCntToUm(uint32_t i, int32_t d)
+{
+  uint32_t sw     = keysSwType(i);
+  uint32_t travel = keys_switch[sw].travel_um;
+  uint32_t stroke = keysStrokeCnt(i);
+
+  if (d <= 0 || stroke == 0) return 0;
+
+  if (keys_switch[sw].curve)
+  {
+    uint32_t u = ((uint32_t)d * stroke_recip[i]) >> KEYS_STROKE_RECIP_SH;
+
+    d = (int32_t)keysCurveToUm(sw, u, travel);
+  }
+  else
+  {
+    d = (int32_t)(((uint32_t)d * travel) / stroke);
+  }
+
+  return (d > 0xFFFF) ? 0xFFFF : (uint16_t)d;
+}
+
 uint16_t keysGetDepthUm(uint16_t row, uint16_t col)
 {
   uint32_t i = row * KEYS_CH_MAX + col;
@@ -3777,7 +3810,7 @@ void cliKeys(cli_args_t *args)
    *   진폭이 크다        -> 그 셀의 노이즈가 크다
    *   진폭은 작고 치우침 -> 스위치가 덜 복귀했거나 기준값이 아직 안 맞았다
    */
-  if (args->argc == 1 && args->isStr(0, "noise"))
+  if (args->argc >= 1 && args->argc <= 2 && args->isStr(0, "noise"))
   {
     static int16_t  d_min[KEYS_STEP_MAX][KEYS_CH_MAX];
     static int16_t  d_max[KEYS_STEP_MAX][KEYS_CH_MAX];
@@ -3785,6 +3818,18 @@ void cliKeys(cli_args_t *args)
     static uint16_t a_max[KEYS_STEP_MAX][KEYS_CH_MAX];
     uint32_t t_begin;
     uint32_t cnt = 0;
+
+    /*
+     * 관측 시간을 받는다 — `keys noise 60000`.
+     *
+     * ★ 3초짜리 창을 여러 번 도는 것과 한 창을 길게 보는 것은 다르다.
+     *
+     *   드물게 튀는 사건은 창마다 흩어져, 나눠 보면 어느 창에서도 최악값이 안 된다.
+     *   한 창 안에서 봐야 p-p 에 그대로 남는다. 실제로 3초 x 12 로는 못 잡은 것을
+     *   찾으려고 넣었다.
+     */
+    const uint32_t noise_ms = (args->argc == 2) ? (uint32_t)args->getData(1)
+                                                : KEYS_NOISE_MS;
 
     for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
     {
@@ -3795,11 +3840,11 @@ void cliKeys(cli_args_t *args)
       }
     }
 
-    cliPrintf("%d ms 동안 측정한다 — 키에서 손을 뗄 것\n", KEYS_NOISE_MS);
+    cliPrintf("%d ms 동안 측정한다 — 키에서 손을 뗄 것\n", (int)noise_ms);
     delay(300);
 
     t_begin = millis();
-    while (millis() - t_begin < KEYS_NOISE_MS)
+    while (millis() - t_begin < noise_ms)
     {
       keysUpdate();
       for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
@@ -3839,6 +3884,41 @@ void cliKeys(cli_args_t *args)
         cliPrintf(" %+5d", (int)((d_max[st][c] + d_min[st][c]) / 2));
       cliPrintf("\n");
     }
+    /*
+     * ★ **화면에 뜨는 값으로도 낸다.**
+     *
+     *   웹 도구가 보여주는 것은 계산된 거리다. 곡선은 맨 위가 평평해서 같은 카운트
+     *   편차가 거기서는 거리로 크게 부풀려진다 — 카운트로는 작아 보여도 화면에는
+     *   0.1mm 로 뜬다. 카운트만 보면 "왜 안 눌렀는데 값이 뜨지" 를 못 설명한다.
+     *
+     *   깊이 방향의 최악값(중심 + p-p/2)을 그대로 환산한다. 그 수가 곧 사용자가
+     *   가만히 뒀을 때 화면에서 볼 수 있는 최대값이다.
+     */
+    {
+      uint32_t mx_um = 0, mx_i = 0;
+
+      cliPrintf("\n가만히 둘 때 화면에 뜰 수 있는 최대 깊이 (0.01mm)\n      ");
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++) cliPrintf(" ch%-3d", (int)c);
+      cliPrintf("\n");
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        cliPrintf("  s%-2d ", (int)st);
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          uint32_t i  = st * KEYS_CH_MAX + c;
+          uint16_t um = keysCntToUm(i, d_max[st][c]);
+
+          if ((keys_present[st] & (1U << c)) == 0) { cliPrintf("     -"); continue; }
+          if (um > mx_um) { mx_um = um; mx_i = i; }
+          cliPrintf(" %5d", (int)um);
+        }
+        cliPrintf("\n");
+      }
+      cliPrintf("  최악 %d.%02d mm  (s%d/ch%d)\n",
+                mx_um / 100, mx_um % 100,
+                (int)(mx_i / KEYS_CH_MAX), (int)(mx_i % KEYS_CH_MAX));
+    }
+
     /*
      * ★ 필터 이전 값도 같이 낸다.
      *
@@ -4187,7 +4267,7 @@ void cliKeys(cli_args_t *args)
     cliPrintf("keys key <st> <ch>   한 키만 — 누름마다 최대깊이와 판정 여부\n");
     cliPrintf("keys led       누른 키의 LED 를 켠다 (매핑 확인)\n");
     cliPrintf("keys watch\n");
-    cliPrintf("keys noise\n");
+    cliPrintf("keys noise [ms]  잡음 측정 (기본 3000, 드문 사건은 길게)\n");
     cliPrintf("keys dump\n");
     cliPrintf("keys raw\n");
     cliPrintf("keys time\n");

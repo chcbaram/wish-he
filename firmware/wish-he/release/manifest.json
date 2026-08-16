@@ -2,6 +2,17 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R27",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R27/wish60-he-V260816R27.bin",
+      "size": 139000,
+      "crc": "0xBD3290CE",
+      "notes": [
+        "keys noise 에 관측 시간 인자 + 잡음을 거리로도 환산해 표시"
+      ]
+    },
+    {
       "version": "V260816R25",
       "board": "WISH60-HE",
       "date": "2026-08-16",
