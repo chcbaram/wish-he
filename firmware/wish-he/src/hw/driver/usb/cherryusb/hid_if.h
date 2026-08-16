@@ -87,6 +87,7 @@ extern "C" {
 #define HID_KEYCFG_LEN            14      /* 쓰기가 싣는 값 바이트 수 */
 
 #define HID_CMD_INFO              0xC0    /* 보드 정보 */
+#define HID_INFO_VER_OFF          16      /* 버전 문자열 자리 (고정) */
 #define HID_CMD_RESET             0xC1    /* 그냥 리셋 */
 #define HID_CMD_LAYOUT            0xC2    /* 물리 배치 읽기 — 페이지 방식 */
 #define HID_CMD_TRACK             0xC3    /* 라이브 트래킹 on/off */

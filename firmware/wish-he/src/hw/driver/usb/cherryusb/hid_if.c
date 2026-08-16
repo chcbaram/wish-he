@@ -174,14 +174,27 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
 
   switch (cmd)
   {
+    /*
+     * 보드 정보.
+     *
+     *   [1..]                보드 이름 (NUL 종료)
+     *   [HID_INFO_VER_OFF..] 펌웨어 버전 (NUL 종료)
+     *
+     * ★ 버전을 **고정 자리**에 둔다. 이름 뒤에 이어 붙이면 이름 길이가 바뀔 때마다
+     *   버전 자리가 밀려, 이름이 다른 보드에서 도구가 엉뚱한 바이트를 읽는다.
+     */
     case HID_CMD_INFO:
     {
       const char *p_name = _DEF_BOARD_NAME;
-      uint32_t    i;
+      const char *p_ver  = _DEF_FIRMWATRE_VERSION;
 
-      for (i = 0; i < (HID_EP_MPS - 2) && p_name[i] != 0; i++)
+      for (uint32_t i = 0; i < (HID_INFO_VER_OFF - 1) && p_name[i]; i++)
       {
         p_tx[1 + i] = (uint8_t)p_name[i];
+      }
+      for (uint32_t i = 0; i < (HID_EP_MPS - HID_INFO_VER_OFF - 1) && p_ver[i]; i++)
+      {
+        p_tx[HID_INFO_VER_OFF + i] = (uint8_t)p_ver[i];
       }
       break;
     }

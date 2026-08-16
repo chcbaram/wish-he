@@ -1,0 +1,34 @@
+{
+  "board": "WISH60-HE",
+  "firmwares": [
+    {
+      "version": "V260816R1",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R1/wish60-he-V260816R1.bin",
+      "size": 130496,
+      "crc": "0x1B7F27EA",
+      "notes": [
+        "웹에서 펌웨어 굽기 — VIA HE 의 장치 탭",
+        "보정을 VIA HE 에서 (HID 0xC7)",
+        "스위치 표를 장치에서 읽기 (HID 0xC6)",
+        "RGB 매트릭스와 HE 전용 효과 셋 — 깊이 밝기·색상·파문",
+        "펌웨어 버전을 HID 0xC0 으로 보고"
+      ]
+    },
+    {
+      "version": "V260726R1",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260726R1/wish60-he-V260726R1.bin",
+      "size": 130472,
+      "crc": "0xE7E1FEA1",
+      "notes": [
+        "RGB 매트릭스와 HE 전용 효과 셋 (깊이 밝기·색상·파문)",
+        "LED 전류 리미터 — 상한 450mA, 밝기 상한 18",
+        "보정을 VIA HE 에서 (HID 0xC7), 스위치 표를 장치에서 읽기 (0xC6)",
+        "USB 서스펜드에서 LED 끄기"
+      ]
+    }
+  ]
+}
