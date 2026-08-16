@@ -55,8 +55,16 @@ set(QMK_SRC_FILES
   # (rgb_matrix_drivers.c 는 IS31 계열용이다). port/rgb_matrix_port.c 가
   # rgb_matrix_driver 를 채운다.
   # lib8tion — FastLED 수학. rgb_matrix 효과와 via.c 가 scale8/sin8 로 쓴다.
-  # quantum 을 들여올 때 빠져 있어 상류(qmk_firmware)에서 같은 자리로 받아왔다.
-  ${QMK_ROOT}/lib/lib8tion/lib8tion.c
+  #
+  # ★ QMK 코드가 아니라 **들여온 남의 라이브러리**라 src/lib 에 둔다 (hpm_sdk 옆).
+  #   상류는 qmk/lib/ 에 두지만, 이 트리에서 들여온 것들이 한자리에 있는 편이 낫다.
+  #
+  #   경로가 바뀌어도 quantum 쪽 `#include <lib/lib8tion/lib8tion.h>` 는 그대로다 —
+  #   src 가 인클루드 경로에 있어서 lib/... 가 그대로 풀린다. 상류 파일을 안 고쳤다.
+  #
+  #   빌드에 넣는 것은 여기다. src/lib 은 재귀 glob 대상이 아니라(hpm_sdk 가 통째로
+  #   딸려오면 안 되므로) 쓰는 쪽에서 명시해야 한다.
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/lib8tion/lib8tion.c
 
   ${QMK_ROOT}/quantum/rgb_matrix/rgb_matrix.c
   ${QMK_ROOT}/quantum/process_keycode/process_rgb.c
