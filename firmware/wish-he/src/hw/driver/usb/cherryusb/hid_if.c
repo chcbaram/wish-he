@@ -257,8 +257,22 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
     {
       switch (p_rx[1])
       {
-        case HID_CAL_START:  keysCalStart();  break;
-        case HID_CAL_CANCEL: keysCalCancel(); break;
+        /*
+         * ★ 시작·취소는 지난 저장 결과를 지운다.
+         *
+         *   안 지우면 한 번 저장한 뒤로 `cal_save_ok` 가 계속 1 이라, 취소해도
+         *   도구가 "저장됨" 으로 표시한다. 이 값은 **이번 회차의 결과**여야 한다.
+         */
+        case HID_CAL_START:
+          keysCalStart();
+          cal_save_ok = cal_save_skip = 0;
+          break;
+
+        case HID_CAL_CANCEL:
+          keysCalCancel();
+          cal_save_ok = cal_save_skip = 0;
+          break;
+
         case HID_CAL_SAVE:   cal_save_req = true; break;
         default: break;                       /* 상태만 */
       }
