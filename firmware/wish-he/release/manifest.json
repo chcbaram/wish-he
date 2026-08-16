@@ -2,6 +2,17 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R11",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R11/wish60-he-V260816R11.bin",
+      "size": 135432,
+      "crc": "0x3401E95E",
+      "notes": [
+        "프로파일 전환 중 USB 가 멈추던 것 — 조명 다시 켜기를 메인 루프로 미룬다"
+      ]
+    },
+    {
       "version": "V260816R10",
       "board": "WISH60-HE",
       "date": "2026-08-16",

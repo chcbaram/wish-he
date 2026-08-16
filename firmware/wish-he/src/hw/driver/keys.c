@@ -2399,8 +2399,16 @@ void keysCfgTouch(void)
  * 보정 중에는 미룬다. 보정은 63키를 도는 동안 스캔이 한 번도 끊기면 안 되는
  * 작업이고, 어차피 끝날 때 자기 저장소에 따로 쓴다.
  */
+__attribute__((weak)) void keysProfUpdate_kb(void) {}
+
 void keysCfgUpdate(void)
 {
+  /*
+   * 프로파일이 바뀐 뒤 미뤄 둔 일 — 조명 다시 켜기 같은 것.
+   * ISR 에서 하면 USB 가 멈춘다 (실제로 그렇게 굳었다).
+   */
+  keysProfUpdate_kb();
+
   if (cfg_dirty == false)                                return;
   if (cal_active)                                        return;
   if (millis() - cfg_dirty_ms < KEYS_CFG_SAVE_QUIET_MS)  return;

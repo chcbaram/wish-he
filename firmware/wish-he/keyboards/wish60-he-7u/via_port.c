@@ -40,6 +40,7 @@
 static uint8_t km_prof_override = 0xFF;   /* 0xFF = 지금 프로파일을 따른다 */
 
 static void keymapFillEmptyProfiles(void);
+static volatile bool rgb_reload_req;
 
 void via_init_kb(void)
 {
@@ -477,12 +478,37 @@ static void profRgbApply(uint8_t p)
   }
 
   eeprom_update_block(buf, (void *)EECONFIG_RGB_MATRIX, sizeof(buf));
-  rgb_matrix_reload_from_eeprom();
+  rgb_reload_req = true;      /* 켜는 것은 메인 루프에서 */
 }
 
-/* keys.c 가 프로파일을 바꿀 때 부른다. 0xFF = 바뀌기 직전 */
+/*
+ * keys.c 가 프로파일을 바꿀 때 부른다. 0xFF = 바뀌기 직전.
+ *
+ * ★ **ISR 안에서 불릴 수 있다.**
+ *
+ *   HID 명령으로 바꾸면 이 길이 USB 인터럽트 안이다. 그래서 여기서는 메모리만
+ *   만진다 — 칸에 내려놓고 올리는 것은 EEPROM RAM 버퍼 복사라 싸다.
+ *
+ *   조명을 실제로 다시 켜는 일(rgb_matrix_reload_from_eeprom)은 표시만 하고 메인
+ *   루프로 넘긴다. 그 안에서 로그를 찍고 효과 상태를 갈아 끼우는데, ISR 에서
+ *   그러다 USB 가 멈췄다 — 도구가 "읽는 중 2 / 4" 에서 굳은 것이 이것이다.
+ *
+ *   전환 자체(키맵·판정)는 이미 즉시 반영된다. 미루는 것은 조명을 켜는 마지막
+ *   한 걸음뿐이라 사람 눈에는 차이가 없다.
+ */
+static volatile bool rgb_reload_req = false;
+
 void keysProfChanged_kb(uint8_t idx)
 {
   if (idx == 0xFF) profRgbStore(keysProfGet());
   else             profRgbApply(idx);
+}
+
+/* 메인 루프에서 부른다 (keys.c 의 keysCfgUpdate 가 이어서 부른다) */
+void keysProfUpdate_kb(void)
+{
+  if (rgb_reload_req == false) return;
+
+  rgb_reload_req = false;
+  rgb_matrix_reload_from_eeprom();
 }
