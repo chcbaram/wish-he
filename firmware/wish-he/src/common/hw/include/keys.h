@@ -40,6 +40,7 @@ typedef struct
 
 void     keysGetStat(keys_stat_t *p_stat);
 void     keysClearStat(void);
+uint32_t keysGetKeyCount(void);   /* 배치에 실제로 있는 키 수 */
 
 uint32_t keysGetScanTime(void);
 

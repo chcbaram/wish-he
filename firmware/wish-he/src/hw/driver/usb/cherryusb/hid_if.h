@@ -83,13 +83,48 @@ extern "C" {
  * ★ 한 번에 다 준다. 화면이 늘 함께 보는 값이라 따로 읽으면 서로 다른 순간의 것이
  *   섞여 "최대 650us 인데 넘긴 적은 0" 같은 앞뒤 안 맞는 화면이 나온다.
  */
+/*
+ * 하드웨어·펌웨어 제원.
+ *
+ *   IN [HID_HW_OFF..]  LE32 값들이 정해진 순서로 (아래 주석 참고)
+ *
+ * 통계(0xC9)와 나눈다. 이쪽은 **안 바뀌는 값**이라 화면이 한 번만 읽으면 되고,
+ * 저쪽은 주기로 읽는다. 같이 두면 안 바뀌는 값을 초당 두 번씩 나른다.
+ */
+#define HID_CMD_HWINFO            0xCA
+
+/*
+ * 통계와 같은 이유로 페이지를 나눈다.
+ *
+ *   페이지 0,1  LE32 값들
+ *   페이지 2    MCU 이름 (문자열)
+ *   페이지 3    만든 이
+ *
+ * 문자열을 숫자 뒤에 이어 붙이지 않는다 — 숫자 개수가 늘면 자리가 밀려 도구가
+ * 엉뚱한 바이트를 읽는다. 페이지로 나누면 각자 4번지에서 시작한다.
+ */
+#define HID_HW_OFF                4
+#define HID_HW_PER_PAGE           ((HID_EP_MPS - HID_HW_OFF) / 4)
+#define HID_HW_CNT                12
+
+#define HID_HW_PAGE_MCU           2
+#define HID_HW_PAGE_AUTHOR        3
+
 #define HID_CMD_STAT              0xC9
 
 #define HID_STAT_READ             0
 #define HID_STAT_CLEAR            1       /* 누적값을 0 부터 다시 */
 
-#define HID_STAT_OFF              4       /* 값이 시작하는 자리 (4바이트 정렬) */
-#define HID_STAT_CNT              14      /* LE32 몇 개인가 */
+/*
+ * ★ 한 프레임은 32바이트뿐이다.
+ *
+ *   앞 4바이트(명령·하위·페이지·개수)를 빼면 LE32 를 일곱 개밖에 못 싣는다.
+ *   값이 열넷이라 **페이지로 나눈다.** 이걸 안 세고 한 번에 담으려다 tx_report 를
+ *   28바이트 넘겨 썼다 — ISR 안에서 남의 메모리를 밟는 짓이다.
+ */
+#define HID_STAT_OFF              4
+#define HID_STAT_PER_PAGE         ((HID_EP_MPS - HID_STAT_OFF) / 4)
+#define HID_STAT_CNT              14      /* LE32 전체 개수 */
 
 #define HID_CMD_CAL               0xC7    /* 보정 — 시작·상태·저장·취소 */
 

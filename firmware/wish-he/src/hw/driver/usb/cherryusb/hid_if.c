@@ -179,8 +179,9 @@ static uint32_t hidCmdArgLen(const uint8_t *p_rx)
     case HID_CMD_SWITCH: return 1;   /* 인덱스 */
     /* 상태만 물으면 하위 하나, 바꾸는 것은 인덱스가 더 붙는다 */
     case HID_CMD_PROF:   return (p_rx[1] == HID_PROF_STATUS) ? 1 : 2;
-    /* 그냥 읽기는 인자가 없고, 지우기만 하위 명령이 붙는다 */
-    case HID_CMD_STAT:   return (p_rx[1] == HID_STAT_CLEAR) ? 1 : 0;
+    /* 둘 다 [하위, 페이지] 를 받는다 — 한 프레임에 다 안 들어가서 나눈다 */
+    case HID_CMD_HWINFO: return 2;
+    case HID_CMD_STAT:   return 2;
 
     /* 하위 명령. 행정 읽기만 시작 인덱스가 더 붙는다 */
     case HID_CMD_CAL:    return (p_rx[1] == HID_CAL_STROKE) ? 2 : 1;
@@ -307,6 +308,58 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
      *   안 된다. 그래서 요청만 세워 두고 메인 루프가 처리한다.
      */
     /*
+     * 하드웨어·펌웨어 제원. 전부 상수라 ISR 에서 읽어도 된다.
+     */
+    case HID_CMD_HWINFO:
+    {
+      extern uint32_t _fw_flash_begin;
+      extern uint32_t __etext;
+
+      uint32_t fw_begin = (uint32_t)&_fw_flash_begin;
+      uint32_t page     = p_rx[2];
+      uint32_t v[HID_HW_CNT];
+
+      v[0]  = clock_get_frequency(clock_cpu0);
+      v[1]  = (uint32_t)&__etext - fw_begin;   /* 펌웨어 크기 (코드+상수) */
+      v[2]  = fw_begin;
+      v[3]  = HW_FLASH_APP_SIZE;
+      v[4]  = TOTAL_EEPROM_BYTE_COUNT;
+      v[5]  = HW_FLASH_CAL_A;
+      v[6]  = HW_FLASH_SET_A;
+      v[7]  = keysGetKeyCount();
+      v[8]  = MATRIX_ROWS;
+      v[9]  = MATRIX_COLS;
+      v[10] = DYNAMIC_KEYMAP_LAYER_COUNT;
+      v[11] = RGB_MATRIX_LED_COUNT;
+
+      if (page == HID_HW_PAGE_MCU || page == HID_HW_PAGE_AUTHOR)
+      {
+        const char *p_str = (page == HID_HW_PAGE_MCU) ? _DEF_MCU_NAME
+                                                      : _DEF_AUTHOR_NAME;
+
+        for (uint32_t i = 0; i < (HID_EP_MPS - HID_HW_OFF - 1) && p_str[i]; i++)
+        {
+          p_tx[HID_HW_OFF + i] = (uint8_t)p_str[i];
+        }
+        break;
+      }
+
+      for (uint32_t i = 0; i < HID_HW_PER_PAGE; i++)
+      {
+        uint32_t k = page * HID_HW_PER_PAGE + i;
+        uint32_t o = HID_HW_OFF + i * 4;
+
+        if (k >= HID_HW_CNT) break;
+
+        p_tx[o + 0] = (uint8_t)(v[k] >>  0);
+        p_tx[o + 1] = (uint8_t)(v[k] >>  8);
+        p_tx[o + 2] = (uint8_t)(v[k] >> 16);
+        p_tx[o + 3] = (uint8_t)(v[k] >> 24);
+      }
+      break;
+    }
+
+    /*
      * 진단 통계. 읽기만 하므로 ISR 에서 해도 된다 — 플래시도 긴 계산도 없다.
      */
     case HID_CMD_STAT:
@@ -339,14 +392,17 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
       v[11] = q.task_cnt;
       v[12] = q.rgb_us_max;    v[13] = q.rgb_us_avg;
 
-      for (uint32_t i = 0; i < HID_STAT_CNT; i++)
+      for (uint32_t i = 0; i < HID_STAT_PER_PAGE; i++)
       {
+        uint32_t k = (uint32_t)p_rx[2] * HID_STAT_PER_PAGE + i;
         uint32_t o = HID_STAT_OFF + i * 4;
 
-        p_tx[o + 0] = (uint8_t)(v[i] >>  0);
-        p_tx[o + 1] = (uint8_t)(v[i] >>  8);
-        p_tx[o + 2] = (uint8_t)(v[i] >> 16);
-        p_tx[o + 3] = (uint8_t)(v[i] >> 24);
+        if (k >= HID_STAT_CNT) break;
+
+        p_tx[o + 0] = (uint8_t)(v[k] >>  0);
+        p_tx[o + 1] = (uint8_t)(v[k] >>  8);
+        p_tx[o + 2] = (uint8_t)(v[k] >> 16);
+        p_tx[o + 3] = (uint8_t)(v[k] >> 24);
       }
       break;
     }

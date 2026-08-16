@@ -1630,6 +1630,11 @@ void keysGetStat(keys_stat_t *p_stat)
  *   지우는 이유가 대개 "방금 뭔가 고쳤는데 나아졌나" 이고, 그때 최대치가 옛날
  *   기록으로 남아 있으면 판단을 막는다.
  */
+uint32_t keysGetKeyCount(void)
+{
+  return KEYS_LAYOUT_KEY_CNT;
+}
+
 void keysClearStat(void)
 {
   scan_us_max   = 0;

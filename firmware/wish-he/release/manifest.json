@@ -2,6 +2,18 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R15",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R15/wish60-he-V260816R15.bin",
+      "size": 136432,
+      "crc": "0x29016561",
+      "notes": [
+        "★ 통계 응답이 HID 버퍼를 28바이트 넘겨 쓰던 것 수정 (R13~R14 에 있었다)",
+        "하드웨어·펌웨어 제원 (0xCA) — MCU·클럭·펌웨어 크기·EEPROM·키 수 등"
+      ]
+    },
+    {
       "version": "V260816R14",
       "board": "WISH60-HE",
       "date": "2026-08-16",

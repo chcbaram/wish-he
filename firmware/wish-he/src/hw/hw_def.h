@@ -6,8 +6,10 @@
 #include "bsp.h"
 
 
-#define _DEF_FIRMWATRE_VERSION    "V260816R14"
+#define _DEF_FIRMWATRE_VERSION    "V260816R15"
 #define _DEF_BOARD_NAME           "WISH60-HE"
+#define _DEF_MCU_NAME             "HPM5361 (RISC-V)"
+#define _DEF_AUTHOR_NAME          "BARAM"
 
 
 
@@ -86,6 +88,8 @@
 #define _USE_HW_FLASH
 #define      HW_FLASH_SECTOR_SIZE   4096         /* 소거 단위 */
 #define      HW_FLASH_PAGE_SIZE     256          /* 기록 단위 */
+#define      HW_FLASH_APP_BEGIN     0x020000UL   /* 본 펌웨어가 사는 자리 */
+#define      HW_FLASH_APP_SIZE      0x060000UL   /* 384KB (ldscript 와 같아야 한다) */
 #define      HW_FLASH_USER_BEGIN    0x0C0000UL   /* 이 아래로는 쓰지 않는다 */
 #define      HW_FLASH_CAL_A         0x0C0000UL   /* 보정 핑퐁 A */
 #define      HW_FLASH_CAL_B         0x0C1000UL   /* 보정 핑퐁 B */
