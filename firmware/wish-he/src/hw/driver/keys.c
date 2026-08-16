@@ -369,6 +369,14 @@ static const keys_switch_t keys_switch[] =
 
 #define KEYS_SWITCH_CNT   (sizeof(keys_switch) / sizeof(keys_switch[0]))
 
+/*
+ * 저장소가 잡아 두는 스위치 칸 수.
+ *
+ * 표에 종류를 더할 때마다 저장 구조가 커지면 버전이 올라가고 사용자 보정이
+ * 버려진다. 넉넉히 잡아 두고 표만 늘린다.
+ */
+#define KEYS_SWITCH_MAX   16
+
 
 /*
  * 저장 레코드.
@@ -378,7 +386,7 @@ static const keys_switch_t keys_switch[] =
  *   어디로 갈지 설계가 어려워지고, 실제로 그것 때문에 한 번 브릭을 만들었다.
  */
 /*
- * cfg.rt_flags
+ * P()->rt_flags
  *
  *   KEYS_RT_CONT — 연속 RT.
  *
@@ -390,36 +398,115 @@ static const keys_switch_t keys_switch[] =
 #define KEYS_RT_BOTTOM     (1U << 1)
 #define KEYS_RT_CONT       (1U << 2)
 
-#define KEYS_CFG_MAGIC     0x4746434BUL   /* 'KCFG' */
+#define KEYS_CFG_MAGIC     0x4746434BUL   /* 'KCFG' — v4 까지 쓰던 한 덩어리 */
+#define KEYS_CAL_MAGIC     0x4C41434BUL   /* 'KCAL' — 보정 */
+#define KEYS_SET_MAGIC     0x5445534BUL   /* 'KSET' — 설정(프로파일) */
 /*
  * 2: 누적으로 눈금 3배   3: 래피드 트리거 항목   4: 전 항목을 키별로
+ * 5: 보정과 설정을 두 저장소로 나누고 프로파일 네 벌 + 중간점 자리
  *
- * ★ 4 를 마지막으로 삼는다. 올릴 때마다 사용자 보정값이 버려지므로 앞으로 필요할
- *   자리를 keys_key_cfg_t 에 미리 잡아 뒀다.
+ * ★ 5 에서 보정값은 **옮겨 심는다.** 올릴 때마다 버렸더니 63키를 다시 눌러야 했다.
+ *   설정은 안 옮긴다 — 화면에서 몇 초면 다시 잡는다.
  */
-#define KEYS_CFG_VERSION   4
+/* 프로파일 개수 */
+#define KEYS_PROF_CNT      4
+
+#define KEYS_CFG_VERSION   5
 
 /*
- * 키 하나의 설정.
+ * 중간점 최대 개수.
  *
- * ★ 키별이 기본이다. 전역은 "모두 선택"일 뿐이다.
+ * ★ 하나로 잡지 않는다.
  *
-   *   키를 골라 설정하는 화면에서는 "모두 선택"이 곧 전역이다. 전역 설정이라는
- *   개념을 따로 두면 키별 값과 어느 쪽이 이기는지가 계속 문제가 된다.
+ *   홀 출력은 거리에 대해 직선이 아니다. 두 점(무압·바닥)만 잡고 그 사이를 직선으로
+ *   읽으면 가운데가 가장 많이 틀어지는데, 하필 입력지점이 보통 거기(1.0~2.0mm)에
+ *   있다. 중간점이 하나면 곡선을 두 도막으로만 꺾을 수 있어, 실제 휘어짐이 크면
+ *   그것으로 안 된다. 넷이면 여섯 점(무압 + 중간 4 + 바닥)이라 어지간한 곡선은
+ *   따라간다.
+ */
+#define KEYS_CAL_PT_MAX    4
+
+/*
+ * ── 저장은 성격에 따라 두 곳으로 나눈다 ──────────────────────────────────
  *
- *   그래서 판정은 언제나 이 구조체를 본다. 아래 cfg 의 전역 필드는 (a) 새 설정을
- *   만들 때의 기본값이고 (b) VIA 가 전역으로 읽고 쓸 때 64키에 뿌리는 값이다.
+ * ★ 보정은 프로파일에 들어가면 안 된다.
  *
- * ★ 자리를 넉넉히 잡아 둔다.
+ *   보정은 **이 보드의 이 스위치를 잰 값**이고, 프로파일은 **취향**이다. 섞어 두면
+ *   프로파일을 바꿀 때 mm 값이 같이 달라지고, 63키를 네 번 눌러야 한다.
+ *   웹 도구의 설정 파일에서 보정값을 뺀 것과 같은 이유다.
  *
- *   버전을 올릴 때마다 사용자 보정값이 버려진다. 이미 두 번 그랬다. 지금 필요한
- *   값을 전부 넣어 두어 다음 기능 때 또 올리지 않게 한다.
+ *   저장 자리도 따로 둔다. 보정을 저장할 때 프로파일을 다시 쓸 이유가 없고,
+ *   그 반대도 마찬가지다.
+ */
+
+/* 키 하나의 보정 — 보드마다 한 벌 */
+typedef struct
+{
+  uint16_t cal_max;                     /* 무압 실측 (0 = 미보정) */
+  uint16_t cal_min;                     /* 바닥 실측 */
+
+  uint8_t  noise_pp;                    /* 실측 잡음 폭 — 데드존 자동값의 근거 */
+  uint8_t  flags;                       /* bit0 = 보정됨 */
+  uint8_t  rsv[10];
+} keys_key_cal_t;                       /* 16 바이트 x 64 키 = 1024 B */
+
+/*
+ * 곡선 — **스위치 종류마다** 한 벌.
+ *
+ * ★ 키마다 재지 않는다.
+ *
+ *   키마다 다른 것과 종류마다 다른 것을 갈라야 한다.
+ *
+ *     키마다 다르다   자석 세기·장착 높이 — **크기**만 다르다.
+ *                     이건 이미 두 점(cal_max, cal_min)이 잡고 있다
+ *     종류마다 다르다 자석과 센서의 물리 — **휘어진 모양**이 다르다.
+ *                     같은 스위치를 쓰는 키는 모양이 같다
+ *
+ *   그래서 곡선은 종류마다 한 벌이면 된다. 63키를 심 끼워 재는 것은 현실적이지
+ *   않지만, 종류마다 대표 키 하나를 재는 것은 몇 분이면 된다.
+ *
+ * ★ 원시값이 아니라 **비율**로 담는다.
+ *
+ *   원시값으로 담으면 그 대표 키의 자석 세기가 딸려 들어와 다른 키에 못 쓴다.
+ *   그 키의 두 점 사이 어디쯤이었나(0~65535)로 바꿔 담으면 크기가 빠지고 모양만
+ *   남는다 — 그래야 종류가 같은 전 키에 얹을 수 있다.
  */
 typedef struct
 {
-  uint16_t cal_max;        /* 무압 실측 (0 = 미보정) */
-  uint16_t cal_min;        /* 바닥 실측 (0 = 미보정) */
+  /*
+   * 이 칸이 담고 있는 스위치의 이름.
+   *
+   * ★ 이름이 있으면 **실측 프로파일**이다.
+   *
+   *   비어 있으면 내장 표(keys_switch)의 같은 번호를 그대로 쓴다 — 공칭값이다.
+   *   이름이 채워져 있으면 사용자가 실제로 재서 만든 것이라, 행정도 곡선도 이쪽이
+   *   이긴다.
+   *
+   *   그래서 "스위치를 고른다"가 곧 "재 둔 프로파일을 얹는다"가 된다. 새 스위치로
+   *   갈아 끼우면 대표 키 하나를 재서 한 칸 만들고, 그 칸을 키들에 배정하면 끝이다.
+   *   내보내기 파일에 실어 다른 사람과 나눌 수도 있다.
+   */
+  char     name[12];
 
+  uint16_t travel_um;                   /* 실측 전 행정 (0 = 내장 표를 쓴다) */
+  uint16_t stroke_cnt;                  /* 그 행정에 해당하는 카운트 */
+
+  uint16_t pt_frac[KEYS_CAL_PT_MAX];    /* 그 깊이에서의 눌림 비율 (0 = 없음) */
+} keys_sw_cal_t;                        /* 24 바이트 x 16 = 384 B */
+
+/*
+ * 키 하나의 설정 — 프로파일마다 한 벌.
+ *
+ * ★ 키별이 기본이다. 전역은 "모두 선택"일 뿐이다.
+ *
+ *   키를 골라 설정하는 화면에서는 "모두 선택"이 곧 전역이다. 전역 설정이라는
+ *   개념을 따로 두면 키별 값과 어느 쪽이 이기는지가 계속 문제가 된다.
+ *
+ *   그래서 판정은 언제나 이 구조체를 본다. 프로파일의 전역 필드는 (a) 새 설정을
+ *   만들 때의 기본값이고 (b) VIA 가 전역으로 읽고 쓸 때 64키에 뿌리는 값이다.
+ */
+typedef struct
+{
   uint16_t press_um;       /* 입력지점        0.01mm */
   uint16_t release_um;     /* 해제지점        0.01mm */
   uint16_t rt_press_um;    /* RT 재입력       0.01mm */
@@ -428,18 +515,13 @@ typedef struct
   uint16_t dead_um;        /* 데드존          0.01mm */
 
   uint8_t  sw_type;        /* 스위치 종류 인덱스 */
-  uint8_t  flags;          /* bit0 = 보정됨 */
   uint8_t  rt_flags;       /* KEYS_RT_* */
-  uint8_t  rsv[5];
-} keys_key_cfg_t;          /* 24 바이트 x 64 키 = 1536 B */
+  uint8_t  rsv[2];
+} keys_key_set_t;          /* 16 바이트 x 64 키 = 1024 B */
 
+/* 프로파일 한 벌 */
 typedef struct
 {
-  uint32_t magic;
-  uint16_t version;
-  uint16_t length;       /* 이 구조체 전체 크기 — 버전이 올라가도 읽을 수 있게 */
-  uint32_t seq;          /* 핑퐁 선택 기준. 큰 쪽이 최신 */
-
   uint16_t press_um;     /* 입력지점    0.01mm — 절대 위치 */
   uint16_t release_um;   /* 해제지점    0.01mm — 절대 위치 */
 
@@ -450,8 +532,6 @@ typedef struct
    *
    *   하나로 묶는 구현이 많지만 게임에서는 비대칭이 유리한 경우가 실제로 있다
    *   (빠르게 떼고 천천히 누르기).
-   *   UI 에서는 "고급" 뒤에 숨겨 하나처럼 보이게 할 수 있으니, 필드는 지금 넣어
-   *   나중에 버전을 또 올리며 재보정을 요구하지 않게 한다.
    */
   uint16_t rt_press_um;   /* 되눌림 반응 행정  0.01mm */
   uint16_t rt_release_um; /* 되뗌   반응 행정  0.01mm */
@@ -462,7 +542,6 @@ typedef struct
    *   RT 해제는 "가장 깊었던 지점에서 얼마나 올라왔나"로 판정한다. 바닥까지 눌러
    *   붙잡고 있으면 그 기준점이 바닥에 고정되는데, 손가락은 누르는 동안에도
    *   0.1~0.3mm 씩 미세하게 풀린다. 그 이완만으로 해제가 나가 키가 툭툭 끊긴다.
-   *   자석이 가장 가까운 구간에서 홀 출력이 평평해지는 것도 겹친다.
    *
    *   일반 모드에서는 해제 지점이 절대값이라 바닥에서 멀어 안 생긴다. RT 특유의
    *   문제다. 잡음 때문이 아니다 — 0.1mm 는 9 sigma 라 잡음은 못 넘는다.
@@ -484,13 +563,70 @@ typedef struct
 
   uint8_t  sw_type_def;  /* 기본 스위치 종류 */
   uint8_t  rt_flags;     /* bit0 = RT 켬, bit1 = 바닥 보호 켬 */
+  uint8_t  rsv[6];
 
-  keys_key_cfg_t key[KEYS_MAX];
+  keys_key_set_t key[KEYS_MAX];
+} keys_prof_t;
 
-  uint32_t crc;          /* 이 필드 앞까지의 CRC32 */
-} keys_cfg_t;
+/* 보정 저장소 — 보드마다 하나 */
+typedef struct
+{
+  uint32_t magic;
+  uint16_t version;
+  uint16_t length;
+  uint32_t seq;
 
-static keys_cfg_t cfg;
+  /*
+   * 중간점의 깊이 (0.01mm). 심 두께라 전 키·전 종류가 같은 값을 쓴다.
+   * cnt 가 0 이면 중간점 없이 두 점을 직선으로 잇는다 (지금 동작).
+   */
+  uint8_t  pt_cnt;
+  uint8_t  rsv[3];
+  uint16_t pt_um[KEYS_CAL_PT_MAX];
+
+  keys_sw_cal_t  sw[KEYS_SWITCH_MAX];   /* 종류마다 곡선 한 벌 */
+  keys_key_cal_t key[KEYS_MAX];         /* 키마다 두 점 */
+
+  uint32_t crc;
+} keys_cal_t;
+
+/* 설정 저장소 — 프로파일 네 벌 */
+typedef struct
+{
+  uint32_t magic;
+  uint16_t version;
+  uint16_t length;
+  uint32_t seq;
+
+  uint8_t  active;       /* 지금 쓰는 프로파일 */
+  uint8_t  rsv[3];
+
+  keys_prof_t prof[KEYS_PROF_CNT];
+
+  uint32_t crc;
+} keys_set_t;
+
+static keys_cal_t cal_st;
+static keys_set_t set_st;
+
+/*
+ * 슬롯 안에 들어가는지 여기서 막는다.
+ *
+ * 넘치면 다음 슬롯을 덮어쓴다 — 설정이 E2P(VIA 키맵)를 밀어내는 식이라 증상이
+ * 엉뚱한 데서 나온다. 구조체를 늘릴 때 바로 걸리게 해 둔다.
+ */
+_Static_assert(sizeof(keys_cal_t) <= (HW_FLASH_CAL_B - HW_FLASH_CAL_A),
+               "보정 저장소가 슬롯을 넘는다");
+_Static_assert(sizeof(keys_set_t) <= (HW_FLASH_SET_B - HW_FLASH_SET_A),
+               "설정 저장소가 슬롯을 넘는다");
+
+/*
+ * 짧게 쓰려고 둔다. 어느 프로파일을 보는지가 한 곳에만 있어야 한다 —
+ * 여기저기서 set_st.prof[set_st.active] 를 적으면 전환을 넣을 때 하나를 놓친다.
+ */
+static inline keys_prof_t     *P(void)          { return &set_st.prof[set_st.active]; }
+static inline keys_key_set_t  *KS(uint32_t i)   { return &P()->key[i]; }
+static inline keys_key_cal_t  *KC(uint32_t i)   { return &cal_st.key[i]; }
 
 
 /*
@@ -686,7 +822,7 @@ static bool keysComboHeld(uint8_t kc1, uint8_t kc2)
 static bool cal_active = false;
 
 static bool keysCalIsDone(uint16_t row, uint16_t col);
-static bool keysCfgSave(void);
+static bool keysCalSaveBlob(void);
 
 bool keysCalIsActive(void)
 {
@@ -839,9 +975,9 @@ bool keysCalSave(uint32_t *p_done, uint32_t *p_skip)
 
       if (keysCalIsDone(st, c))
       {
-        cfg.key[i].cal_max = cal_max_tmp[i];
-        cfg.key[i].cal_min = cal_min_tmp[i];
-        cfg.key[i].flags  |= 0x01;
+        KC(i)->cal_max = cal_max_tmp[i];
+        KC(i)->cal_min = cal_min_tmp[i];
+        KC(i)->flags  |= 0x01;
         done++;
       }
       else
@@ -856,7 +992,7 @@ bool keysCalSave(uint32_t *p_done, uint32_t *p_skip)
   if (p_skip) *p_skip = skip;
 
   if (done == 0) return false;
-  return keysCfgSave();
+  return keysCalSaveBlob();
 }
 
 static bool keysCalIsDone(uint16_t row, uint16_t col)
@@ -1155,7 +1291,7 @@ static void keysThrRebuild(void)
 {
   for (uint32_t i = 0; i < KEYS_MAX; i++)
   {
-    const keys_key_cfg_t *k = &cfg.key[i];
+    const keys_key_set_t *k = KS(i);
     uint32_t stroke = keysStrokeCnt(i);
     uint32_t travel = keys_switch[keysSwType(i)].travel_um;
     keys_thr_t *t   = &thr[i];
@@ -1603,53 +1739,185 @@ bool keysGetPressed(uint16_t row, uint16_t col)
  *  설정 저장 — 핑퐁 2섹터
  *---------------------------------------------------------------------------*/
 
-static uint32_t keysCfgCrc(const keys_cfg_t *p)
+/*
+ * 저장소가 둘이라 검사·저장도 둘이다.
+ *
+ * 같은 일을 두 번 적는 대신 크기와 주소만 다른 공통 핵을 쓴다 — 핑퐁 규칙(오래된
+ * 쪽에 쓴다)이 갈라지면 반드시 한쪽이 상한다.
+ */
+static uint32_t keysBlobCrc(const void *p, uint32_t len)
 {
-  return crc32((const uint8_t *)p, (uint32_t)(sizeof(keys_cfg_t) - sizeof(uint32_t)));
+  return crc32((const uint8_t *)p, len - (uint32_t)sizeof(uint32_t));
 }
 
-static bool keysCfgValid(const keys_cfg_t *p)
+typedef struct
 {
-  if (p->magic   != KEYS_CFG_MAGIC)     return false;
-  if (p->version != KEYS_CFG_VERSION)   return false;
-  if (p->length  != sizeof(keys_cfg_t)) return false;
+  uint32_t magic;
+  uint16_t version;
+  uint16_t length;
+  uint32_t seq;
+} keys_hdr_t;
 
-  return (p->crc == keysCfgCrc(p));
+static bool keysBlobValid(const void *p, uint32_t len, uint32_t magic)
+{
+  const keys_hdr_t *h = (const keys_hdr_t *)p;
+  uint32_t          crc;
+
+  if (h->magic   != magic)              return false;
+  if (h->version != KEYS_CFG_VERSION)   return false;
+  if (h->length  != len)                return false;
+
+  memcpy(&crc, (const uint8_t *)p + len - sizeof(uint32_t), sizeof(crc));
+  return (crc == keysBlobCrc(p, len));
+}
+
+/*
+ * 두 슬롯을 읽어 유효하면서 seq 가 큰 쪽을 쓴다.
+ * 둘 다 못 쓰면 부른 쪽이 기본값으로 간다 — 여기서 멈추면 안 된다.
+ */
+/*
+ * 슬롯을 읽어 볼 임시 자리.
+ *
+ * ★ 한 벌만 둔다. 둘 중 큰 쪽에 맞춘다.
+ *
+ *   읽기·쓰기가 각자 들면 4KB 를 두 번 잡아 DLM 이 그만큼 준다. 둘은 같은 순간에
+ *   돌지 않으므로(저장은 메인 루프, 적재는 부팅) 나눠 쓰면 된다.
+ */
+static uint8_t keys_blob_tmp[sizeof(keys_set_t)];
+
+static bool keysBlobLoad(void *dst, uint32_t len, uint32_t magic,
+                         uint32_t addr_a, uint32_t addr_b)
+{
+  uint8_t *tmp   = keys_blob_tmp;
+  bool     found = false;
+  uint32_t       best  = 0;
+
+  for (uint32_t i = 0; i < 2; i++)
+  {
+    uint32_t addr = (i == 0) ? addr_a : addr_b;
+    uint32_t seq;
+
+    if (flashRead(addr, tmp, len) == false)   continue;
+    if (keysBlobValid(tmp, len, magic) == false) continue;
+
+    seq = ((const keys_hdr_t *)tmp)->seq;
+    if (found == false || seq > best)
+    {
+      memcpy(dst, tmp, len);
+      best  = seq;
+      found = true;
+    }
+  }
+  return found;
+}
+
+/*
+ * 오래된 쪽 슬롯에 쓴다. 쓰다 죽어도 다른 쪽이 남아 있어 이전 설정으로 돌아간다.
+ * 소거 1ms + 기록이라 USB 가 느끼지 못한다.
+ */
+static bool keysBlobSave(void *src, uint32_t len, uint32_t magic,
+                         uint32_t addr_a, uint32_t addr_b, uint32_t sectors)
+{
+  uint8_t       *tmp   = keys_blob_tmp;
+  keys_hdr_t    *h     = (keys_hdr_t *)src;
+  uint32_t       addr  = addr_a;
+  uint32_t       seq_a = 0;
+  uint32_t       crc;
+
+  if (flashRead(addr_a, tmp, len) && keysBlobValid(tmp, len, magic))
+  {
+    seq_a = ((const keys_hdr_t *)tmp)->seq;
+    addr  = addr_b;                 /* A 가 유효하면 B 에 쓴다 */
+  }
+  if (flashRead(addr_b, tmp, len) && keysBlobValid(tmp, len, magic))
+  {
+    if (((const keys_hdr_t *)tmp)->seq >= seq_a) addr = addr_a;
+  }
+
+  h->seq++;
+  crc = keysBlobCrc(src, len);
+  memcpy((uint8_t *)src + len - sizeof(uint32_t), &crc, sizeof(crc));
+
+  for (uint32_t i = 0; i < sectors; i++)
+  {
+    if (flashErase(addr + i * HW_FLASH_SECTOR_SIZE, HW_FLASH_SECTOR_SIZE) == false)
+      return false;
+  }
+  return flashWrite(addr, (const uint8_t *)src, len);
+}
+
+#define KEYS_CAL_SECTORS   ((sizeof(keys_cal_t) + HW_FLASH_SECTOR_SIZE - 1) / HW_FLASH_SECTOR_SIZE)
+#define KEYS_SET_SECTORS   ((sizeof(keys_set_t) + HW_FLASH_SECTOR_SIZE - 1) / HW_FLASH_SECTOR_SIZE)
+
+static bool keysCalSaveBlob(void)
+{
+  return keysBlobSave(&cal_st, sizeof(cal_st), KEYS_CAL_MAGIC,
+                      HW_FLASH_CAL_A, HW_FLASH_CAL_B, KEYS_CAL_SECTORS);
+}
+
+static bool keysCfgSave(void)
+{
+  return keysBlobSave(&set_st, sizeof(set_st), KEYS_SET_MAGIC,
+                      HW_FLASH_SET_A, HW_FLASH_SET_B, KEYS_SET_SECTORS);
+}
+
+static void keysCalDefault(void)
+{
+  memset(&cal_st, 0, sizeof(cal_st));
+  cal_st.magic   = KEYS_CAL_MAGIC;
+  cal_st.version = KEYS_CFG_VERSION;
+  cal_st.length  = sizeof(keys_cal_t);
 }
 
 static void keysCfgDefault(void)
 {
-  memset(&cfg, 0, sizeof(cfg));
+  memset(&set_st, 0, sizeof(set_st));
 
-  cfg.magic       = KEYS_CFG_MAGIC;
-  cfg.version     = KEYS_CFG_VERSION;
-  cfg.length      = sizeof(keys_cfg_t);
-  cfg.seq         = 0;
-
-  /* 입문용 기본값 */
-  cfg.press_um      = 100;   /* 1.00mm */
-  cfg.release_um    = 50;    /* 0.50mm */
+  set_st.magic   = KEYS_SET_MAGIC;
+  set_st.version = KEYS_CFG_VERSION;
+  set_st.length  = sizeof(keys_set_t);
+  set_st.active  = 0;
 
   /*
-   * 래피드 트리거는 **꺼진 채로** 시작한다.
+   * 네 벌을 **모두** 같은 기본값으로 채운다.
    *
-   *   보통 키보드로 먼저 완성한다는 게 이 펌웨어의 순서다. RT 는 켜는 순간 타이핑
-   *   느낌이 크게 달라지므로 사용자가 고르게 둔다. 값만 미리 채워 두어
-   *   켜자마자 쓸 만하게 한다.
+   * 빈 프로파일로 두면 2번으로 옮긴 사용자가 입력지점 0mm 짜리 키보드를 만난다.
+   * 프로파일은 "다른 취향" 이지 "빈 칸" 이 아니다.
    */
-  cfg.rt_press_um   = 50;    /* 0.50mm */
-  cfg.rt_release_um = 50;    /* 0.50mm */
-  cfg.bottom_um     = 10;    /* 0.10mm */
-  cfg.dead_um       = 0;
-  cfg.rt_flags      = KEYS_RT_BOTTOM;   /* 바닥 보호만 켜 둔다 (RT 는 꺼짐) */
-
-  cfg.sw_type_def = KEYS_SWITCH_DEFAULT;
-
-  for (uint32_t i = 0; i < KEYS_MAX; i++)
+  for (uint32_t pi = 0; pi < KEYS_PROF_CNT; pi++)
   {
-    cfg.key[i].sw_type = cfg.sw_type_def;
+    keys_prof_t *pf = &set_st.prof[pi];
+
+    /* 입문용 기본값 */
+    pf->press_um      = 100;   /* 1.00mm */
+    pf->release_um    = 50;    /* 0.50mm */
+
+    /*
+     * 래피드 트리거는 **꺼진 채로** 시작한다.
+     *
+     *   보통 키보드로 먼저 완성한다는 게 이 펌웨어의 순서다. RT 는 켜는 순간 타이핑
+     *   느낌이 크게 달라지므로 사용자가 고르게 둔다. 값만 미리 채워 두어 켜자마자
+     *   쓸 만하게 한다.
+     */
+    pf->rt_press_um   = 50;    /* 0.50mm */
+    pf->rt_release_um = 50;    /* 0.50mm */
+    pf->bottom_um     = 10;    /* 0.10mm */
+    pf->dead_um       = 0;
+    pf->rt_flags      = KEYS_RT_BOTTOM;   /* 바닥 보호만 켜 둔다 (RT 는 꺼짐) */
+    pf->sw_type_def   = KEYS_SWITCH_DEFAULT;
+
+    for (uint32_t i = 0; i < KEYS_MAX; i++)
+    {
+      pf->key[i].sw_type      = pf->sw_type_def;
+      pf->key[i].press_um     = pf->press_um;
+      pf->key[i].release_um   = pf->release_um;
+      pf->key[i].rt_press_um  = pf->rt_press_um;
+      pf->key[i].rt_release_um= pf->rt_release_um;
+      pf->key[i].bottom_um    = pf->bottom_um;
+      pf->key[i].dead_um      = pf->dead_um;
+      pf->key[i].rt_flags     = pf->rt_flags;
+    }
   }
-  keysCfgFanout();
 }
 
 /*
@@ -1662,79 +1930,122 @@ static void keysCfgFanout(void)
 {
   for (uint32_t i = 0; i < KEYS_MAX; i++)
   {
-    keys_key_cfg_t *k = &cfg.key[i];
+    keys_key_set_t *k = KS(i);
 
-    k->press_um      = cfg.press_um;
-    k->release_um    = cfg.release_um;
-    k->rt_press_um   = cfg.rt_press_um;
-    k->rt_release_um = cfg.rt_release_um;
-    k->bottom_um     = cfg.bottom_um;
-    k->dead_um       = cfg.dead_um;
-    k->rt_flags      = cfg.rt_flags;
+    k->press_um      = P()->press_um;
+    k->release_um    = P()->release_um;
+    k->rt_press_um   = P()->rt_press_um;
+    k->rt_release_um = P()->rt_release_um;
+    k->bottom_um     = P()->bottom_um;
+    k->dead_um       = P()->dead_um;
+    k->rt_flags      = P()->rt_flags;
   }
 }
 
 /*
- * 두 슬롯을 읽어 유효하면서 seq 가 큰 쪽을 쓴다.
- * 둘 다 못 쓰면 기본값으로 간다 — 여기서 멈추면 안 된다.
+ * ★ 옛 저장본(v4)에서 보정값을 옮겨 심는다.
+ *
+ *   버전을 올릴 때마다 사용자 보정이 버려졌다. 이미 두 번 그랬고, 방금 재보정을
+ *   부탁한 참이라 또 버리면 안 된다. 63키를 한 번씩 눌러야 하는 일이다.
+ *
+ *   설정(취향)은 옮기지 않는다 — 그건 화면에서 몇 초면 다시 잡고, 옛 구조에서
+ *   프로파일 네 벌로 어떻게 펼칠지도 정할 것이 없다. 잃으면 아픈 것만 옮긴다.
+ */
+typedef struct
+{
+  uint16_t cal_max;
+  uint16_t cal_min;
+  uint16_t v4_set[6];
+  uint8_t  sw_type;
+  uint8_t  flags;
+  uint8_t  rt_flags;
+  uint8_t  rsv[5];
+} keys_key_cfg_v4_t;              /* 옛 24바이트 */
+
+typedef struct
+{
+  uint32_t          magic;
+  uint16_t          version;
+  uint16_t          length;
+  uint32_t          seq;
+  uint16_t          v4_glob[6];
+  uint8_t           sw_type_def;
+  uint8_t           rt_flags;
+  keys_key_cfg_v4_t key[KEYS_MAX];
+  uint32_t          crc;
+} keys_cfg_v4_t;
+
+static bool keysCalMigrateV4(void);
+
+/*
+ * 둘 다 읽는다. 하나만 없어도 나머지는 살린다.
+ *
+ * ★ 보정이 없으면 옛 저장본을 뒤진다.
+ *
+ *   v5 로 올라온 첫 부팅이 여기다. 옛 자리(CAL_A/B)에 v4 한 덩어리가 그대로 있고,
+ *   거기서 보정값만 건져 새 자리에 옮긴다. 옮긴 뒤 바로 저장해 다음 부팅부터는
+ *   이 길로 안 온다 — 옛 저장본은 곧 새 보정에 덮인다.
  */
 static bool keysCfgLoad(void)
 {
-  keys_cfg_t tmp;
-  bool       found = false;
+  bool cal_ok;
+  bool set_ok;
 
-  keysCfgDefault();
+  cal_ok = keysBlobLoad(&cal_st, sizeof(cal_st), KEYS_CAL_MAGIC,
+                        HW_FLASH_CAL_A, HW_FLASH_CAL_B);
+  if (cal_ok == false)
+  {
+    keysCalDefault();
+    if (keysCalMigrateV4())
+    {
+      keysCalSaveBlob();
+      cal_ok = true;
+    }
+  }
+
+  set_ok = keysBlobLoad(&set_st, sizeof(set_st), KEYS_SET_MAGIC,
+                        HW_FLASH_SET_A, HW_FLASH_SET_B);
+  if (set_ok == false) keysCfgDefault();
+
+  /* 프로파일 번호가 깨져 있으면 0 으로 — 여기서 멈추면 키보드가 안 산다 */
+  if (set_st.active >= KEYS_PROF_CNT) set_st.active = 0;
+
+  return cal_ok || set_ok;
+}
+
+static bool keysCalMigrateV4(void)
+{
+  static keys_cfg_v4_t old;
+  bool                 found = false;
 
   for (uint32_t i = 0; i < 2; i++)
   {
     uint32_t addr = (i == 0) ? HW_FLASH_CAL_A : HW_FLASH_CAL_B;
 
-    if (flashRead(addr, (uint8_t *)&tmp, sizeof(tmp)) == false) continue;
-    if (keysCfgValid(&tmp) == false)                            continue;
+    if (flashRead(addr, (uint8_t *)&old, sizeof(old)) == false) continue;
+    if (old.magic  != KEYS_CFG_MAGIC)   continue;
+    if (old.version != 4)               continue;
+    if (old.length != sizeof(old))      continue;
+    if (old.crc != crc32((const uint8_t *)&old, sizeof(old) - sizeof(uint32_t))) continue;
 
-    if (found == false || tmp.seq > cfg.seq)
-    {
-      memcpy(&cfg, &tmp, sizeof(cfg));
-      found = true;
-    }
+    found = true;
+    break;
   }
+  if (found == false) return false;
 
-  return found;
-}
-
-/*
- * 오래된 쪽 슬롯에 쓴다. 쓰다 죽어도 다른 쪽이 남아 있어 이전 설정으로 돌아간다.
- * 소거 1ms + 기록이라 USB 가 느끼지 못한다.
- */
-static bool keysCfgSave(void)
-{
-  keys_cfg_t tmp;
-  uint32_t   addr = HW_FLASH_CAL_A;
-  uint32_t   seq_a = 0;
-
-  if (flashRead(HW_FLASH_CAL_A, (uint8_t *)&tmp, sizeof(tmp)) && keysCfgValid(&tmp))
+  for (uint32_t i = 0; i < KEYS_MAX; i++)
   {
-    seq_a = tmp.seq;
-    addr  = HW_FLASH_CAL_B;      /* A 가 유효하면 B 에 쓴다 */
+    cal_st.key[i].cal_max = old.key[i].cal_max;
+    cal_st.key[i].cal_min = old.key[i].cal_min;
+    cal_st.key[i].flags   = old.key[i].flags;
   }
-  if (flashRead(HW_FLASH_CAL_B, (uint8_t *)&tmp, sizeof(tmp)) && keysCfgValid(&tmp))
-  {
-    if (tmp.seq >= seq_a) addr = HW_FLASH_CAL_A;   /* B 가 더 최신이면 A 에 */
-  }
-
-  cfg.seq++;
-  cfg.crc = keysCfgCrc(&cfg);
-
-  if (flashErase(addr, HW_FLASH_SECTOR_SIZE) == false)                       return false;
-  if (flashWrite(addr, (const uint8_t *)&cfg, sizeof(cfg)) == false)       return false;
-
   return true;
 }
 
 /* 그 키에 배정된 스위치 종류 인덱스 (범위를 벗어나면 0) */
 static inline uint8_t keysSwType(uint32_t i)
 {
-  uint8_t t = cfg.key[i].sw_type;
+  uint8_t t = KS(i)->sw_type;
   return (t < KEYS_SWITCH_CNT) ? t : 0;
 }
 
@@ -1761,9 +2072,9 @@ uint16_t keysGetTravelUm(uint16_t row, uint16_t col)
  */
 static uint16_t keysStrokeCnt(uint32_t i)
 {
-  if (cfg.key[i].flags & 0x01)
+  if (KC(i)->flags & 0x01)
   {
-    int32_t s = (int32_t)cfg.key[i].cal_max - (int32_t)cfg.key[i].cal_min;
+    int32_t s = (int32_t)KC(i)->cal_max - (int32_t)KC(i)->cal_min;
 
     if (s >= KEYS_CAL_STROKE_MIN) return (uint16_t)s;
   }
@@ -1868,10 +2179,10 @@ static uint16_t keysGet16(const uint8_t *p)
 
 uint32_t keysGetKeyCfg(uint32_t idx, uint8_t *p_buf, uint32_t len)
 {
-  const keys_key_cfg_t *k;
+  const keys_key_set_t *k;
 
   if (idx >= KEYS_MAX || len < KEYS_KEYCFG_RD_LEN) return 0;
-  k = &cfg.key[idx];
+  k = KS(idx);
 
   keysPut16(&p_buf[0],  k->press_um);
   keysPut16(&p_buf[2],  k->release_um);
@@ -1883,7 +2194,7 @@ uint32_t keysGetKeyCfg(uint32_t idx, uint8_t *p_buf, uint32_t len)
   p_buf[13] = keysSwType(idx);
   keysPut16(&p_buf[14], keysStrokeCnt(idx));
   keysPut16(&p_buf[16], keys_switch[keysSwType(idx)].travel_um);
-  p_buf[18] = k->flags;
+  p_buf[18] = KC(idx)->flags;
 
   return KEYS_KEYCFG_RD_LEN;
 }
@@ -1898,7 +2209,7 @@ bool keysSetKeyCfg(uint32_t idx, const uint8_t *p_buf, uint32_t len)
 
   for (uint32_t i = first; i <= last; i++)
   {
-    keys_key_cfg_t *k = &cfg.key[i];
+    keys_key_set_t *k = KS(i);
 
     k->press_um      = keysClampUm(keysGet16(&p_buf[0]));
     k->release_um    = keysClampUm(keysGet16(&p_buf[2]));
@@ -1924,9 +2235,9 @@ bool keysSave(void)
   return keysCfgSave();
 }
 
-uint16_t keysGetPressUm(void)     { return cfg.press_um; }
-uint16_t keysGetReleaseUm(void)   { return cfg.release_um; }
-uint8_t  keysGetSwitchType(void)  { return cfg.sw_type_def; }
+uint16_t keysGetPressUm(void)     { return P()->press_um; }
+uint16_t keysGetReleaseUm(void)   { return P()->release_um; }
+uint8_t  keysGetSwitchType(void)  { return P()->sw_type_def; }
 
 /* 스위치 종류표를 호스트가 읽을 수 있게 연다 — 웹앱이 목록을 따로 들지 않게 한다 */
 uint32_t keysGetSwitchCount(void)        { return KEYS_SWITCH_CNT; }
@@ -1948,10 +2259,10 @@ void keysSetPressUm(uint16_t um)
 
   if (um == 0)      um = 1;
   if (um > travel)  um = travel;
-  cfg.press_um = um;
+  P()->press_um = um;
 
   /* 해제지점이 입력지점보다 깊으면 키가 눌린 채로 남는다 */
-  if (cfg.release_um >= cfg.press_um) cfg.release_um = (uint16_t)(cfg.press_um - 1);
+  if (P()->release_um >= P()->press_um) P()->release_um = (uint16_t)(P()->press_um - 1);
 
   keysCfgFanout();
   keysThrRebuild();
@@ -1960,8 +2271,8 @@ void keysSetPressUm(uint16_t um)
 void keysSetReleaseUm(uint16_t um)
 {
   if (um == 0) um = 1;
-  if (um >= cfg.press_um) um = (uint16_t)(cfg.press_um - 1);
-  cfg.release_um = um;
+  if (um >= P()->press_um) um = (uint16_t)(P()->press_um - 1);
+  P()->release_um = um;
 
   keysCfgFanout();
   keysThrRebuild();
@@ -1971,8 +2282,8 @@ void keysSetSwitchType(uint8_t type)
 {
   if (type >= KEYS_SWITCH_CNT) return;
 
-  cfg.sw_type_def = type;
-  for (uint32_t i = 0; i < KEYS_MAX; i++) cfg.key[i].sw_type = type;
+  P()->sw_type_def = type;
+  for (uint32_t i = 0; i < KEYS_MAX; i++) KS(i)->sw_type = type;
 
   keysThrRebuild();
 }
@@ -1984,20 +2295,20 @@ void keysSetSwitchType(uint8_t type)
  *  전부 0.01mm 단위다. 값을 바꾸면 임계값 표를 즉시 다시 만들어 다음 스캔부터
  *  반영된다 — 저장(keys save)과는 별개다.
  *---------------------------------------------------------------------------*/
-uint16_t keysGetRtPressUm(void)   { return cfg.rt_press_um; }
-uint16_t keysGetRtReleaseUm(void) { return cfg.rt_release_um; }
-uint16_t keysGetBottomUm(void)    { return cfg.bottom_um; }
-uint16_t keysGetDeadUm(void)      { return cfg.dead_um; }
-uint8_t  keysGetRtFlags(void)     { return cfg.rt_flags; }
+uint16_t keysGetRtPressUm(void)   { return P()->rt_press_um; }
+uint16_t keysGetRtReleaseUm(void) { return P()->rt_release_um; }
+uint16_t keysGetBottomUm(void)    { return P()->bottom_um; }
+uint16_t keysGetDeadUm(void)      { return P()->dead_um; }
+uint8_t  keysGetRtFlags(void)     { return P()->rt_flags; }
 
-void keysSetRtPressUm(uint16_t um)   { cfg.rt_press_um   = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }
-void keysSetRtReleaseUm(uint16_t um) { cfg.rt_release_um = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }
-void keysSetBottomUm(uint16_t um)    { cfg.bottom_um     = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }
-void keysSetDeadUm(uint16_t um)      { cfg.dead_um       = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }
+void keysSetRtPressUm(uint16_t um)   { P()->rt_press_um   = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }
+void keysSetRtReleaseUm(uint16_t um) { P()->rt_release_um = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }
+void keysSetBottomUm(uint16_t um)    { P()->bottom_um     = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }
+void keysSetDeadUm(uint16_t um)      { P()->dead_um       = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); }
 
 void keysSetRtFlags(uint8_t flags)
 {
-  cfg.rt_flags = flags & (KEYS_RT_ON | KEYS_RT_BOTTOM | KEYS_RT_CONT);
+  P()->rt_flags = flags & (KEYS_RT_ON | KEYS_RT_BOTTOM | KEYS_RT_CONT);
   keysCfgFanout();
   keysThrRebuild();
 
@@ -2377,7 +2688,7 @@ void cliKeys(cli_args_t *args)
       cliPrintf("\n보정 %d / %d 저장", (int)n_done, (int)total);
       if (n_skip) cliPrintf("  (%d개는 스위치가 없거나 덜 눌림 — 공칭값 유지)", (int)n_skip);
       cliPrintf("\n");
-      cliPrintf("save : %s  seq %d\n", ok ? "OK" : "E_", (int)cfg.seq);
+      cliPrintf("save : %s  seq %d\n", ok ? "OK" : "E_", (int)cal_st.seq);
     }
     ret = true;
   }
@@ -2404,7 +2715,7 @@ void cliKeys(cli_args_t *args)
               (int)st, (int)ch, (int)idx,
               thr[idx].press, thr[idx].release, thr[idx].dead);
     cliPrintf("스트로크 %d,  기준값 %d\n\n",
-              (int)(cfg.key[idx].cal_max - cfg.key[idx].cal_min), keysGetBase(st, ch));
+              (int)(KC(idx)->cal_max - KC(idx)->cal_min), keysGetBase(st, ch));
     cliPrintf("  #   최대깊이  되올라온곳  임계  해제선  에지\n");
 
     /*
@@ -2502,25 +2813,28 @@ void cliKeys(cli_args_t *args)
   {
     uint32_t n_cal = 0;
 
-    for (uint32_t i = 0; i < KEYS_MAX; i++) if (cfg.key[i].flags & 1) n_cal++;
+    for (uint32_t i = 0; i < KEYS_MAX; i++) if (KC(i)->flags & 1) n_cal++;
 
-    cliPrintf("loaded      : %d  (seq %d)\n", is_cfg_loaded, (int)cfg.seq);
-    cliPrintf("press       : %d.%02d mm\n", cfg.press_um / 100, cfg.press_um % 100);
-    cliPrintf("release     : %d.%02d mm\n", cfg.release_um / 100, cfg.release_um % 100);
+    cliPrintf("loaded      : %d  (보정 seq %d / 설정 seq %d)\n",
+              is_cfg_loaded, (int)cal_st.seq, (int)set_st.seq);
+    cliPrintf("profile     : %d / %d\n", (int)set_st.active + 1, KEYS_PROF_CNT);
+    cliPrintf("press       : %d.%02d mm\n", P()->press_um / 100, P()->press_um % 100);
+    cliPrintf("release     : %d.%02d mm\n", P()->release_um / 100, P()->release_um % 100);
     cliPrintf("rapid       : %s  되눌림 %d.%02d mm / 되뗌 %d.%02d mm\n",
-              (cfg.rt_flags & KEYS_RT_ON) ? "켬" : "끔",
-              cfg.rt_press_um / 100,   cfg.rt_press_um % 100,
-              cfg.rt_release_um / 100, cfg.rt_release_um % 100);
+              (P()->rt_flags & KEYS_RT_ON) ? "켬" : "끔",
+              P()->rt_press_um / 100,   P()->rt_press_um % 100,
+              P()->rt_release_um / 100, P()->rt_release_um % 100);
     cliPrintf("바닥 보호   : %s  %d.%02d mm\n",
-              (cfg.rt_flags & KEYS_RT_BOTTOM) ? "켬" : "끔",
-              cfg.bottom_um / 100, cfg.bottom_um % 100);
-    cliPrintf("데드존      : %d.%02d mm\n", cfg.dead_um / 100, cfg.dead_um % 100);
-    cliPrintf("switch      : %d (%s, %d.%02d mm)\n", cfg.sw_type_def,
-              keys_switch[cfg.sw_type_def].name,
-              keys_switch[cfg.sw_type_def].travel_um / 100,
-              keys_switch[cfg.sw_type_def].travel_um % 100);
+              (P()->rt_flags & KEYS_RT_BOTTOM) ? "켬" : "끔",
+              P()->bottom_um / 100, P()->bottom_um % 100);
+    cliPrintf("데드존      : %d.%02d mm\n", P()->dead_um / 100, P()->dead_um % 100);
+    cliPrintf("switch      : %d (%s, %d.%02d mm)\n", P()->sw_type_def,
+              keys_switch[P()->sw_type_def].name,
+              keys_switch[P()->sw_type_def].travel_um / 100,
+              keys_switch[P()->sw_type_def].travel_um % 100);
     cliPrintf("calibrated  : %d / %d 키\n", (int)n_cal, KEYS_MAX);
-    cliPrintf("record      : %d B\n", (int)sizeof(keys_cfg_t));
+    cliPrintf("record      : 보정 %d B + 설정 %d B (프로파일 %d벌)\n",
+              (int)sizeof(keys_cal_t), (int)sizeof(keys_set_t), KEYS_PROF_CNT);
 
     if (n_cal)
     {
@@ -2537,9 +2851,9 @@ void cliKeys(cli_args_t *args)
         {
           uint32_t i = st * KEYS_CH_MAX + c;
 
-          if (cfg.key[i].flags & 1)
+          if (KC(i)->flags & 1)
           {
-            uint32_t st_v = cfg.key[i].cal_max - cfg.key[i].cal_min;
+            uint32_t st_v = KC(i)->cal_max - KC(i)->cal_min;
 
             cliPrintf(" %5d", (int)st_v);
             if (st_v < lo) lo = st_v;
@@ -2566,7 +2880,7 @@ void cliKeys(cli_args_t *args)
     bool     ok = keysCfgSave();
 
     cliPrintf("save : %s  seq %d  (%d ms)\n", ok ? "OK" : "E_",
-              (int)cfg.seq, (int)(millis() - t));
+              (int)set_st.seq, (int)(millis() - t));
     ret = true;
   }
 
@@ -2574,7 +2888,8 @@ void cliKeys(cli_args_t *args)
   {
     bool ok = keysCfgLoad();
 
-    cliPrintf("load : %s  seq %d\n", ok ? "OK" : "없음(기본값)", (int)cfg.seq);
+    cliPrintf("load : %s  보정 seq %d / 설정 seq %d\n",
+              ok ? "OK" : "없음(기본값)", (int)cal_st.seq, (int)set_st.seq);
     ret = true;
   }
 

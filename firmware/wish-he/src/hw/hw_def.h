@@ -87,10 +87,25 @@
 #define      HW_FLASH_SECTOR_SIZE   4096         /* 소거 단위 */
 #define      HW_FLASH_PAGE_SIZE     256          /* 기록 단위 */
 #define      HW_FLASH_USER_BEGIN    0x0C0000UL   /* 이 아래로는 쓰지 않는다 */
-#define      HW_FLASH_CAL_A         0x0C0000UL   /* 캘리브레이션 핑퐁 A */
-#define      HW_FLASH_CAL_B         0x0C1000UL   /* 캘리브레이션 핑퐁 B */
+#define      HW_FLASH_CAL_A         0x0C0000UL   /* 보정 핑퐁 A */
+#define      HW_FLASH_CAL_B         0x0C1000UL   /* 보정 핑퐁 B */
 #define      HW_FLASH_E2P_BEGIN     0x0C4000UL   /* QMK/VIA EEPROM 이미지 */
 #define      HW_FLASH_E2P_SIZE      0x004000UL   /* 논리 16KB = 4섹터 */
+
+/*
+ * 설정(프로파일 네 벌) 핑퐁 — E2P 뒤에 둔다.
+ *
+ * ★ 보정과 저장 자리를 나눈다.
+ *
+ *   보정은 보드를 잰 값이고 설정은 취향이다. 한 덩어리로 두면 입력지점을 한 번
+ *   만질 때마다 보정값까지 통째로 다시 쓴다 — 잃으면 아픈 쪽을 쓸데없이 자주
+ *   위험에 놓는 셈이다.
+ *
+ *   네 벌이라 4KB 를 넘으므로 슬롯마다 8KB(2섹터)를 준다. 뒤로 0x100000 까지
+ *   208KB 가 비어 있어 더 늘려도 된다.
+ */
+#define      HW_FLASH_SET_A         0x0C8000UL   /* 설정 핑퐁 A (8KB) */
+#define      HW_FLASH_SET_B         0x0CA000UL   /* 설정 핑퐁 B (8KB) */
 
 //-- USB (CDC)
 //
