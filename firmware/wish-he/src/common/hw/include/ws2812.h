@@ -42,6 +42,14 @@ void ws2812Clear(void);
  */
 bool ws2812Refresh(void);
 
+/*
+ * 색이 안 바뀌어도 다음 Refresh 를 내보내게 한다.
+ *
+ * Refresh 는 색이 바뀐 프레임만 만든다. 전류 상한처럼 색 밖의 것이 바뀌면 여기로
+ * 알려야 한다 — 안 그러면 새 상한이 다음 색 변화까지 반영되지 않는다.
+ */
+void ws2812Touch(void);
+
 /* 이전 프레임이 아직 전송 중인지 */
 bool ws2812IsBusy(void);
 

@@ -167,6 +167,21 @@ static uint8_t  rgb_buf[HW_WS2812_MAX_CH][3];
 
 static spi_control_config_t ctrl_config;
 static volatile bool is_busy = false;
+
+/*
+ * 색이 바뀌었나. 안 바뀌었으면 프레임을 안 만든다.
+ *
+ * ★ 상류 QMK 에 있던 것을 이식하며 흘렸다 (rgb_matrix_drivers.c 의 ws2812_dirty).
+ *
+ *   rgb_matrix 는 효과가 정지든 아니든, 심지어 **꺼져 있어도** 매 프레임 flush 를
+ *   부른다. 더티 플래그가 없으면 색이 하나도 안 바뀐 프레임도 1992바이트를 다시
+ *   펼쳐서 쏜다 — 그 인코딩이 태스크를 200us 잡고, 125us 초과의 100% 가 그것이었다.
+ *
+ *   참고 보드도 인코딩 버퍼를 들고 더티로 거른다. 같은 자리에 같은 답이다.
+ *
+ * 처음에는 true 다 — 첫 프레임은 무조건 내보내야 LED 가 자리를 잡는다.
+ */
+static volatile bool is_dirty = true;
 static uint16_t limit_ma = WS2812_LIMIT_MA_DEF;
 static ws2812_prio_t prio = WS2812_PRIO_SHARED;
 
@@ -463,10 +478,23 @@ void ws2812SetColor(uint16_t ch, uint8_t red, uint8_t green, uint8_t blue)
 {
   if (ch >= HW_WS2812_MAX_CH) return;
 
+  /*
+   * 정말 바뀐 것만 표시한다.
+   *
+   * ★ 같은 색을 다시 넣는 일이 흔하다. rgb_matrix 는 효과가 정지든 아니든 매
+   *   프레임 83개를 전부 다시 칠하므로, 값 비교 없이 표시하면 더티 플래그가 늘
+   *   서 있어 있으나 마나다.
+   */
+  if (rgb_buf[ch][0] == red && rgb_buf[ch][1] == green && rgb_buf[ch][2] == blue)
+  {
+    return;
+  }
+
   /* 원본만 담아 둔다. 비트패턴으로 펼치는 것도 리미터도 Refresh 에서 한다. */
   rgb_buf[ch][0] = red;
   rgb_buf[ch][1] = green;
   rgb_buf[ch][2] = blue;
+  is_dirty = true;
 }
 
 void ws2812SetColorAll(uint8_t red, uint8_t green, uint8_t blue)
@@ -485,6 +513,7 @@ void ws2812Clear(void)
 void ws2812SetLimit(uint16_t max_ma)
 {
   limit_ma = max_ma;
+  ws2812Touch();   /* 같은 색이라도 배율이 달라진다 */
 }
 
 uint16_t ws2812GetLimit(void)
@@ -573,6 +602,17 @@ bool ws2812Refresh(void)
   if (is_init != true)   return false;
   if (ws2812IsBusy())    return false;   /* 이전 프레임이 아직 나가는 중 */
 
+  /*
+   * 안 바뀌었으면 할 일이 없다.
+   *
+   * ★ 여기서 거르는 것이 인코딩을 나눠 굽는 것보다 먼저다. 정지 효과(단색·
+   *   그라디언트)나 RGB 를 꺼 둔 상태에서는 첫 프레임 뒤로 아예 일이 없어진다.
+   *
+   * ★ 표시는 DMA 를 실제로 건 뒤에 지운다. 아래에서 실패해 돌아가면 다음 호출이
+   *   다시 시도해야 하는데, 여기서 미리 지우면 그 프레임이 영영 안 나간다.
+   */
+  if (is_dirty == false) return true;
+
   /* 색 -> 비트패턴. 전류 리미터가 여기서 걸린다. */
   ws2812Encode();
 
@@ -608,8 +648,20 @@ bool ws2812Refresh(void)
     return false;
   }
 
-  is_busy = true;
+  is_busy  = true;
+  is_dirty = false;   /* DMA 를 실제로 건 뒤에 — 위 주석 참고 */
   return true;
+}
+
+/*
+ * 색은 그대로인데 다시 내보내야 할 때.
+ *
+ * 전류 상한을 바꾸면 같은 색이라도 리미터 배율이 달라져 프레임이 달라진다. 색만
+ * 보는 더티 플래그는 그것을 모르므로 여기서 알려 준다.
+ */
+void ws2812Touch(void)
+{
+  is_dirty = true;
 }
 
 uint16_t ws2812GetMaxCh(void)
