@@ -31,15 +31,19 @@
  *
  * 언더글로우는 키에 안 붙어 있으므로 **판 전체에서 가장 깊은 값**을 따라간다 —
  * 아무 키나 누르면 아래쪽이 같이 반응해서 하나의 물건처럼 보인다.
+ *
+ * ★ 여기는 **거리를 안 쓴다.**
+ *
+ *   예전에는 keysGetDepthUm() 으로 mm 를 받아 전 행정으로 나눴다. 거리 환산이
+ *   곡선이 되면서 그 길에 이진 탐색이 생겼는데, 이 함수가 프레임마다 65번 돈다 —
+ *   RGB 태스크 평균이 21 -> 26us 로 오른 것이 전부 이것이었다.
+ *
+ *   효과에 필요한 것은 "반쯤 눌렸다" 뿐이라 정확한 mm 가 아무 값어치가 없다.
+ *   센서가 준 비율을 그대로 받는다 (keysGetLevel8). 나눗셈도 탐색도 없다.
  */
 static uint8_t heDepth8(uint8_t row, uint8_t col)
 {
-    uint16_t travel = keysGetTravelUm(row, col);
-    uint32_t depth  = keysGetDepthUm(row, col);
-
-    if (travel == 0) return 0;
-    if (depth >= travel) return 255;
-    return (uint8_t)((depth * 255U) / travel);
+    return keysGetLevel8(row, col);
 }
 
 /* 판에서 가장 깊이 눌린 키. 64셀을 훑으므로 프레임당 한 번만 센다. */

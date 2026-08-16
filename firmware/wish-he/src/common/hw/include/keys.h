@@ -120,6 +120,15 @@ uint16_t keysGetTravelUm(uint16_t row, uint16_t col);   /* 그 키의 전 행정
 uint16_t keysGetDepthUm(uint16_t row, uint16_t col);    /* 지금 눌린 깊이 */
 
 /*
+ * 얼마나 눌려 있는가 (0~255). 거리가 아니라 **센서가 준 비율**이다.
+ *
+ * RGB 효과처럼 "반쯤 눌렸다" 만 알면 되는 곳에 쓴다. 곡선을 안 타므로 훨씬 싸다 —
+ * 프레임마다 65번 도는 자리라 그 차이가 실제로 드러난다. 거리가 중요한 자리에는
+ * 쓰지 말 것.
+ */
+uint8_t  keysGetLevel8(uint16_t row, uint16_t col);
+
+/*
  * 설정 — VIA 커스텀 메뉴가 읽고 쓴다. 단위는 0.01mm.
  *
  * 값만 바꾼다. 플래시 저장은 `keys save` 처럼 사용자가 명시할 때만 한다.

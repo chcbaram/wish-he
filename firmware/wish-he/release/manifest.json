@@ -2,6 +2,18 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R23",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R23/wish60-he-V260816R23.bin",
+      "size": 137544,
+      "crc": "0x520564F6",
+      "notes": [
+        "RGB 는 거리 대신 센서 비율을 쓴다 — 125us 초과가 1177회에서 0회로",
+        "얕은 입력지점에 하한 (60카운트, 잡음 p-p 의 1.5배)"
+      ]
+    },
+    {
       "version": "V260816R22",
       "board": "WISH60-HE",
       "date": "2026-08-16",
