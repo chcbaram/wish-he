@@ -2,6 +2,17 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R6",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R6/wish60-he-V260816R6.bin",
+      "size": 134144,
+      "crc": "0xF94C09D9",
+      "notes": [
+        "키별 설정(입력지점·RT·데드존)이 실제로 저장된다 — R5 에서 이 경로가 빠졌다"
+      ]
+    },
+    {
       "version": "V260816R5",
       "board": "WISH60-HE",
       "date": "2026-08-16",

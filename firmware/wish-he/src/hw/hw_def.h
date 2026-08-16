@@ -6,7 +6,7 @@
 #include "bsp.h"
 
 
-#define _DEF_FIRMWATRE_VERSION    "V260816R5"
+#define _DEF_FIRMWATRE_VERSION    "V260816R6"
 #define _DEF_BOARD_NAME           "WISH60-HE"
 
 

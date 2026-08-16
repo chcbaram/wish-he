@@ -2290,6 +2290,15 @@ bool keysSetKeyCfg(uint32_t idx, const uint8_t *p_buf, uint32_t len)
   }
 
   keysThrRebuild();
+
+  /*
+   * ★ 웹 도구는 **전부 이 길로 온다.**
+   *
+   *   키별 명령(0xC5)이 입력지점·RT·데드존을 다 실어 나른다. 전역 setter 에만
+   *   표시를 붙였더니 화면에서 바꾼 값이 그대로 안 남았다 — 고쳤다고 하고서 같은
+   *   증상이 났다.
+   */
+  keysCfgTouch();
   return true;
 }
 
