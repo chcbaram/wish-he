@@ -186,9 +186,21 @@ void dynamic_keymap_reset(void) {
     }
 }
 
+/*
+ * ★ 버퍼 경로에도 같은 오프셋을 더해야 한다.
+ *
+ *   VIA 는 키맵을 한 키씩이 아니라 **버퍼로** 읽고 쓴다 (GET_BUFFER/SET_BUFFER).
+ *   위의 키 하나짜리 함수에만 오프셋을 걸었더니, 펌웨어는 프로파일별 키맵으로
+ *   동작하는데 VIA 화면은 늘 0번 블록만 보고 고쳤다 — "2번에서 바꿔도 1번 값만
+ *   보인다" 가 이것이다. 더 나쁘게는 2번에서 고친 것이 0번에 써졌다.
+ */
 void dynamic_keymap_get_buffer(uint16_t offset, uint16_t size, uint8_t *data) {
     uint16_t dynamic_keymap_eeprom_size = DYNAMIC_KEYMAP_LAYER_COUNT * MATRIX_ROWS * MATRIX_COLS * 2;
-    void *   source                     = (void *)(DYNAMIC_KEYMAP_EEPROM_ADDR + offset);
+    void *   source                     = (void *)(DYNAMIC_KEYMAP_EEPROM_ADDR
+#ifdef KEYMAP_PROFILE_COUNT
+                                                   + keymapProfileOffset()
+#endif
+                                                   + offset);
     uint8_t *target                     = data;
     for (uint16_t i = 0; i < size; i++) {
         if (offset + i < dynamic_keymap_eeprom_size) {
@@ -203,7 +215,11 @@ void dynamic_keymap_get_buffer(uint16_t offset, uint16_t size, uint8_t *data) {
 
 void dynamic_keymap_set_buffer(uint16_t offset, uint16_t size, uint8_t *data) {
     uint16_t dynamic_keymap_eeprom_size = DYNAMIC_KEYMAP_LAYER_COUNT * MATRIX_ROWS * MATRIX_COLS * 2;
-    void *   target                     = (void *)(DYNAMIC_KEYMAP_EEPROM_ADDR + offset);
+    void *   target                     = (void *)(DYNAMIC_KEYMAP_EEPROM_ADDR
+#ifdef KEYMAP_PROFILE_COUNT
+                                                   + keymapProfileOffset()
+#endif
+                                                   + offset);
     uint8_t *source                     = data;
     for (uint16_t i = 0; i < size; i++) {
         if (offset + i < dynamic_keymap_eeprom_size) {

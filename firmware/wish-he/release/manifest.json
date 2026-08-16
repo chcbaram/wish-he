@@ -2,6 +2,17 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R9",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R9/wish60-he-V260816R9.bin",
+      "size": 135336,
+      "crc": "0x82B236E6",
+      "notes": [
+        "프로파일별 키맵이 VIA 화면에도 제대로 보인다 — 버퍼 경로에 오프셋이 빠져 있었다"
+      ]
+    },
+    {
       "version": "V260816R8",
       "board": "WISH60-HE",
       "date": "2026-08-16",
