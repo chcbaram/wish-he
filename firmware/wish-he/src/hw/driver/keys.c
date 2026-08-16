@@ -1780,6 +1780,22 @@ static void keysThrRebuild(void)
     {
       t->release = (uint16_t)(t->press - 1);
     }
+
+    /*
+     * 데드존은 해제지점을 못 넘는다.
+     *
+     * ★ 순서가 무너지면 **앞의 값이 거짓이 된다.**
+     *
+     *   데드존은 "이보다 얕으면 안 본 걸로 친다" 라, 해제지점보다 깊어지면 해제가
+     *   할 일이 없어지고(깊이가 이미 0 이라 그 전에 떼진다), 입력지점까지 넘기면
+     *   입력지점을 덮어쓴다 — 화면에는 여전히 옛 숫자가 적혀 있는 채로.
+     *
+     *   0 <= 데드존 <= 해제지점 < 입력지점 을 여기서 지킨다.
+     *
+     * ★ 화면에서도 슬라이더 최대를 해제지점으로 막아 뒀다. 여기 것은 그 화면을 안
+     *   거치는 길(키별 명령·CLI·백업 복원)을 위한 안전망이라 평상시엔 안 걸린다.
+     */
+    if (t->dead > t->release) t->dead = t->release;
   }
 }
 
@@ -3411,8 +3427,17 @@ void cliKeys(cli_args_t *args)
     cliPrintf("\n");
     cliPrintf("바닥 보호 : %d.%02d mm  (깊이 %d 이상이면 RT 해제 끔)\n",
               keysGetBottomUm() / 100, keysGetBottomUm() % 100, thr[0].bottom_lo);
-    cliPrintf("데드존    : %d.%02d mm  (%d 카운트)\n",
-              keysGetDeadUm() / 100, keysGetDeadUm() % 100, thr[0].dead);
+    /*
+     * 잘렸으면 잘렸다고 말한다.
+     *
+     * 데드존은 해제지점을 못 넘는다. CLI 는 그 제한을 거는 화면을 안 거치므로 여기서
+     * 큰 값을 넣을 수 있는데, 그러면 설정값과 실제가 갈린다 — 조용히 두면 "0.40 을
+     * 넣었는데 왜 그대로 동작하지" 를 못 푼다.
+     */
+    cliPrintf("데드존    : %d.%02d mm  (%d 카운트)%s\n",
+              keysGetDeadUm() / 100, keysGetDeadUm() % 100, thr[0].dead,
+              (thr[0].dead < thr[0].release ||
+               keysGetDeadUm() == 0) ? "" : "   <- 해제지점에서 잘림");
     cliPrintf("입력지점  : %d 카운트,  해제지점 %d 카운트  (0번 키)\n",
               thr[0].press, thr[0].release);
     ret = true;

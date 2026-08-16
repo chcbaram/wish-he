@@ -2,6 +2,28 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R32",
+      "board": "WISH60-HE",
+      "date": "2026-08-17",
+      "bin": "V260816R32/wish60-he-V260816R32.bin",
+      "size": 139376,
+      "crc": "0xC2255D65",
+      "notes": [
+        "데드존이 해제지점을 못 넘게 — 순서가 무너지면 앞의 값이 거짓이 된다"
+      ]
+    },
+    {
+      "version": "V260816R31",
+      "board": "WISH60-HE",
+      "date": "2026-08-17",
+      "bin": "V260816R31/wish60-he-V260816R31.bin",
+      "size": 139304,
+      "crc": "0x7AEB7EA3",
+      "notes": [
+        "데드존이 해제지점을 못 넘게 — 순서가 무너지면 앞의 값이 거짓이 된다"
+      ]
+    },
+    {
       "version": "V260816R30",
       "board": "WISH60-HE",
       "date": "2026-08-17",
