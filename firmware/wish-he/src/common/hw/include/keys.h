@@ -146,6 +146,8 @@ uint32_t    keysGetSwitchCount(void);
 uint32_t    keysGetSwitchGenericCount(void);
 const char *keysGetSwitchName(uint32_t i);
 uint16_t    keysGetSwitchTravelUm(uint32_t i);
+uint16_t    keysGetSwitchFluxRest(uint32_t i);     /* 데이터시트 두 점 (Gs) */
+uint16_t    keysGetSwitchFluxBottom(uint32_t i);   /* 0 = 모른다 */
 
 /* 래피드 트리거 — 전부 0.01mm. 플래그는 keys.c 의 KEYS_RT_* */
 uint16_t keysGetRtPressUm(void);

@@ -6,7 +6,7 @@
 #include "bsp.h"
 
 
-#define _DEF_FIRMWATRE_VERSION    "V260816R15"
+#define _DEF_FIRMWATRE_VERSION    "V260816R16"
 #define _DEF_BOARD_NAME           "WISH60-HE"
 #define _DEF_MCU_NAME             "HPM5361 (RISC-V)"
 #define _DEF_AUTHOR_NAME          "BARAM"

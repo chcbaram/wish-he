@@ -2,6 +2,17 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R16",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R16/wish60-he-V260816R16.bin",
+      "size": 136728,
+      "crc": "0x0EBAD5FB",
+      "notes": [
+        "스위치 표에 데이터시트 두 점(자속) 추가 — 도구가 곡선을 그린다"
+      ]
+    },
+    {
       "version": "V260816R15",
       "board": "WISH60-HE",
       "date": "2026-08-16",

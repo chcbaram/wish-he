@@ -504,6 +504,16 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
       p_tx[4] = (uint8_t)(um & 0xFF);
       p_tx[5] = (uint8_t)(um >> 8);
 
+      {
+        uint16_t r = keysGetSwitchFluxRest(idx);
+        uint16_t b = keysGetSwitchFluxBottom(idx);
+
+        p_tx[HID_SWITCH_FLUX_OFF + 0] = (uint8_t)(r & 0xFF);
+        p_tx[HID_SWITCH_FLUX_OFF + 1] = (uint8_t)(r >> 8);
+        p_tx[HID_SWITCH_FLUX_OFF + 2] = (uint8_t)(b & 0xFF);
+        p_tx[HID_SWITCH_FLUX_OFF + 3] = (uint8_t)(b >> 8);
+      }
+
       p_nm = keysGetSwitchName(idx);
       for (uint32_t i = 0; i < (HID_EP_MPS - HID_SWITCH_NAME_OFF - 1) && p_nm[i]; i++)
       {

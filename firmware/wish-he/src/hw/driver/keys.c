@@ -322,6 +322,21 @@ typedef struct
   const char *name;
   uint16_t    travel_um;
   uint16_t    stroke_cnt;   /* 미보정 키의 mm 환산 기준 (12비트 카운트) */
+
+  /*
+   * 데이터시트가 주는 두 점 (Gs). 0 이면 모른다.
+   *
+   * ★ 이 둘이면 곡선이 결정된다.
+   *
+   *   축방향 자화 원통 자석의 축상 자기장은 식이 알려져 있고, 미지수가 둘(유효 갭,
+   *   잔류자속)이다. 초기·바닥 두 점이면 둘 다 풀린다. 그래서 곡선을 재려고 심을
+   *   끼울 필요가 없다 (docs/ref/he-magnet-model.md).
+   *
+   *   모르는 스위치는 0 으로 둔다 — 도구가 "직선으로 읽는 중" 이라고 말한다.
+   *   짐작한 값을 넣어 두면 그게 실측인 척한다.
+   */
+  uint16_t    flux_rest_gs;
+  uint16_t    flux_bottom_gs;
 } keys_switch_t;
 
 static const keys_switch_t keys_switch[] =
@@ -333,9 +348,9 @@ static const keys_switch_t keys_switch[] =
    * 보정(keys cal)을 하면 키별 실측 카운트가 이 값을 대신하므로, 여기 stroke_cnt 는
    * 미보정 키의 임시 기준일 뿐이다.
    */
-  { "generic 4.0mm", 400, 836 * KEYS_ACC_CNT },
-  { "generic 3.5mm", 350, 731 * KEYS_ACC_CNT },
-  { "generic 3.0mm", 300, 627 * KEYS_ACC_CNT },
+  { "generic 4.0mm", 400, 836 * KEYS_ACC_CNT, 0, 0 },
+  { "generic 3.5mm", 350, 731 * KEYS_ACC_CNT, 0, 0 },
+  { "generic 3.0mm", 300, 627 * KEYS_ACC_CNT, 0, 0 },
 
   /*
    * ── 제원을 아는 제품 ────────────────────────────────────────
@@ -346,7 +361,21 @@ static const keys_switch_t keys_switch[] =
    * 이 보드에서 재야 한다. 아래 값은 이 보드 61키를 보정해 얻은 평균이다
    * (최소 2275, 최대 2683, 평균 2514).
    */
-  { "GEON RAW HE",      340, 838 * KEYS_ACC_CNT },
+  { "GEON RAW HE",      340, 838 * KEYS_ACC_CNT, 0, 0 },
+
+  /*
+   * ── 두 점 제원을 아는 제품 ──────────────────────────────────────
+   *
+   * 제조사가 공개하는 초기·바닥 자속이다. 이 둘이 있으면 도구가 곡선을 그려
+   * 직선 환산과 견줄 수 있다.
+   *
+   * stroke_cnt 는 여전히 이 보드에서 재야 하는 값이라 일반형과 같은 어림값을
+   * 쓴다 — 보정하면 키별 실측이 대신한다.
+   */
+  { "Gateron Jade",     350, 731 * KEYS_ACC_CNT, 120, 700 },
+  { "Gateron Jade Pro", 350, 731 * KEYS_ACC_CNT, 120, 700 },
+  { "Gateron KS-20",    410, 857 * KEYS_ACC_CNT, 102, 905 },
+  { "Gateron Fox",      400, 836 * KEYS_ACC_CNT, 120, 800 },
 };
 
 /*
@@ -2482,6 +2511,26 @@ uint32_t keysGetSwitchGenericCount(void) { return KEYS_SWITCH_GENERIC_CNT; }
 const char *keysGetSwitchName(uint32_t i)
 {
   return (i < KEYS_SWITCH_CNT) ? keys_switch[i].name : "";
+}
+
+/*
+ * 데이터시트 두 점 (Gs). 0 이면 모르는 스위치다.
+ *
+ * ★ 이 둘이면 곡선이 결정된다.
+ *
+ *   축상 자기장 식의 미지수가 둘(유효 갭, 잔류자속)인데 두 점이면 둘 다 풀린다.
+ *   그래서 곡선을 재려고 심을 끼울 필요가 없다 (docs/ref/he-magnet-model.md).
+ *
+ *   모르는 스위치는 0 으로 둔다 — 짐작한 값을 넣으면 그게 실측인 척한다.
+ */
+uint16_t keysGetSwitchFluxRest(uint32_t i)
+{
+  return (i < KEYS_SWITCH_CNT) ? keys_switch[i].flux_rest_gs : 0;
+}
+
+uint16_t keysGetSwitchFluxBottom(uint32_t i)
+{
+  return (i < KEYS_SWITCH_CNT) ? keys_switch[i].flux_bottom_gs : 0;
 }
 
 uint16_t keysGetSwitchTravelUm(uint32_t i)
