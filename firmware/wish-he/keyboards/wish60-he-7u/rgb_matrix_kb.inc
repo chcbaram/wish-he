@@ -42,13 +42,9 @@ static uint8_t heDepth8(uint8_t row, uint8_t col)
     return (uint8_t)((depth * 255U) / travel);
 }
 
-static uint8_t heDepthOfLed(uint8_t i)
+/* 판에서 가장 깊이 눌린 키. 64셀을 훑으므로 프레임당 한 번만 센다. */
+static uint8_t heDepthMax(void)
 {
-    if (i < KEYS_LAYOUT_LED_CNT) {
-        return heDepth8(keys_led[i][0], keys_led[i][1]);
-    }
-
-    /* 언더글로우 — 판에서 가장 깊은 키를 따른다. 프레임당 한 번만 센다. */
     static uint8_t  cached   = 0;
     static uint16_t cached_t = 0xFFFF;
     uint16_t        now      = (uint16_t)g_rgb_timer;
@@ -67,6 +63,36 @@ static uint8_t heDepthOfLed(uint8_t i)
     return cached;
 }
 
+/* 키 밑 LED 는 그 키의 깊이, 언더글로우는 판 전체의 최대. */
+static uint8_t heDepthOfLed(uint8_t i)
+{
+    if (i < KEYS_LAYOUT_LED_CNT) {
+        return heDepth8(keys_led[i][0], keys_led[i][1]);
+    }
+    return heDepthMax();
+}
+
+#endif
+
+
+/*
+ * 진단용 — 효과가 실제로 보는 값을 그대로 내보낸다.
+ *
+ * 같은 함수를 다른 번역 단위에서 부르면 다른 값이 나올 수 있다(헤더·매크로가
+ * 다르게 펼쳐지면). 그래서 **효과가 있는 이 자리에서** 재야 한다.
+ */
+#ifdef RGB_MATRIX_CUSTOM_EFFECT_IMPLS
+void heDbgLed(uint8_t led, uint8_t *p_row, uint8_t *p_col,
+              uint16_t *p_travel, uint16_t *p_depth, uint8_t *p_d8)
+{
+    uint8_t r = (led < KEYS_LAYOUT_LED_CNT) ? keys_led[led][0] : 0xFF;
+    uint8_t c = (led < KEYS_LAYOUT_LED_CNT) ? keys_led[led][1] : 0xFF;
+
+    *p_row = r; *p_col = c;
+    *p_travel = (r == 0xFF) ? 0 : keysGetTravelUm(r, c);
+    *p_depth  = (r == 0xFF) ? 0 : keysGetDepthUm(r, c);
+    *p_d8     = heDepthOfLed(led);
+}
 #endif
 
 
@@ -101,9 +127,17 @@ bool HE_DEPTH(effect_params_t* params) {
 /* ── 깊이 색상 ─────────────────────────────────────────────────────────── */
 /*
  * 밝기는 그대로 두고 **색이** 깊이를 따라 돈다. 얕으면 설정한 색, 깊이 누를수록
- * 색상환을 따라 이동한다.
+ * 색상환을 따라 이동한다. 밝기가 안 변하므로 전류 합이 거의 일정하다 —
+ * 리미터가 걸릴 일이 없다.
  *
- * 밝기가 안 변하므로 전류 합이 거의 일정하다 — 리미터가 걸릴 일이 없다.
+ * ★ 키마다가 아니라 **판 전체가 같이** 돈다.
+ *
+ *   처음에는 눌린 키의 LED 만 돌게 했다. 값은 정상이었는데(깊이 254 까지 들어온다)
+ *   **정작 그 키는 손가락이 덮고 있어** 보이지 않았다. 밝기 모드는 꺼짐 -> 켜짐이라
+ *   캡 가장자리로도 보이지만, 색만 바뀌는 것은 가려지면 끝이다.
+ *
+ *   그래서 판에서 가장 깊이 눌린 값 하나로 전체를 물들인다. 손가락 밖에서 보이고,
+ *   64셀 훑기가 프레임당 한 번뿐이라 오히려 싸다.
  */
 #ifdef ENABLE_RGB_MATRIX_HE_DEPTH_HUE
 RGB_MATRIX_EFFECT(HE_DEPTH_HUE)
@@ -112,11 +146,13 @@ RGB_MATRIX_EFFECT(HE_DEPTH_HUE)
 bool HE_DEPTH_HUE(effect_params_t* params) {
     RGB_MATRIX_USE_LIMITS(led_min, led_max);
 
-    HSV hsv = rgb_matrix_config.hsv;
+    HSV     hsv   = rgb_matrix_config.hsv;
+    uint8_t depth = heDepthMax();          /* 판 전체가 같은 값을 쓴다 */
+
     for (uint8_t i = led_min; i < led_max; i++) {
         RGB_MATRIX_TEST_LED_FLAGS();
         HSV h = hsv;
-        h.h   = (uint8_t)(hsv.h + (heDepthOfLed(i) >> 1));   /* 최대 반 바퀴 */
+        h.h   = (uint8_t)(hsv.h + (depth >> 1));   /* 최대 반 바퀴 */
         RGB rgb = rgb_matrix_hsv_to_rgb(h);
         rgb_matrix_set_color(i, rgb.r, rgb.g, rgb.b);
     }

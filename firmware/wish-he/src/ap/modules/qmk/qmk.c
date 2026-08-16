@@ -331,9 +331,50 @@ static void cliQmk(cli_args_t *args)
 
     cliPrintf("rgb    : %s\n", rgb_matrix_is_enabled() ? "켬" : "끔");
     cliPrintf("mode   : %d / %d\n", rgb_matrix_get_mode(), RGB_MATRIX_EFFECT_MAX - 1);
+    /*
+     * ★ flags 를 같이 찍는다.
+     *
+     *   rgb_matrix 는 LED 마다 g_led_config.flags 를 갖고, 렌더할 때
+     *   rgb_matrix_config.flags 와 겹치는 것만 그린다. 이 값이 EEPROM 에
+     *   저장되므로 예전 값이 남아 **키 LED 만 통째로 안 그려지는** 일이 생긴다.
+     *   0xFF = 전부, 0x02 = 언더글로우, 0x04 = 키.
+     */
+    cliPrintf("flags  : 0x%02X  (0xFF=전부, 0x04=키, 0x02=언더글로우)\n",
+              rgb_matrix_get_flags());
     cliPrintf("hsv    : %d %d %d  (밝기 상한 %d)\n",
               rgb_matrix_get_hue(), rgb_matrix_get_sat(), rgb_matrix_get_val(),
               RGB_MATRIX_MAXIMUM_BRIGHTNESS);
+    ret = true;
+  }
+#endif
+
+#ifdef RGB_MATRIX_ENABLE
+  /* 효과가 보는 깊이를 그 자리에서 그대로 찍는다 */
+  if (args->argc == 1 && args->isStr(0, "led"))
+  {
+    extern void heDbgLed(uint8_t, uint8_t *, uint8_t *, uint16_t *, uint16_t *, uint8_t *);
+    {
+      /*
+       * ★ 위쪽과 언더글로우를 **따로** 센다.
+       *
+       *   언더글로우는 판 전체의 최대를 돌려주므로 언제나 개별 키보다 크거나
+       *   같다. 전체 최대만 찍으면 항상 언더글로우가 이겨서, 정작 보려던
+       *   "위쪽이 0인가" 를 전혀 못 본다. 처음에 그렇게 재고 헤맸다.
+       */
+      uint8_t  kbest = 0, kr = 0, kc = 0, ki = 0, ubest = 0;
+      uint16_t ktv = 0, kdp = 0;
+
+      for (uint32_t i = 0; i < RGB_MATRIX_LED_COUNT; i++)
+      {
+        uint8_t r, c, d8; uint16_t tv, dp;
+
+        heDbgLed((uint8_t)i, &r, &c, &tv, &dp, &d8);
+        if (r == 0xFF) { if (d8 > ubest) ubest = d8; continue; }
+        if (d8 > kbest) { kbest = d8; ki = (uint8_t)i; kr = r; kc = c; ktv = tv; kdp = dp; }
+      }
+      cliPrintf("위쪽 최대 led %d (%d,%d) travel %d depth %d d8 %d   |   언더 d8 %d\n",
+                ki, kr, kc, ktv, kdp, kbest, ubest);
+    }
     ret = true;
   }
 #endif
