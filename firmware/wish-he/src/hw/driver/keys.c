@@ -2042,6 +2042,69 @@ static bool keysCalMigrateV4(void)
   return true;
 }
 
+/*---------------------------------------------------------------------------
+ *  프로파일
+ *---------------------------------------------------------------------------*/
+
+uint8_t keysProfGet(void)  { return set_st.active; }
+uint8_t keysProfCount(void){ return KEYS_PROF_CNT; }
+
+/*
+ * 프로파일을 바꾼다.
+ *
+ * ★ 바꾸면 곧바로 저장한다.
+ *
+ *   프로파일은 "지금 어느 것을 쓰나" 라는 상태다. 껐다 켰을 때 원래대로 돌아가면
+ *   바꾼 뜻이 없다 — 게임하려고 2번으로 옮겼는데 재부팅하면 1번이면 매번 다시
+ *   골라야 한다.
+ *
+ * ★ 임계값을 다시 푼다.
+ *
+ *   판정은 카운트로 하고 그 카운트는 설정에서 나온다. 프로파일이 바뀌면 설정이
+ *   통째로 바뀌므로 여기서 다시 만들지 않으면 옛 프로파일의 임계값으로 계속 돈다.
+ */
+bool keysProfSelect(uint8_t idx)
+{
+  if (idx >= KEYS_PROF_CNT) return false;
+  if (idx == set_st.active) return false;      /* 바뀐 게 없으면 남길 것도 없다 */
+
+  set_st.active = idx;
+  keysThrRebuild();
+  return true;
+}
+
+/*
+ * 플래시에 남긴다. **부르는 쪽이 ISR 밖인지 책임진다.**
+ *
+ * 고르기(keysProfSelect)와 나눠 둔 이유다. 갈아 끼우는 것은 메모리 한 줄이라 싸고,
+ * 느린 것은 남기기뿐이다. 붙여 두면 USB 명령 처리 안에서 플래시를 쓰게 된다.
+ */
+bool keysProfSave(void)
+{
+  return keysCfgSave();
+}
+
+bool keysProfSet(uint8_t idx)
+{
+  if (keysProfSelect(idx) == false) return (idx < KEYS_PROF_CNT);
+  return keysCfgSave();
+}
+
+/*
+ * 지금 프로파일을 다른 프로파일에 통째로 붓는다.
+ *
+ * 네 벌을 처음부터 손으로 채우면 지겨워서 안 쓴다. 잘 맞춰 둔 한 벌을 복사해 놓고
+ * 한두 값만 바꾸는 것이 실제로 쓰는 방식이다.
+ */
+bool keysProfCopy(uint8_t dst)
+{
+  if (dst >= KEYS_PROF_CNT) return false;
+  if (dst == set_st.active) return true;
+
+  memcpy(&set_st.prof[dst], P(), sizeof(keys_prof_t));
+  return true;      /* 남기기는 부르는 쪽이 ISR 밖에서 한다 */
+}
+
 /* 그 키에 배정된 스위치 종류 인덱스 (범위를 벗어나면 0) */
 static inline uint8_t keysSwType(uint32_t i)
 {
@@ -2884,6 +2947,46 @@ void cliKeys(cli_args_t *args)
     ret = true;
   }
 
+  /*
+   * 프로파일 — 번호 없이 부르면 지금 것만 알려준다.
+   *
+   * 화면 없이도 전환을 확인할 수 있어야 한다. 웹 도구가 잘못 만든 것인지 펌웨어가
+   * 잘못 바꾼 것인지 가르는 데 이만한 것이 없다.
+   */
+  if (args->argc >= 1 && args->isStr(0, "prof"))
+  {
+    if (args->argc == 2)
+    {
+      int32_t n = args->getData(1);
+
+      if (n < 1 || n > KEYS_PROF_CNT)
+      {
+        cliPrintf("[E_] 프로파일은 1~%d\n", KEYS_PROF_CNT);
+        return;
+      }
+      cliPrintf("prof %d : %s\n", (int)n, keysProfSet((uint8_t)(n - 1)) ? "OK" : "E_");
+    }
+    else if (args->argc == 3 && args->isStr(1, "copy"))
+    {
+      int32_t n = args->getData(2);
+
+      if (n < 1 || n > KEYS_PROF_CNT)
+      {
+        cliPrintf("[E_] 프로파일은 1~%d\n", KEYS_PROF_CNT);
+        return;
+      }
+      cliPrintf("copy %d -> %d : %s\n", (int)keysProfGet() + 1, (int)n,
+                (keysProfCopy((uint8_t)(n - 1)) && keysProfSave()) ? "OK" : "E_");
+    }
+
+    cliPrintf("지금 프로파일 : %d / %d\n", (int)keysProfGet() + 1, KEYS_PROF_CNT);
+    cliPrintf("  입력지점 %d.%02d mm,  해제 %d.%02d mm,  RT %s\n",
+              P()->press_um / 100, P()->press_um % 100,
+              P()->release_um / 100, P()->release_um % 100,
+              (P()->rt_flags & KEYS_RT_ON) ? "켬" : "끔");
+    ret = true;
+  }
+
   if (args->argc == 1 && args->isStr(0, "load"))
   {
     bool ok = keysCfgLoad();
@@ -3366,6 +3469,8 @@ void cliKeys(cli_args_t *args)
     cliPrintf("keys learn     매핑 측정 — 누를 때마다 \"s,ch\" 한 줄\n");
     cliPrintf("keys cal       전 키 보정 (끝까지 눌러 바닥값 수집)\n");
     cliPrintf("keys cfg       저장된 설정 보기\n");
+    cliPrintf("keys prof [n]  프로파일 보기/전환 (1~%d)\n", KEYS_PROF_CNT);
+    cliPrintf("keys prof copy <n>   지금 것을 n 번에 붓기\n");
     cliPrintf("keys save      설정 저장\n");
     cliPrintf("keys load      설정 다시 읽기\n");
     cliPrintf("keys base\n");

@@ -44,6 +44,14 @@ bool     keysIsReportEnabled(void);
  */
 bool     keysCalibrate(void);
 
+/* 프로파일 — 설정 한 벌을 통째로 갈아 끼운다 (보정값은 공유한다) */
+uint8_t  keysProfGet(void);
+uint8_t  keysProfCount(void);
+bool     keysProfSelect(uint8_t idx);   /* 메모리에서 갈아 끼우기만 — 싸다 */
+bool     keysProfSave(void);            /* 플래시에 남기기 — ISR 밖에서 */
+bool     keysProfSet(uint8_t idx);      /* 둘 다 (CLI 용) */
+bool     keysProfCopy(uint8_t dst);     /* 지금 것을 dst 에 붓는다 */
+
 /*
  * 보정 — 바닥값 모으기. CLI 와 HID 가 같은 핵을 쓴다.
  *

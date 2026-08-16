@@ -63,6 +63,18 @@ extern "C" {
  */
 #define HID_SWITCH_NAME_OFF       6
 
+/*
+ * 프로파일 — 설정 한 벌을 통째로 갈아 끼운다.
+ *
+ *   OUT [1] = 하위   [2] = 인덱스(set/copy 만)
+ *   IN  [2] = 지금 번호   [3] = 전체 개수
+ */
+#define HID_CMD_PROF              0xC8
+
+#define HID_PROF_STATUS           0
+#define HID_PROF_SET              1
+#define HID_PROF_COPY             2
+
 #define HID_CMD_CAL               0xC7    /* 보정 — 시작·상태·저장·취소 */
 
 /*

@@ -109,6 +109,20 @@ static volatile uint8_t  cal_save_ok   = 0;
 static volatile uint8_t  cal_save_skip = 0;
 static volatile bool     raw_pending = false;
 
+/*
+ * 프로파일 전환도 같은 경계를 지킨다.
+ *
+ * 전환은 플래시에 "지금 몇 번" 을 남겨야 하므로 보정 저장과 똑같이 2~3ms 짜리
+ * 작업이다. 125us 폴링에 그걸 물리면 키 입력이 밀린다.
+ *
+ * ★ 대신 응답에는 **바뀔 번호**를 바로 실어 준다.
+ *
+ *   메모리의 active 는 ISR 안에서 바꿔도 싸다. 느린 것은 플래시뿐이다. 그래서
+ *   전환 자체는 즉시 일어나고 미루는 것은 "남기기" 뿐이다 — 도구가 다시 물을 일이
+ *   없다.
+ */
+static volatile bool     prof_save_req = false;
+
 static struct usbd_interface hid_intf;
 
 
@@ -143,6 +157,9 @@ static uint32_t hidCmdArgLen(const uint8_t *p_rx)
     case HID_CMD_LAYOUT: return 1;   /* 시작 인덱스 */
     case HID_CMD_TRACK:  return 1;   /* on/off */
     case HID_CMD_SWITCH: return 1;   /* 인덱스 */
+    /* 상태만 물으면 하위 하나, 바꾸는 것은 인덱스가 더 붙는다 */
+    case HID_CMD_PROF:   return (p_rx[1] == HID_PROF_STATUS) ? 1 : 2;
+
     /* 하위 명령. 행정 읽기만 시작 인덱스가 더 붙는다 */
     case HID_CMD_CAL:    return (p_rx[1] == HID_CAL_STROKE) ? 2 : 1;
 
@@ -267,6 +284,27 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
      * ★ 저장은 플래시를 쓴다. keysCalSave() 가 2~3ms 걸리므로 ISR 에서 부르면
      *   안 된다. 그래서 요청만 세워 두고 메인 루프가 처리한다.
      */
+    case HID_CMD_PROF:
+    {
+      switch (p_rx[1])
+      {
+        /* 갈아 끼우기는 메모리에서 즉시, 플래시에 남기는 것만 미룬다 */
+        case HID_PROF_SET:
+          if (keysProfSelect(p_rx[2])) prof_save_req = true;
+          break;
+
+        case HID_PROF_COPY:
+          if (keysProfCopy(p_rx[2])) prof_save_req = true;
+          break;
+
+        default: break;                       /* 상태만 */
+      }
+
+      p_tx[2] = keysProfGet();
+      p_tx[3] = keysProfCount();
+      break;
+    }
+
     case HID_CMD_CAL:
     {
       switch (p_rx[1])
@@ -431,6 +469,13 @@ void hidIfUpdate(void)
     cal_save_skip = (uint8_t)skip;
     logPrintf("[  ] 보정 저장 %d 키, %d 건너뜀, %s\n",
               (int)done, (int)skip, cal_save_ok ? "OK" : "실패");
+  }
+
+  if (prof_save_req)
+  {
+    prof_save_req = false;
+    logPrintf("[  ] 프로파일 %d 저장 %s\n", (int)keysProfGet() + 1,
+              keysProfSave() ? "OK" : "실패");
   }
 
   if (raw_pending)
