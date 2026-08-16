@@ -2,6 +2,17 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R17",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R17/wish60-he-V260816R17.bin",
+      "size": 136728,
+      "crc": "0xE10BDDDA",
+      "notes": [
+        "GEON RAW HE 의 자속 제원(160→720Gs)을 표에 넣는다 — 스위치 화면에 곡선이 그려진다"
+      ]
+    },
+    {
       "version": "V260816R16",
       "board": "WISH60-HE",
       "date": "2026-08-16",
