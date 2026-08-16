@@ -1137,13 +1137,17 @@ ATTR_RAMFUNC static void keysTrack(uint32_t step)
  */
 ATTR_RAMFUNC bool keysUpdate(void)
 {
+#if _USE_HW_PERF_STAT
   uint32_t t_begin;
+#endif
   bool     ret = true;
 
 
   if (is_init == false) return false;
 
+#if _USE_HW_PERF_STAT
   t_begin = micros();
+#endif
 
   /* 시간 기준 드리프트 — 스캔 속도와 무관하게 같은 속도로 보정된다 */
   drift_due = false;
@@ -1224,10 +1228,12 @@ ATTR_RAMFUNC bool keysUpdate(void)
   /* 링 칸은 스캔 단위로 돈다 — 한 스캔 안에서는 64셀이 같은 칸을 덮는다 */
   if (++acc_idx >= KEYS_ACC_CNT) acc_idx = 0;
 
+#if _USE_HW_PERF_STAT
   scan_time_us = micros() - t_begin;
   scan_cnt++;
   if (scan_time_us > scan_us_max)      scan_us_max = scan_time_us;
   if (scan_time_us > KEYS_SCAN_OVER_US) scan_over_cnt++;
+#endif
 
   return ret;
 }
@@ -2226,6 +2232,97 @@ void cliKeys(cli_args_t *args)
     ret = true;
   }
 
+  /*
+   * 한 키만 지켜보며 누름 한 번마다 한 줄.
+   *
+   * ★ "덜 눌렸다" 와 "눌렸는데 판정이 안 났다" 는 다른 문제다. 에지만 찍는 learn 은
+   *   빠진 입력을 아예 못 보고, 실시간 깊이만 보여주는 bar 는 지나간 것을 못 남긴다.
+   *   그래서 **도달한 최대 깊이**와 **판정 여부**를 같이 남긴다.
+   *
+   *   기준값이 흐르는 것도 같이 찍는다 — 깊이는 기준값 대비라 기준값이 밀리면
+   *   같은 세기로 눌러도 깊이가 줄어든다.
+   */
+  if (args->argc == 3 && args->isStr(0, "key"))
+  {
+    uint32_t st  = (uint32_t)args->getData(1);
+    uint32_t ch  = (uint32_t)args->getData(2);
+    uint32_t idx = st * KEYS_CH_MAX + ch;
+    bool     in     = false;  /* 움직임 구간 안에 있는가 */
+    int32_t  peak_d = 0;
+    int32_t  ret_d  = 0;      /* 직전 구간 이후 가장 얕았던 깊이 */
+    bool     edge   = false;  /* 그 구간에서 새 눌림 에지가 났는가 */
+    bool     prev_p = false;
+    uint32_t n = 0, miss = 0;
+
+    if (st >= KEYS_STEP_MAX || ch >= KEYS_CH_MAX)
+    {
+      cliPrintf("[E_] step 0~%d, ch 0~%d\n", KEYS_STEP_MAX - 1, KEYS_CH_MAX - 1);
+      return;
+    }
+
+    cliPrintf("s%d/ch%d (키 %d)  입력지점 %d, 해제지점 %d, 데드존 %d\n",
+              (int)st, (int)ch, (int)idx,
+              thr[idx].press, thr[idx].release, thr[idx].dead);
+    cliPrintf("스트로크 %d,  기준값 %d\n\n",
+              (int)(cfg.key[idx].cal_max - cfg.key[idx].cal_min), keysGetBase(st, ch));
+    cliPrintf("  #   최대깊이  되올라온곳  임계  해제선  에지\n");
+
+    /*
+     * ★ 구간 경계를 해제지점 위로 잡는다.
+     *
+     *   처음에는 잡음 바로 위(KEYS_BAR_MIN)를 경계로 썼다. 그러면 **완전히 떼진
+     *   경우만 한 구간으로 세어져**, 정작 보려던 "덜 떼고 다시 누른" 경우가 통째로
+     *   한 구간에 묻힌다. 연타에서 입력이 빠지는 이유를 재는 게 목적이므로
+     *   경계는 해제지점보다 아래여야 하고, 되올라온 최고점을 같이 남겨야 한다.
+     */
+    {
+      int32_t edge_lo = thr[idx].release / 2;
+      int32_t valley  = 0;
+
+      if (edge_lo < KEYS_BAR_MIN) edge_lo = KEYS_BAR_MIN;
+
+      while (keysCliKeep())
+      {
+        int32_t d;
+        bool    now_p;
+
+        keysUpdate();
+        d     = -keysGetDelta((uint8_t)st, (uint8_t)ch);   /* 누를수록 양수 */
+        now_p = (keysGetRow(st) & (1U << ch)) != 0;
+
+        if (now_p && prev_p == false) edge = true;         /* 새 눌림 에지 */
+        prev_p = now_p;
+
+        if (d >= edge_lo)
+        {
+          if (in == false) { in = true; peak_d = d; ret_d = valley; edge = false; }
+          else if (d > peak_d) peak_d = d;
+        }
+        else
+        {
+          if (in)
+          {
+            in = false;
+            n++;
+            if (edge == false) miss++;
+            cliPrintf("  %-3d %7d %10d  %5d  %5d  %-4s%s\n",
+                      (int)n, (int)peak_d, (int)ret_d,
+                      thr[idx].press, thr[idx].release,
+                      edge ? "OK" : "안남", edge ? "" : "   <-");
+            valley = d;
+          }
+          else if (d < valley) valley = d;
+        }
+        delay(2);
+      }
+    }
+
+    cliPrintf("\n%d 회 중 %d 회 에지 안 남\n", (int)n, (int)miss);
+    cliPrintf("'되올라온곳' 이 해제선 %d 보다 높으면 그 눌림은 새 입력이 안 된다\n",
+              thr[idx].release);
+    ret = true;
+  }
+
   if (args->argc == 1 && args->isStr(0, "cfg"))
   {
     uint32_t n_cal = 0;
@@ -2784,6 +2881,7 @@ void cliKeys(cli_args_t *args)
     cliPrintf("keys base\n");
     cliPrintf("keys map\n");
     cliPrintf("keys bar       눌린 깊이를 막대로 (최대 6개)\n");
+    cliPrintf("keys key <st> <ch>   한 키만 — 누름마다 최대깊이와 판정 여부\n");
     cliPrintf("keys watch\n");
     cliPrintf("keys noise\n");
     cliPrintf("keys dump\n");

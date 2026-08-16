@@ -11,6 +11,30 @@
 
 
 
+/*
+ * 성능 계측 코드를 넣을지 (keysUpdate · qmkUpdate 의 시간 측정과 초과 카운터).
+ *
+ * 이 계측은 공짜가 아니다. `micros()` 가 `mchtmr_get_count() / tick_us` 인데
+ * 32비트 코어에서 64비트 나눗셈이라 `__udivdi3` 호출이 된다. 그걸 35kHz 스캔
+ * 경로에서 한 바퀴에 두 번, QMK 루프에서 또 두 번 부른다.
+ *
+ * 얼마인지는 재봤다.
+ *
+ *   켬   29.06 us / 스캔   34,412 회/초
+ *   끔   28.16 us / 스캔   35,510 회/초      차이 0.90 us (3.1 %)
+ *
+ * 0.9us 는 micros() 두 번 값이다 (400MHz 에서 360 사이클). qmkUpdate 까지 더하면
+ * 루프당 약 1.8us.
+ *
+ * ★ 기본은 켬이다. 8kHz 예산 125us 에 지금 32us 를 쓰므로 1.8us 는 의미가 없고,
+ *   반대로 이 카운터들은 값을 한 적이 있다 — keyboard_task 초과가 "153만 번 중
+ *   3회" 로 드러나지 않았으면 구조를 계속 의심했을 것이다. 최대치 하나로는
+ *   "3번" 과 "5000번" 이 구분되지 않는다.
+ *
+ * 끄면 `keys time` 의 주기·초과 횟수와 `qmk info` 의 keyboard_task 통계가 0 이 된다.
+ */
+#define _USE_HW_PERF_STAT       1
+
 #define _USE_HW_LED
 #define      HW_LED_MAX_CH          1
 

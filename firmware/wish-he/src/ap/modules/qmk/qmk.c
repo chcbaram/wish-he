@@ -114,11 +114,14 @@ bool qmkInit(void)
 
 void qmkUpdate(void)
 {
+#if _USE_HW_PERF_STAT
   uint32_t t0 = micros();
   uint32_t dt;
+#endif
 
   keyboard_task();
 
+#if _USE_HW_PERF_STAT
   dt = micros() - t0;
   task_us_last = dt;
   if (dt > task_us_max) task_us_max = dt;
@@ -131,6 +134,7 @@ void qmkUpdate(void)
     task_over_ms_last = millis();
     task_over_cnt++;
   }
+#endif
 
   eeprom_task();
 }
@@ -196,20 +200,36 @@ static void cliQmk(cli_args_t *args)
    */
   if (args->argc == 1 && args->isStr(0, "log"))
   {
-    uint8_t prev[8] = { 0, };
+    uint8_t  prev[8] = { 0, };
+    uint32_t prev_sent = hidKbdGetSentCount();
+    uint32_t prev_ms   = millis();
 
     cliPrintf("키를 누르면 리포트를 찍는다 — Ctrl-C 로 끝낸다\n");
-    cliPrintf("  mods  keys[6]\n");
+    /*
+     * ★ 'tx' 는 직전 줄 이후 **실제로 전송 완료된** 리포트 수다.
+     *
+     *   shadow 만 보면 QMK 가 "보내라"고 준 것까지만 보인다. 전송이 진행 중일 때
+     *   상태가 또 바뀌면 shadow 가 덮여 가운데 값이 통째로 사라지는데, 그건 여기
+     *   tx=0 으로 드러난다. 상태 변화 한 번에 전송 한 번이 정상이다.
+     */
+    cliPrintf("  mods  keys[6]              tx    ms  간격\n");
 
     while (cliKeepLoop())
     {
-      uint8_t now[8];
+      uint8_t  now[8];
+      uint32_t sent;
 
       hidKbdGetReportRaw(now);
+      sent = hidKbdGetSentCount();
       if (memcmp(now, prev, sizeof(now)) != 0)
       {
         cliPrintf("  0x%02X  ", now[0]);
         for (uint32_t i = 2; i < 8; i++) cliPrintf("%02X ", now[i]);
+        cliPrintf(" tx%-3d%s %6d %5d", (int)(sent - prev_sent),
+                  (sent - prev_sent) == 1 ? " " : "★",
+                  (int)millis(), (int)(millis() - prev_ms));
+        prev_sent = sent;
+        prev_ms   = millis();
 
         /*
          * 같은 순간의 매트릭스와 그 자리의 키맵 값을 나란히 찍는다.

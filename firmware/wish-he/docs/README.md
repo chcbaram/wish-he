@@ -32,7 +32,7 @@ ROM → 부트 헤더 → 부트로더(0x80003000) → 매직 확인 → 본 펌
 | [11. VIA 붙이기](11-via.md) | `quantum/via.c` + `dynamic_keymap`, raw HID `0xFF60`. **라이브 트래킹은 장치가 민다**, 레이아웃도 장치가 준다 (JSON 없이) | 진행 |
 | [12. 스캔을 62us 에서 33us 로](12-scan-speed.md) | 구조가 아니라 `-O0` 이었다. ILM 배치, **-O2 가 드러낸 잠복 버그 둘**, 우리 소스만 `-Werror` | 완료 |
 | [13. 래피드 트리거](13-rapid-trigger.md) | 처리를 변환 대기에 숨기기, **3개 이동합(실측 1.31배)**, 방향 반전 판정, 바닥 보호, 설정을 전부 키별로 | 완료 |
-| 14. LED 효과와 전류 리미터 | 프레임 전류 합산 제한 | 예정 |
+| [14. LED 전류 리미터](14-led-limiter.md) | 프레임 합산 제한, 무리별 우선순위, **전역 배율의 고유한 결함**, 밝기 상한은 리미터의 일이 아니다. **전류계로 재니 짐작한 셋이 전부 틀렸다** | 진행 |
 
 ## 다음에 할 것
 
@@ -44,10 +44,11 @@ ROM → 부트 헤더 → 부트로더(0x80003000) → 매직 확인 → 본 펌
 - [ ] **RT 실사용 튜닝** — 재입력·입력 해제 거리의 경계 찾기.
       `keys learn` 이 눌림 에지마다 한 줄을 찍으므로 한 키를 한 번 눌러 몇 줄이
       나오는지로 잰다. 감으로 정하지 말 것
-- [ ] **LED 전역 전류 상한** — RGB 를 쓰기 전에 반드시. 83개를 25% 백색으로 켜면
-      1.25A 로 USB 예산의 두 배가 넘어 브라운아웃된다 (실제로 겪음)
 - [ ] **스위치 표를 장치에서 읽기** — 지금 `keys.c` 와 웹앱 양쪽에 같은 표가 있어
       어긋날 수 있다. 펌웨어 쪽 통로(`keysGetSwitchCount/Name/TravelUm`)는 열려 있다
+- [ ] **LED 인덱스 ↔ 키 매핑** — 전류 모델은 실측으로 끝났다(소등 269mA, 위쪽
+      11.51mA·언더글로우 4.66mA, 경계 65, 상한 450mA). 남은 것은 어느 LED 가 어느
+      키인지다. `ws2812 walk` 가 하나씩 켜며 번호를 찍는다 ([14편](14-led-limiter.md))
 
 ### 그다음
 
@@ -64,6 +65,9 @@ ROM → 부트 헤더 → 부트로더(0x80003000) → 매직 확인 → 본 펌
 
 - [ ] `keyboard_task` 최대 302us 가 나는 순간 특정 (153만 번 중 3회, 부팅·CLI 조작 때)
 - [ ] 8kHz 리포트 실측 — 폴링 주기와 스캔 주기가 실제로 분리됐는지
+- [ ] **`bInterval = 1` 을 유지할지** — 125us 폴링은 링크에 여유를 안 준다. USB
+      전류계를 끼웠더니 키 입력이 간헐로 빠졌고 빼니 정상이었다
+      ([14편](14-led-limiter.md)). 보통 키보드(1ms)라면 견뎠을 조건이다
 
 ---
 
@@ -247,8 +251,9 @@ print(p.read(8192).decode())
 PY
 ```
 
-명령: `help` · `reset info|boot|reset` · `ws2812 info|all|set|off|test|rainbow` ·
-`keys layout|show|learn|base|map|watch|noise|dump|time|info` · `log` · `usb`
+명령: `help` · `reset info|boot|reset` ·
+`ws2812 info|all|set|off|limit|prio|group|test|rainbow` ·
+`keys layout|show|learn|key|base|map|watch|noise|dump|time|info` · `log` · `usb`
 
 ### 4.2 RAM 링버퍼 (JTAG)
 
