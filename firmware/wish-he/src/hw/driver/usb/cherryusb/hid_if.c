@@ -123,6 +123,25 @@ static volatile bool     raw_pending = false;
  */
 static volatile bool     prof_save_req = false;
 
+/*
+ * 보낼 자리가 없어 못 보낸 응답.
+ *
+ * ★ 조용히 버리면 호스트가 영영 기다린다.
+ *
+ *   응답은 IN 엔드포인트가 비어 있을 때만 보낼 수 있다. 그런데 플래시를 쓰는
+ *   동안(6ms) 인터럽트가 꺼져 있으면 그 사이 전송 완료 인터럽트를 놓칠 수 있고,
+ *   그러면 is_tx_busy 가 참인 채로 남는다. 그 상태에서 다음 명령이 오면 응답을
+ *   만들어 놓고 **보내지 않고 버렸다** — 요청 하나에 응답 하나인 통로에서 하나가
+ *   사라지니 호스트는 그대로 멈춘다.
+ *
+ *   실험으로 잡았다. 전환 없이 400번은 멀쩡한데, 저장이 도는 전환 뒤에는 일곱 번째
+ *   왕복에서 응답이 사라졌다.
+ *
+ *   버리지 말고 들고 있다가 자리가 나면 보낸다.
+ */
+static volatile bool     tx_pending  = false;
+static volatile uint32_t tx_busy_ms  = 0;
+
 static struct usbd_interface hid_intf;
 
 
@@ -442,6 +461,7 @@ void hidIfSendRaw(const uint8_t *p_data, uint8_t length)
   memset(tx_report, 0, HID_EP_MPS);
   memcpy(tx_report, p_data, length);
   is_tx_busy = true;
+  tx_busy_ms = millis();      /* 되살리기 판정에 쓴다 */
   usbd_ep_start_write(HID_BUSID, HID_IN_EP, tx_report, HID_EP_MPS);
   restore_global_irq(mask);
 }
@@ -469,6 +489,30 @@ void hidIfUpdate(void)
     cal_save_skip = (uint8_t)skip;
     logPrintf("[  ] 보정 저장 %d 키, %d 건너뜀, %s\n",
               (int)done, (int)skip, cal_save_ok ? "OK" : "실패");
+  }
+
+  /*
+   * ★ 놓친 전송 완료를 되살린다.
+   *
+   *   플래시를 쓰는 동안 인터럽트가 꺼져 있으면 전송 완료 인터럽트를 놓칠 수 있다.
+   *   그러면 is_tx_busy 가 참인 채로 굳고, 그 뒤로는 응답을 한 번도 못 보낸다 —
+   *   호스트에서는 키보드가 죽은 것처럼 보인다.
+   *
+   *   자리가 났는지 아닌지는 여기서 알 길이 없으므로 **시간으로 푼다.** 한 번의
+   *   전송은 1ms 안에 끝난다. 50ms 가 지나도 안 끝났으면 인터럽트를 놓친 것이다.
+   */
+  if (is_tx_busy && (millis() - tx_busy_ms) > 50)
+  {
+    logPrintf("[  ] HID 전송 완료를 놓쳤다 — 되살린다\n");
+    is_tx_busy = false;
+
+    if (tx_pending)
+    {
+      tx_pending = false;
+      is_tx_busy = true;
+      tx_busy_ms = millis();
+      usbd_ep_start_write(HID_BUSID, HID_IN_EP, tx_report, HID_EP_MPS);
+    }
   }
 
   if (prof_save_req)
@@ -527,7 +571,13 @@ static void hidOutCallback(uint8_t busid, uint8_t ep, uint32_t nbytes)
       if (is_tx_busy == false)
       {
         is_tx_busy = true;
+        tx_busy_ms = millis();
         usbd_ep_start_write(busid, HID_IN_EP, tx_report, HID_EP_MPS);
+      }
+      else
+      {
+        /* 자리가 나면 보낸다 (hidInCallback / hidIfUpdate) */
+        tx_pending = true;
       }
     }
     else if (raw_recv != NULL && raw_pending == false)
@@ -544,11 +594,19 @@ static void hidOutCallback(uint8_t busid, uint8_t ep, uint32_t nbytes)
 
 static void hidInCallback(uint8_t busid, uint8_t ep, uint32_t nbytes)
 {
-  (void)busid;
   (void)ep;
   (void)nbytes;
 
   is_tx_busy = false;
+
+  /* 자리가 났다 — 못 보내고 들고 있던 응답이 있으면 지금 보낸다 */
+  if (tx_pending)
+  {
+    tx_pending = false;
+    is_tx_busy = true;
+    tx_busy_ms = millis();
+    usbd_ep_start_write(busid, HID_IN_EP, tx_report, HID_EP_MPS);
+  }
 }
 
 static struct usbd_endpoint hid_out_ep = { .ep_addr = HID_OUT_EP, .ep_cb = hidOutCallback };

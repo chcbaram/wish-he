@@ -2,6 +2,17 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R12",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R12/wish60-he-V260816R12.bin",
+      "size": 135728,
+      "crc": "0x7864F50B",
+      "notes": [
+        "플래시 저장 중 HID 응답이 사라지던 것 — 못 보낸 응답을 버리지 않고 들고 있다가 보낸다"
+      ]
+    },
+    {
       "version": "V260816R11",
       "board": "WISH60-HE",
       "date": "2026-08-16",
