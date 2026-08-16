@@ -2,6 +2,17 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R2",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R2/wish60-he-V260816R2.bin",
+      "size": 130744,
+      "crc": "0x1E85CCF6",
+      "notes": [
+        "보정 중에도 키캡에 지금 모인 행정이 갱신된다 (HID_CAL_STROKE 추가)"
+      ]
+    },
+    {
       "version": "V260816R1",
       "board": "WISH60-HE",
       "date": "2026-08-16",
