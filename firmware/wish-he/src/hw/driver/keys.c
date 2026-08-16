@@ -33,6 +33,7 @@
 
 /* keyboards/<모델>/layout.h — tools/gen_keymap.py 가 KLE 에서 생성한다 */
 #include "layout.h"
+#include "ws2812.h"
 #include "flash.h"
 #include "hpm_crc32.h"
 
@@ -1927,7 +1928,7 @@ void cliKeys(cli_args_t *args)
    * 키를 누를 일이 없는데 막아두면 그냥 키보드가 멈춘 것으로 보인다.
    */
   static const char *interactive[] =
-    { "cal", "map", "learn", "layout", "show", "bar", "watch", "noise", "raw" };
+    { "cal", "map", "learn", "layout", "show", "bar", "watch", "noise", "raw", "led" };
 
   for (uint32_t i = 0; i < sizeof(interactive) / sizeof(interactive[0]); i++)
   {
@@ -2320,6 +2321,41 @@ void cliKeys(cli_args_t *args)
     cliPrintf("\n%d 회 중 %d 회 에지 안 남\n", (int)n, (int)miss);
     cliPrintf("'되올라온곳' 이 해제선 %d 보다 높으면 그 눌림은 새 입력이 안 된다\n",
               thr[idx].release);
+    ret = true;
+  }
+
+  /*
+   * LED 매핑 확인 — 누른 키의 LED 를 켠다.
+   *
+   * ★ 매핑은 배치에서 계산된다 (layout.h 의 keys_led[], tools/gen_keymap.py).
+   *   지그재그 순서라는 규칙이 맞는지는 몇 점만 찍어 봐서는 못 믿는다. 여기서
+   *   전 키를 한 번씩 눌러 보면 규칙 전체가 한 번에 검증된다.
+   *
+   *   ESC 를 눌렀는데 다른 자리가 켜지면 그 어긋난 방향이 곧 답이다.
+   */
+  if (args->argc == 1 && args->isStr(0, "led"))
+  {
+    cliPrintf("키를 누르면 그 키의 LED 가 켜진다. 전 키를 한 번씩 눌러 본다.\n");
+    cliPrintf("(Ctrl+ESC 로 종료)\n");
+
+    while (keysCliKeep())
+    {
+      keysUpdate();
+
+      ws2812Clear();
+      for (uint32_t i = 0; i < KEYS_LAYOUT_LED_CNT; i++)
+      {
+        if (keysGetPressed(keys_led[i][0], keys_led[i][1]))
+        {
+          ws2812SetColor((uint16_t)i, 40, 40, 40);
+        }
+      }
+      ws2812Refresh();
+      delay(5);
+    }
+
+    ws2812Clear();
+    ws2812Refresh();
     ret = true;
   }
 
@@ -2882,6 +2918,7 @@ void cliKeys(cli_args_t *args)
     cliPrintf("keys map\n");
     cliPrintf("keys bar       눌린 깊이를 막대로 (최대 6개)\n");
     cliPrintf("keys key <st> <ch>   한 키만 — 누름마다 최대깊이와 판정 여부\n");
+    cliPrintf("keys led       누른 키의 LED 를 켠다 (매핑 확인)\n");
     cliPrintf("keys watch\n");
     cliPrintf("keys noise\n");
     cliPrintf("keys dump\n");

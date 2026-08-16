@@ -175,6 +175,72 @@ def parse_geometry(kle):
     return out
 
 
+# ── LED 체인 ────────────────────────────────────────────────────────────────
+#
+# ESC 에서 오른쪽으로 시작해 **행마다 방향이 바뀌는 지그재그**다. 실측으로 확인했다
+# (LED 0 = ESC, 16 = 백슬래시 = 2행 오른쪽 끝, 30 = CapsLock = 3행 왼쪽 끝,
+#  64 = 오른쪽 Ctrl = 5행 오른쪽 끝).
+#
+# ★ "한 키에 LED 하나" 가 아니다. 이 보드에서 그 전제가 두 군데서 깨진다.
+#
+#   - 넓은 키는 하나로 고르게 못 비춰 스위치 좌우로 하나씩 더 있다 (7u 스페이스바)
+#   - 스플릿 백스페이스처럼 **스위치가 안 꽂힌 자리에도 LED 는 있다.** 그 자리는
+#     배치에 매트릭스 좌표로 이미 들어 있으므로 따로 처리할 것이 없다
+#
+LED_WIDE_U   = 6.0   # 이 폭 이상이면 좌·중·우 3개 (7u 스페이스바에서 실측)
+LED_WIDE_CNT = 3
+
+# 언더글로우 — 상단 뒤에 이어 붙는다. **오른쪽 아래 Ctrl 근처에서 시작해 왼쪽으로**
+# 가며 판 외곽을 한 바퀴 돈다 (아래 → 왼쪽 → 위 → 오른쪽).
+#
+# 변마다 몇 개씩인지도 눈으로 셌다 — 아래 6, 좌 3, 위 6, 우 3.
+#
+# ★ 변별 개수까지가 실측이고 **한 변 안에서의 간격은 아니다.** 각 변을 균등하게
+#   나눠 놓았다. 효과가 어색하면 `ws2812 walk 65` 로 하나씩 짚어 고친다.
+#
+#   둘레를 통째로 균등 분할하면 안 된다 — 짧은 변(5u)과 긴 변(15u)에 같은 간격을
+#   주면 아래가 7개, 옆이 2개가 되어 실제(6/3)와 어긋난다.
+LED_UNDER_SIDES = (6, 3, 6, 3)   # 아래, 왼쪽, 위, 오른쪽 (합 = 언더글로우 개수)
+
+
+def led_under(geo):
+    """언더글로우 (x, y) 근사 좌표. 키 단위, 판 왼쪽 위가 원점."""
+    xs = [x for x, y, w, h, _, _ in geo if x < 15.5]     # 판 밖 대체 자리는 뺀다
+    ws = [(x, w) for x, y, w, h, _, _ in geo if x < 15.5]
+    x1 = max(x + w for x, w in ws)
+    y1 = max(y + h for _, y, _, h, _, _ in geo)
+
+    # 둘레를 한 바퀴 — 오른쪽 아래에서 왼쪽으로 출발한다
+    legs = [((x1, y1), (0.0, y1)),      # 아래 : 오른쪽 -> 왼쪽
+            ((0.0, y1), (0.0, 0.0)),    # 왼쪽 : 아래 -> 위
+            ((0.0, 0.0), (x1, 0.0)),    # 위   : 왼쪽 -> 오른쪽
+            ((x1, 0.0), (x1, y1))]      # 오른쪽 : 위 -> 아래
+
+    out = []
+    for ((ax, ay), (bx, by)), n in zip(legs, LED_UNDER_SIDES):
+        for i in range(n):
+            t = (i + 0.5) / n           # 변 안에서 균등
+            out.append((ax + (bx - ax) * t, ay + (by - ay) * t))
+    return out
+
+
+def led_chain(geo):
+    """geo -> LED 순서대로의 (row, col) 목록."""
+    rows = {}
+    for x, y, w, h, s_, c_ in geo:
+        rows.setdefault(round(y * 4), []).append((x, w, s_, c_))
+
+    out = []
+    for i, ry in enumerate(sorted(rows)):
+        ks = sorted(rows[ry])              # 왼쪽 -> 오른쪽
+        if i % 2:
+            ks = list(reversed(ks))        # 홀수 행은 되돌아온다
+        for x, w, s_, c_ in ks:
+            for _ in range(LED_WIDE_CNT if w >= LED_WIDE_U else 1):
+                out.append((s_, c_))
+    return out
+
+
 def addr_of(legend):
     s, c = legend.split("\n")[0].split(",")
     return int(s), int(c)
@@ -376,7 +442,48 @@ def cmd_gen():
     for x, y, w, h, s_, c_ in geo:
         L.append(f"  {{{round(x*4):3d},{round(y*4):3d},{round(w*4):3d},"
                  f"{round(h*4):3d}, {s_},{c_} }},")
-    L += ["};", "", "#endif", ""]
+    leds = led_chain(geo)
+    L += [
+        "};",
+        "",
+        f"#define KEYS_LAYOUT_LED_CNT   {len(leds)}",
+        "",
+        "/*",
+        " * LED 체인 순서 -> 매트릭스 (row, col).",
+        " *",
+        " * ESC 에서 오른쪽으로, 행마다 방향이 바뀌는 지그재그다. 넓은 키는 여러 개가",
+        " * 같은 (row, col) 을 가리킨다 — 7u 스페이스바가 좌·중·우 3개다.",
+        " * 이 표 뒤(KEYS_LAYOUT_LED_CNT 이후)는 키에 안 붙은 언더글로우다.",
+        " */",
+        "static const uint8_t keys_led[KEYS_LAYOUT_LED_CNT][2] =",
+        "{",
+    ]
+    for i in range(0, len(leds), 8):
+        L.append("  " + " ".join(f"{{{s_},{c_}}}," for s_, c_ in leds[i:i + 8]))
+    L += ["};"]
+
+    und = led_under(geo)
+    L += [
+        "",
+        f"#define KEYS_LAYOUT_LED_UNDER_CNT   {len(und)}",
+        "",
+        "/*",
+        " * 언더글로우 위치 (상단 뒤에 이어 붙는다). 단위는 1/4 키유닛.",
+        " *",
+        " * 오른쪽 아래에서 시작해 왼쪽으로 가며 판 외곽을 한 바퀴 돈다.",
+        " * 변별 개수는 아래 6, 왼쪽 3, 위 6, 오른쪽 3 이다 (눈으로 셈).",
+        " *",
+        " * ★ 변별 개수까지가 실측이고 **한 변 안에서의 간격은 아니다** — 균등하게",
+        " *   나눠 놓았다. 어색하면 `ws2812 walk 65` 로 짚어 고친다.",
+        " */",
+        "static const uint8_t keys_led_under[KEYS_LAYOUT_LED_UNDER_CNT][2] =",
+        "{",
+    ]
+    for i in range(0, len(und), 6):
+        L.append("  " + " ".join(f"{{{round(x*4):3d},{round(y*4):3d}}},"
+                                 for x, y in und[i:i + 6]))
+    L += ["};"]
+    L += ["", "#endif", ""]
 
     HDR_PATH.parent.mkdir(parents=True, exist_ok=True)
     HDR_PATH.write_text("\n".join(L))
