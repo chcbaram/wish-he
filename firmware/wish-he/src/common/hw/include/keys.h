@@ -26,6 +26,20 @@ bool     keysUpdate(void);
 uint16_t keysGetRaw(uint8_t step, uint8_t ch);
 
 /* 직전 스캔 한 바퀴에 걸린 시간 (us). 12편 예산 계산의 근거가 된다. */
+/* 진단용 통계 — 화면이 늘 함께 보므로 한 번에 준다 */
+typedef struct
+{
+  uint32_t scan_us;        /* 마지막 스캔 한 바퀴 */
+  uint32_t scan_us_max;    /* 그중 최악 */
+  uint32_t scan_over;      /* 기준(60us)을 넘긴 횟수 */
+  uint32_t scan_cnt;       /* 전체 스캔 횟수 */
+  uint32_t timeout;        /* ADC 타임아웃 */
+  uint32_t cal_ms;         /* 부팅 보정에 걸린 시간 */
+  uint32_t calibrated;
+} keys_stat_t;
+
+void     keysGetStat(keys_stat_t *p_stat);
+
 uint32_t keysGetScanTime(void);
 
 /*

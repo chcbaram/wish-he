@@ -73,6 +73,23 @@ static volatile uint32_t rgb_us_sum  = 0;
 static volatile uint32_t rgb_us_cnt  = 0;
 static volatile uint32_t rgb_over_cnt = 0;
 
+/*
+ * 루프 통계를 한 덩어리로. keys 쪽과 같은 이유로 함께 준다.
+ */
+void qmkGetStat(qmk_stat_t *p_stat)
+{
+  if (p_stat == NULL) return;
+
+  p_stat->task_us      = task_us_last;
+  p_stat->task_us_max  = task_us_max;
+  p_stat->task_us_avg  = task_us_cnt ? (task_us_sum / task_us_cnt) : 0;
+  p_stat->task_over    = task_over_cnt;
+  p_stat->task_cnt     = task_us_cnt;
+  p_stat->rgb_us       = rgb_us_last;
+  p_stat->rgb_us_max   = rgb_us_max;
+  p_stat->rgb_us_avg   = rgb_us_cnt ? (rgb_us_sum / rgb_us_cnt) : 0;
+}
+
 void qmkRgbStat(uint32_t us)
 {
   rgb_us_last = us;

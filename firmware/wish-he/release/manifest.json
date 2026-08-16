@@ -2,6 +2,17 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R13",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R13/wish60-he-V260816R13.bin",
+      "size": 136032,
+      "crc": "0x70485666",
+      "notes": [
+        "진단 통계를 HID 로 내준다 (0xC9) — VIA HE 의 디버그 화면용"
+      ]
+    },
+    {
       "version": "V260816R12",
       "board": "WISH60-HE",
       "date": "2026-08-16",

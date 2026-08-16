@@ -1595,6 +1595,28 @@ uint16_t keysGetRaw(uint8_t step, uint8_t ch)
   return raw[step][ch];
 }
 
+/*
+ * 진단용 통계를 한 덩어리로 내준다.
+ *
+ * ★ 값마다 함수를 하나씩 두지 않는다.
+ *
+ *   화면은 이것들을 늘 함께 본다 — 지금 얼마나 걸리나, 최악이 언제였나, 넘긴 적이
+ *   있나. 따로 읽으면 서로 다른 순간의 값이 섞여, "최대 650us 인데 넘긴 적은 0" 같은
+ *   앞뒤 안 맞는 화면이 나온다.
+ */
+void keysGetStat(keys_stat_t *p_stat)
+{
+  if (p_stat == NULL) return;
+
+  p_stat->scan_us     = scan_time_us;
+  p_stat->scan_us_max = scan_us_max;
+  p_stat->scan_over   = scan_over_cnt;
+  p_stat->scan_cnt    = scan_cnt;
+  p_stat->timeout     = timeout_cnt;
+  p_stat->cal_ms      = cal_time_ms;
+  p_stat->calibrated  = is_calibrated ? 1 : 0;
+}
+
 uint32_t keysGetScanTime(void)
 {
   return scan_time_us;

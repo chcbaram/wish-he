@@ -75,6 +75,19 @@ extern "C" {
 #define HID_PROF_SET              1
 #define HID_PROF_COPY             2
 
+/*
+ * 진단 통계 — 지금까지 CLI 로만 보던 값들.
+ *
+ *   IN [2..]  LE32 값들이 정해진 순서로 늘어선다 (아래 HID_STAT_* 자리)
+ *
+ * ★ 한 번에 다 준다. 화면이 늘 함께 보는 값이라 따로 읽으면 서로 다른 순간의 것이
+ *   섞여 "최대 650us 인데 넘긴 적은 0" 같은 앞뒤 안 맞는 화면이 나온다.
+ */
+#define HID_CMD_STAT              0xC9
+
+#define HID_STAT_OFF              4       /* 값이 시작하는 자리 (4바이트 정렬) */
+#define HID_STAT_CNT              14      /* LE32 몇 개인가 */
+
 #define HID_CMD_CAL               0xC7    /* 보정 — 시작·상태·저장·취소 */
 
 /*

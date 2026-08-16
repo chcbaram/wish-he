@@ -38,6 +38,7 @@
 #include "usb/cherryusb/usb_desc.h"
 #include "reset.h"
 #include "keys.h"
+#include "qmk.h"
 #include "usb/cherryusb/hid_trk_if.h"
 
 
@@ -178,6 +179,7 @@ static uint32_t hidCmdArgLen(const uint8_t *p_rx)
     case HID_CMD_SWITCH: return 1;   /* 인덱스 */
     /* 상태만 물으면 하위 하나, 바꾸는 것은 인덱스가 더 붙는다 */
     case HID_CMD_PROF:   return (p_rx[1] == HID_PROF_STATUS) ? 1 : 2;
+    case HID_CMD_STAT:   return 0;
 
     /* 하위 명령. 행정 읽기만 시작 인덱스가 더 붙는다 */
     case HID_CMD_CAL:    return (p_rx[1] == HID_CAL_STROKE) ? 2 : 1;
@@ -303,6 +305,39 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
      * ★ 저장은 플래시를 쓴다. keysCalSave() 가 2~3ms 걸리므로 ISR 에서 부르면
      *   안 된다. 그래서 요청만 세워 두고 메인 루프가 처리한다.
      */
+    /*
+     * 진단 통계. 읽기만 하므로 ISR 에서 해도 된다 — 플래시도 긴 계산도 없다.
+     */
+    case HID_CMD_STAT:
+    {
+      keys_stat_t k;
+      qmk_stat_t  q;
+      uint32_t    v[HID_STAT_CNT];
+
+      keysGetStat(&k);
+      qmkGetStat(&q);
+
+      v[0]  = k.scan_us;       v[1]  = k.scan_us_max;
+      v[2]  = k.scan_over;     v[3]  = k.scan_cnt;
+      v[4]  = k.timeout;       v[5]  = k.cal_ms;
+      v[6]  = k.calibrated;
+      v[7]  = q.task_us;       v[8]  = q.task_us_max;
+      v[9]  = q.task_us_avg;   v[10] = q.task_over;
+      v[11] = q.task_cnt;
+      v[12] = q.rgb_us_max;    v[13] = q.rgb_us_avg;
+
+      for (uint32_t i = 0; i < HID_STAT_CNT; i++)
+      {
+        uint32_t o = HID_STAT_OFF + i * 4;
+
+        p_tx[o + 0] = (uint8_t)(v[i] >>  0);
+        p_tx[o + 1] = (uint8_t)(v[i] >>  8);
+        p_tx[o + 2] = (uint8_t)(v[i] >> 16);
+        p_tx[o + 3] = (uint8_t)(v[i] >> 24);
+      }
+      break;
+    }
+
     case HID_CMD_PROF:
     {
       switch (p_rx[1])
