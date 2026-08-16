@@ -2,6 +2,17 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R3",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R3/wish60-he-V260816R3.bin",
+      "size": 130840,
+      "crc": "0x5BBDA66A",
+      "notes": [
+        "보정 행정을 같은 순간의 기준값으로 잰다 — 다 누른 키는 숫자가 멎는다"
+      ]
+    },
+    {
       "version": "V260816R2",
       "board": "WISH60-HE",
       "date": "2026-08-16",

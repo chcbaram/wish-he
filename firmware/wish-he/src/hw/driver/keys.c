@@ -600,6 +600,23 @@ static bool     report_off = false;
 static uint16_t cal_min_tmp[KEYS_MAX];
 
 /*
+ * 그 바닥값을 잰 **그 순간의 기준값**.
+ *
+ * ★ 저장할 때의 base 를 쓰면 안 된다.
+ *
+ *   base 는 살아 있는 값이다. 드리프트 보정이 512ms 마다 한 걸음씩 움직이고, 키를
+ *   뗄 때 큰 변화면 즉시 따라붙는다. 전 키를 도는 데 몇 분이 걸리므로, 저장 시점의
+ *   base 로 전 키의 행정을 계산하면 **처음에 누른 키일수록 다른 기준으로 재게 된다.**
+ *
+ *   그리고 도구가 보여주는 값도 같은 이유로 누르기를 끝낸 뒤에까지 계속 흔들렸다.
+ *   "다 됐는데 왜 숫자가 안 멈추나" 로 보인다.
+ *
+ *   바닥값을 갱신하는 그 순간의 base 를 같이 붙잡아 둔다. 위아래 두 점이 같은
+ *   순간의 것이 되어 행정이 정확해지고, 다 누른 키는 숫자가 멎는다.
+ */
+static uint16_t cal_max_tmp[KEYS_MAX];
+
+/*
  * 지정한 두 키코드가 동시에 눌려 있는가.
  *
  * 보정 중에는 리포트를 막아두므로 키 조합을 종료 신호로 쓸 수 있다. 터미널 없이
@@ -678,7 +695,11 @@ bool keysCalIsActive(void)
 
 void keysCalStart(void)
 {
-  for (uint32_t i = 0; i < KEYS_MAX; i++) cal_min_tmp[i] = 0xFFFF;
+  for (uint32_t i = 0; i < KEYS_MAX; i++)
+  {
+    cal_min_tmp[i] = 0xFFFF;
+    cal_max_tmp[i] = 0;
+  }
   cal_active = true;
 }
 
@@ -705,7 +726,11 @@ void keysCalCollect(void)
       if (keysIsPresent(st, c) == false) continue;
 
       v = raw[st][c];
-      if (v < cal_min_tmp[i]) cal_min_tmp[i] = v;
+      if (v < cal_min_tmp[i])
+      {
+        cal_min_tmp[i] = v;
+        cal_max_tmp[i] = base[st][c];   /* 같은 순간의 기준값을 짝지어 둔다 */
+      }
     }
   }
 }
@@ -767,7 +792,7 @@ uint32_t keysCalStrokes(uint32_t start, uint16_t *p_out, uint32_t max)
     if (keysIsPresent(st, c) == false) continue;
     if (cal_min_tmp[i] == 0xFFFF)      continue;
 
-    s = (int32_t)base[st][c] - (int32_t)cal_min_tmp[i];
+    s = (int32_t)cal_max_tmp[i] - (int32_t)cal_min_tmp[i];
     if (s >= KEYS_CAL_STROKE_MIN) p_out[n] = (uint16_t)s;
   }
   return n;
@@ -814,7 +839,7 @@ bool keysCalSave(uint32_t *p_done, uint32_t *p_skip)
 
       if (keysCalIsDone(st, c))
       {
-        cfg.key[i].cal_max = base[st][c];
+        cfg.key[i].cal_max = cal_max_tmp[i];
         cfg.key[i].cal_min = cal_min_tmp[i];
         cfg.key[i].flags  |= 0x01;
         done++;
@@ -841,7 +866,7 @@ static bool keysCalIsDone(uint16_t row, uint16_t col)
   if (i >= KEYS_MAX)                return false;
   if (cal_min_tmp[i] == 0xFFFF)     return false;
 
-  return ((int32_t)base[row][col] - (int32_t)cal_min_tmp[i]) >= KEYS_CAL_STROKE_MIN;
+  return ((int32_t)cal_max_tmp[i] - (int32_t)cal_min_tmp[i]) >= KEYS_CAL_STROKE_MIN;
 }
 static bool     drift_due    = false;
 
