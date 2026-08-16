@@ -2,6 +2,61 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R38",
+      "board": "WISH60-HE",
+      "date": "2026-08-17",
+      "bin": "V260816R38/wish60-he-V260816R38.bin",
+      "size": 140200,
+      "crc": "0x6A749F7E",
+      "notes": [
+        "키별 설정 쓰기의 에코 길이를 16으로 — VIA 가 틀린 응답으로 보던 것"
+      ]
+    },
+    {
+      "version": "V260816R37",
+      "board": "WISH60-HE",
+      "date": "2026-08-17",
+      "bin": "V260816R37/wish60-he-V260816R37.bin",
+      "size": 140200,
+      "crc": "0x29B57D45",
+      "notes": [
+        "일반형 전 행정을 VIA 값으로도 노출 — 키를 안 골라도 프로파일 값을 읽는다"
+      ]
+    },
+    {
+      "version": "V260816R36",
+      "board": "WISH60-HE",
+      "date": "2026-08-17",
+      "bin": "V260816R36/wish60-he-V260816R36.bin",
+      "size": 140064,
+      "crc": "0x743920C6",
+      "notes": [
+        "일반형 스위치를 GENERIC 한 칸으로 — 행정을 키별 슬라이더로"
+      ]
+    },
+    {
+      "version": "V260816R35",
+      "board": "WISH60-HE",
+      "date": "2026-08-17",
+      "bin": "V260816R35/wish60-he-V260816R35.bin",
+      "size": 140064,
+      "crc": "0xC5C325CC",
+      "notes": [
+        "v5 보정 되살리기 — 구조가 커져 못 읽던 보정값을 옮긴다"
+      ]
+    },
+    {
+      "version": "V260816R34",
+      "board": "WISH60-HE",
+      "date": "2026-08-17",
+      "bin": "V260816R34/wish60-he-V260816R34.bin",
+      "size": 139784,
+      "crc": "0x8981722D",
+      "notes": [
+        "일반형 스위치를 한 칸으로 — 행정을 키별로 직접 설정 (설정 v6, 기존 설정 초기화)"
+      ]
+    },
+    {
       "version": "V260816R33",
       "board": "WISH60-HE",
       "date": "2026-08-17",

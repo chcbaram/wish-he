@@ -164,7 +164,19 @@ extern "C" {
 #define HID_KEYCFG_GET            0x00
 #define HID_KEYCFG_SET            0x01
 #define HID_KEYCFG_OFF            3       /* 값이 시작하는 자리 */
-#define HID_KEYCFG_LEN            14      /* 쓰기가 싣는 값 바이트 수 */
+/*
+ * 쓰기가 싣는 값 바이트 수.
+ *
+ * ★ **값을 늘리면 여기도 같이 늘려야 한다.**
+ *
+ *   이 수는 응답 에코 길이를 정한다. VIA 는 응답이 요청과 같은지 대조하므로, 값만
+ *   늘리고 여기를 안 고치면 뒤 바이트가 0 으로 돌아가 "틀린 응답" 오류가 난다.
+ *   값은 제대로 적용되는데 화면에는 오류만 뜨므로 원인을 찾기 어렵다 — 실제로
+ *   전 행정(2B)을 붙이고 그렇게 됐다.
+ *
+ *   keys.c 의 KEYS_KEYCFG_WR_LEN 과 같은 수여야 한다.
+ */
+#define HID_KEYCFG_LEN            16      /* 쓰기가 싣는 값 바이트 수 */
 
 #define HID_CMD_INFO              0xC0    /* 보드 정보 */
 #define HID_INFO_VER_OFF          16      /* 버전 문자열 자리 (고정) */

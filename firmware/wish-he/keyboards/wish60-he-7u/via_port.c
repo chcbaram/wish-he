@@ -149,6 +149,17 @@ enum via_he_value
   val_he_bottom     = 6,   /* 바닥 보호     0.01mm */
   val_he_dead       = 7,   /* 데드존        0.01mm */
   val_he_rt_flags   = 8,   /* RT 켬 / 바닥 보호 / 연속 RT  8비트 */
+
+  /*
+   * 일반형(GENERIC)을 골랐을 때의 전 행정.
+   *
+   * ★ 이 값도 여기 있어야 한다.
+   *
+   *   키별 명령(0xC5)으로만 오갔더니 **쓰는 곳과 읽는 곳이 갈렸다.** 화면은 키를
+   *   안 고르면 프로파일 전역을 읽는데 거기에 이 값이 없어, 다시 연결하면 옛 값이
+   *   나온다. RT 플래그에서 똑같이 당한 적이 있다.
+   */
+  val_he_gen_travel = 9,   /* 일반형 전 행정  0.01mm */
 };
 
 
@@ -264,6 +275,7 @@ static void viaHeSet(uint8_t *p_val)
     case val_he_rt_release: keysSetRtReleaseUm(v);        break;
     case val_he_bottom:     keysSetBottomUm(v);           break;
     case val_he_dead:       keysSetDeadUm(v);             break;
+    case val_he_gen_travel: keysSetGenTravelUm(v);        break;
 
     /* 8비트짜리는 첫 바이트만 본다 */
     case val_he_switch:     keysSetSwitchType(p_val[1]);  break;
@@ -284,6 +296,7 @@ static void viaHeGet(uint8_t *p_val)
     case val_he_rt_release: v = keysGetRtReleaseUm(); break;
     case val_he_bottom:     v = keysGetBottomUm();    break;
     case val_he_dead:       v = keysGetDeadUm();      break;
+    case val_he_gen_travel: v = keysGetGenTravelUm(); break;
 
     case val_he_switch:     p_val[1] = keysGetSwitchType(); return;
     case val_he_rt_flags:   p_val[1] = keysGetRtFlags();    return;

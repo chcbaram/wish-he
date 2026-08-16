@@ -164,6 +164,8 @@ uint16_t keysGetRtReleaseUm(void);
 uint16_t keysGetBottomUm(void);
 uint16_t keysGetDeadUm(void);
 uint8_t  keysGetRtFlags(void);
+uint16_t keysGetGenTravelUm(void);   /* 일반형 전 행정 (프로파일 기본값) */
+void     keysSetGenTravelUm(uint16_t um);
 void     keysSetRtPressUm(uint16_t um);
 void     keysSetRtReleaseUm(uint16_t um);
 void     keysSetBottomUm(uint16_t um);
