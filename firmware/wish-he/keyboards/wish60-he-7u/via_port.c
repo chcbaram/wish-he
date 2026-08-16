@@ -163,8 +163,60 @@ enum via_he_value
 };
 
 
-/* 사용자 영역 배치 (EECONFIG_USER_DATABLOCK 기준 오프셋) */
-#define EE_USER_HOLD_OKP    ((void *)((uint32_t)EECONFIG_USER_DATABLOCK + 0))   /* 1B */
+/*
+ * ── 사용자 영역 512B 지도 ────────────────────────────────────────────────
+ *
+ * QMK 가 EECONFIG_USER_DATABLOCK 부터 512바이트를 우리 몫으로 비워 둔다. 그 안을
+ * **구조체로 선언한다** — 오프셋을 손으로 더하지 않는다.
+ *
+ * ★ 손으로 더하다 겹쳤다.
+ *
+ *   hold_okp 를 `+ 0`, 조명 프로파일 칸을 `+ p * 8` 로 잡았더니 0번 프로파일이
+ *   hold_okp 와 **같은 바이트**에 앉았다. 조명 첫 바이트가 `enable:2 | mode:6` 이라
+ *   양쪽으로 깨졌다 —
+ *
+ *     프로파일을 바꾸면  profRgbStore(0) 이 그 바이트에 enable|mode 를 쓴다.
+ *                        다음 부팅에 hold_okp 가 그 값을 읽고 `> 1` 이라 1 로
+ *                        잘린다 — 꺼 뒀어도 켜져서 돌아온다
+ *
+ *     탭홀드를 토글하면  0 이나 1 이 그 자리에 앉아 0번 프로파일의 조명 켬/모드가
+ *                        날아간다
+ *
+ *   총량만 보는 _Static_assert 는 이걸 못 잡는다. 512 안에서 둘이 같은 자리에
+ *   앉은 것은 검사 대상이 아니었다.
+ *
+ *   구조체로 선언하면 자리는 컴파일러가 잡는다. 새 항목은 여기에 필드로 더할 것 —
+ *   그러면 겹칠 수가 없다.
+ *
+ * ★ 조명 칸을 **먼저** 둔다.
+ *
+ *   이미 쓰고 있는 보드가 있다. 조명 네 칸은 지금도 `+0, +8, +16, +24` 라, 이대로
+ *   두면 프로파일별 조명이 그 자리에 그대로 남는다. 옮기는 것은 hold_okp 하나다.
+ *
+ *   반대로 조명을 밀었으면 네 칸이 한 칸씩 어긋나 1번 조명이 0번에 나타났을 것이다.
+ *
+ *   ★ 새 자리에 무엇이 있는지는 보드마다 다르다. 우리가 한 번도 쓴 적이 없는
+ *     바이트라 지운 상태(0xFF -> 1 로 잘림)일 줄 알았는데, 실제로 시험한 보드는
+ *     0 이었다 — 업데이트하고 나니 탭홀드가 꺼진 채로 올라왔다. 값이 살아 있는
+ *     것이 아니라 **한 번 다시 정해 주면 되는** 불리언 하나다.
+ */
+typedef struct PACKED
+{
+  rgb_config_t rgb[KEYMAP_PROFILE_COUNT];   /* 프로파일별 조명 8B x 4 */
+  uint8_t      hold_okp;                    /* 탭홀드 — 프로파일 공유 */
+} ee_user_t;
+
+#define EE_USER(field)                                                         \
+  ((void *)((uint32_t)EECONFIG_USER_DATABLOCK + offsetof(ee_user_t, field)))
+
+#define EE_USER_HOLD_OKP    EE_USER(hold_okp)
+
+_Static_assert(sizeof(ee_user_t) <= EECONFIG_USER_DATA_SIZE,
+               "사용자 영역 항목이 512B 를 넘는다");
+
+/* 조명 칸이 움직이면 이미 쓰는 보드의 프로파일별 조명이 한 칸씩 어긋난다 */
+_Static_assert(offsetof(ee_user_t, rgb) == 0,
+               "조명 칸은 맨 앞을 지켜야 한다 — 새 항목은 뒤에 더할 것");
 
 static uint8_t hold_okp = 1;
 
@@ -437,16 +489,16 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record)
  *   그래서 옮겨 담는다 — 바뀌기 전에 지금 값을 그 프로파일 칸에 내려놓고, 바뀐 뒤에
  *   새 칸에서 올려 RAM 을 다시 채운다.
  *
- * ★ 칸은 사용자 데이터 영역에 둔다.
+ * ★ 칸은 사용자 데이터 영역에 둔다 — 자리는 ee_user_t 가 잡는다.
  *
  *   EECONFIG_USER_DATABLOCK 512B 가 우리 몫으로 비어 있다. 여덟 바이트짜리 네 칸이면
  *   32B 라, EEPROM 을 넓히거나 주소를 옮길 것이 없다.
+ *
+ *   주소를 여기서 손으로 더하지 않는다. 그렇게 했다가 0번 칸이 hold_okp 와 같은
+ *   바이트에 앉았다 — 자세한 것은 ee_user_t 주석에 있다.
  */
 #define PROF_RGB_SIZE   ((uint16_t)sizeof(rgb_config_t))
-#define PROF_RGB_SLOT(p) ((void *)(EECONFIG_USER_DATABLOCK + (p) * PROF_RGB_SIZE))
-
-_Static_assert(KEYMAP_PROFILE_COUNT * sizeof(rgb_config_t) <= EECONFIG_USER_DATA_SIZE,
-               "조명 프로파일 칸이 사용자 데이터 영역을 넘는다");
+#define PROF_RGB_SLOT(p) EE_USER(rgb[p])
 
 /*
  * 지금 조명 설정을 그 프로파일 칸에 내려놓는다.
