@@ -246,18 +246,23 @@ def led_chain(geo):
     return out
 
 
-# 드롭다운에 쓸 이름. 매크로 이름에서 만들되, 어색한 것만 여기서 고친다.
+# 드롭다운에 쓸 이름.
+#
+# ★ 영어로 쓴다. 웹앱이 이 문자열을 그대로 i18n 키로 쓰기 때문이다
+#   (custom-control.tsx 의 `label: t(label)`). 여기 한글을 박으면 어느 언어로
+#   보든 한글만 나온다 — 실제로 그렇게 넣었다가 되돌렸다.
+#   번역은 via-he 의 src/locales/*.json 에 둔다.
 RGB_LABEL = {
-    "SOLID_COLOR":            "단색",
-    "GRADIENT_UP_DOWN":       "그라디언트 (위아래)",
-    "BREATHING":              "호흡",
-    "CYCLE_ALL":              "전체 순환",
-    "CYCLE_LEFT_RIGHT":       "좌우 순환",
-    "RAINBOW_MOVING_CHEVRON": "무지개 갈매기",
-    "PIXEL_FLOW":             "픽셀 플로우",
-    "HE_DEPTH":               "HE · 깊이 밝기",
-    "HE_DEPTH_HUE":           "HE · 깊이 색상",
-    "HE_DEPTH_RIPPLE":        "HE · 깊이 파문",
+    "SOLID_COLOR":            "Solid Color",
+    "GRADIENT_UP_DOWN":       "Gradient Up/Down",
+    "BREATHING":              "Breathing",
+    "CYCLE_ALL":              "Cycle All",
+    "CYCLE_LEFT_RIGHT":       "Cycle Left/Right",
+    "RAINBOW_MOVING_CHEVRON": "Rainbow Moving Chevron",
+    "PIXEL_FLOW":             "Pixel Flow",
+    "HE_DEPTH":               "HE Depth Brightness",
+    "HE_DEPTH_HUE":           "HE Depth Hue",
+    "HE_DEPTH_RIPPLE":        "HE Depth Ripple",
 }
 
 
@@ -277,7 +282,7 @@ def rgb_effect_list():
         return re.search(rf"^\s*#\s*define\s+ENABLE_RGB_MATRIX_{name}\b",
                          cfg, re.M) is not None
 
-    out = ["끔"]                      # RGB_MATRIX_NONE = 0
+    out = ["All Off"]                # RGB_MATRIX_NONE = 0
 
     # 기본 효과 — .inc 가 include 하는 순서가 곧 enum 순서다
     inc = (qmk / "quantum/rgb_matrix/animations/rgb_matrix_effects.inc").read_text()
@@ -486,19 +491,19 @@ def cmd_gen():
         eff = rgb_effect_list()
         if len(eff) > 1:
             menus = [{
-                "label": "조명",
+                "label": "Lighting",
                 "content": [{
-                    "label": "RGB 매트릭스",
+                    "label": "RGB Matrix",
                     "content": [
-                        {"label": "밝기", "type": "range", "options": [0, 255],
+                        {"label": "Brightness", "type": "range", "options": [0, 255],
                          "content": ["id_qmk_rgb_matrix_brightness", 3, 1]},
-                        {"label": "효과", "type": "dropdown", "options": eff,
+                        {"label": "Effect", "type": "dropdown", "options": eff,
                          "content": ["id_qmk_rgb_matrix_effect", 3, 2]},
                         {"showIf": "{id_qmk_rgb_matrix_effect} != 0",
-                         "label": "속도", "type": "range", "options": [0, 255],
+                         "label": "Effect Speed", "type": "range", "options": [0, 255],
                          "content": ["id_qmk_rgb_matrix_effect_speed", 3, 3]},
                         {"showIf": "{id_qmk_rgb_matrix_effect} != 0",
-                         "label": "색", "type": "color",
+                         "label": "Color", "type": "color",
                          "content": ["id_qmk_rgb_matrix_color", 3, 4]},
                     ],
                 }],
@@ -511,6 +516,17 @@ def cmd_gen():
                   + ", ".join(m if isinstance(m, str) else m.get("label", "?")
                               for m in menus))
     VIA_PATH.write_text(json.dumps(via, indent=2, ensure_ascii=False) + "\n")
+
+    """
+    ★ 이 파일은 웹앱까지 손으로 옮겨야 한다.
+
+      포크(via-he)는 local-kbs/ 에 **사본**을 두고 빌드 때 정의로 굽는다. 여기만
+      고치면 앱은 옛 정의를 그대로 본다 — 효과 목록을 늘려 놓고 앱에서 안 보여
+      한참 헤맸다. 자동으로 잇지 않는 것은 두 저장소가 따로 움직여서다.
+    """
+    print(f"     ↳ 웹앱에도 복사해야 한다:")
+    print(f"       cp {VIA_PATH.relative_to(ROOT)} <via-he>/local-kbs/{VIA_PATH.name}")
+    print(f"       (그다음 via-he 에서  bun scripts/add-local-kbs.ts)")
     print(f"생성: {VIA_PATH.relative_to(ROOT)}")
 
     # ── 펌웨어 헤더

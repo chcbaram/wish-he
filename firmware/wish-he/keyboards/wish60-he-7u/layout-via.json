@@ -152,13 +152,13 @@
   },
   "menus": [
     {
-      "label": "조명",
+      "label": "Lighting",
       "content": [
         {
-          "label": "RGB 매트릭스",
+          "label": "RGB Matrix",
           "content": [
             {
-              "label": "밝기",
+              "label": "Brightness",
               "type": "range",
               "options": [
                 0,
@@ -171,20 +171,20 @@
               ]
             },
             {
-              "label": "효과",
+              "label": "Effect",
               "type": "dropdown",
               "options": [
-                "끔",
-                "단색",
-                "그라디언트 (위아래)",
-                "호흡",
-                "전체 순환",
-                "좌우 순환",
-                "무지개 갈매기",
-                "픽셀 플로우",
-                "HE · 깊이 밝기",
-                "HE · 깊이 색상",
-                "HE · 깊이 파문"
+                "All Off",
+                "Solid Color",
+                "Gradient Up/Down",
+                "Breathing",
+                "Cycle All",
+                "Cycle Left/Right",
+                "Rainbow Moving Chevron",
+                "Pixel Flow",
+                "HE Depth Brightness",
+                "HE Depth Hue",
+                "HE Depth Ripple"
               ],
               "content": [
                 "id_qmk_rgb_matrix_effect",
@@ -194,7 +194,7 @@
             },
             {
               "showIf": "{id_qmk_rgb_matrix_effect} != 0",
-              "label": "속도",
+              "label": "Effect Speed",
               "type": "range",
               "options": [
                 0,
@@ -208,7 +208,7 @@
             },
             {
               "showIf": "{id_qmk_rgb_matrix_effect} != 0",
-              "label": "색",
+              "label": "Color",
               "type": "color",
               "content": [
                 "id_qmk_rgb_matrix_color",
@@ -224,7 +224,7 @@
       "label": "QMK",
       "content": [
         {
-          "label": "키 처리",
+          "label": "Key Handling",
           "content": [
             {
               "label": "Hold On Other Key Press",
@@ -236,7 +236,7 @@
               ]
             },
             {
-              "label": "NKRO (전체 키 롤오버)",
+              "label": "NKRO",
               "type": "toggle",
               "content": [
                 "id_qmk_nkro",

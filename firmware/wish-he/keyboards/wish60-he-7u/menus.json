@@ -15,14 +15,18 @@
     "이미 처리하므로 via_port.c 에 더할 것이 없다.",
     "",
     "조명 메뉴는 여기 없다 — gen_keymap.py 가 만든다. 효과 번호가 펌웨어 enum 을",
-    "그대로 따라야 하는데 손으로 적으면 효과를 켜고 끌 때마다 어긋난다."
+    "그대로 따라야 하는데 손으로 적으면 효과를 켜고 끌 때마다 어긋난다.",
+    "",
+    "★ 라벨은 영어로 쓴다. 웹앱이 이 문자열을 그대로 i18n 키로 쓴다",
+    "  (custom-control.tsx 의 t(props.label)). 한글을 박으면 어느 언어로 보든",
+    "  한글만 나온다. 번역은 via-he 의 src/locales/*.json 에 둔다."
   ],
   "menus": [
     {
       "label": "QMK",
       "content": [
         {
-          "label": "키 처리",
+          "label": "Key Handling",
           "content": [
             {
               "label": "Hold On Other Key Press",
@@ -34,7 +38,7 @@
               ]
             },
             {
-              "label": "NKRO (전체 키 롤오버)",
+              "label": "NKRO",
               "type": "toggle",
               "content": [
                 "id_qmk_nkro",
