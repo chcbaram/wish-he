@@ -50,7 +50,23 @@ set(QMK_SRC_FILES
   ${QMK_ROOT}/quantum/color.c
   ${QMK_ROOT}/quantum/process_keycode/process_grave_esc.c
   ${QMK_ROOT}/quantum/process_keycode/process_magic.c   # NK_TOGG
+
+  # RGB 매트릭스. 드라이버는 우리 것을 쓰므로 quantum 쪽 드라이버는 안 넣는다
+  # (rgb_matrix_drivers.c 는 IS31 계열용이다). port/rgb_matrix_port.c 가
+  # rgb_matrix_driver 를 채운다.
+  # lib8tion — FastLED 수학. rgb_matrix 효과와 via.c 가 scale8/sin8 로 쓴다.
+  # quantum 을 들여올 때 빠져 있어 상류(qmk_firmware)에서 같은 자리로 받아왔다.
+  ${QMK_ROOT}/lib/lib8tion/lib8tion.c
+
+  ${QMK_ROOT}/quantum/rgb_matrix/rgb_matrix.c
+  ${QMK_ROOT}/quantum/process_keycode/process_rgb.c
+  ${QMK_ROOT}/port/rgb_matrix_port.c
 )
+
+# 보드 배치에서 생성한 g_led_config
+if (EXISTS "${QMK_BOARD}/rgb_config.c")
+  list(APPEND QMK_SRC_FILES ${QMK_BOARD}/rgb_config.c)
+endif()
 
 # 보드별 VIA 커스텀 메뉴 처리 (있으면)
 if (EXISTS "${QMK_BOARD}/via_port.c")
@@ -74,6 +90,9 @@ set(QMK_INC_DIR
   ${QMK_ROOT}/quantum/send_string
   ${QMK_ROOT}/quantum/process_keycode
   ${QMK_ROOT}/quantum/sequencer
+  ${QMK_ROOT}/quantum/rgb_matrix
+  ${QMK_ROOT}/quantum/rgb_matrix/animations
+  ${QMK_ROOT}/quantum/rgb_matrix/animations/runners
   ${QMK_BOARD}
 )
 
@@ -86,6 +105,7 @@ add_compile_definitions(VIA_ENABLE)
 add_compile_definitions(RAW_ENABLE)
 add_compile_definitions(DYNAMIC_KEYMAP_ENABLE)
 add_compile_definitions(GRAVE_ESC_ENABLE)
+add_compile_definitions(RGB_MATRIX_ENABLE)
 
 # NKRO 와 확장키는 IF1 (hid_exk_if.c) 로 나간다
 add_compile_definitions(NKRO_ENABLE)

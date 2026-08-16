@@ -23,6 +23,14 @@ void     hidKbdEventHandler(uint8_t busid, uint8_t event);
 bool     hidKbdIsConfigured(void);
 
 /*
+ * 호스트가 잠들어 있는가 (USBD_EVENT_SUSPEND / RESUME).
+ *
+ * qmk.c 의 idle 처리가 이 값의 변화를 보고 suspend_power_down() 을 부른다.
+ * 상류 QMK 는 프로토콜 계층이 하는 일인데 우리 포트에는 그 계층이 없다.
+ */
+bool     hidKbdIsSuspended(void);
+
+/*
  * 보낼 리포트를 갱신한다. 실제 전송은 완료 콜백이 알아서 이어간다.
  *
  * 스캔 주기와 리포트 주기를 분리하기 위한 구조다 — 스캔이 빠르든 느리든

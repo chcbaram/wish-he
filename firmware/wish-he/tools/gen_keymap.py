@@ -39,6 +39,9 @@ ROWS, COLS = 8, 8
 KLE_PATH = VIA_PATH = HDR_PATH = None
 
 
+BOARD_DIR = None
+
+
 def set_board(name):
     """
     모델별 폴더 하나에 편집 원본과 생성물을 모은다.
@@ -51,6 +54,7 @@ def set_board(name):
     #include "layout.h" 한 줄이면 된다.
     """
     global KLE_PATH, VIA_PATH, HDR_PATH, KEYMAP_PATH, LAYOUT_PATH, LABELS_PATH, MENUS_PATH
+    global BOARD_DIR
     d = BOARDS / name
     if not d.is_dir():
         have = sorted(p.name for p in BOARDS.iterdir() if p.is_dir()) if BOARDS.is_dir() else []
@@ -62,6 +66,7 @@ def set_board(name):
     LAYOUT_PATH = d / "layout_qmk.h"    # QMK LAYOUT 매크로 (생성물)
     LABELS_PATH = d / "labels.json"     # 레이아웃 옵션 이름 (손으로 쓴다, 선택)
     MENUS_PATH  = d / "menus.json"      # VIA 커스텀 메뉴   (손으로 쓴다, 선택)
+    BOARD_DIR   = d
 
 ADDR_RE = re.compile(r"^(\d+),(\d+)$")
 
@@ -241,6 +246,132 @@ def led_chain(geo):
     return out
 
 
+# 드롭다운에 쓸 이름. 매크로 이름에서 만들되, 어색한 것만 여기서 고친다.
+RGB_LABEL = {
+    "SOLID_COLOR":            "단색",
+    "GRADIENT_UP_DOWN":       "그라디언트 (위아래)",
+    "BREATHING":              "호흡",
+    "CYCLE_ALL":              "전체 순환",
+    "CYCLE_LEFT_RIGHT":       "좌우 순환",
+    "RAINBOW_MOVING_CHEVRON": "무지개 갈매기",
+    "PIXEL_FLOW":             "픽셀 플로우",
+    "HE_DEPTH":               "HE · 깊이 밝기",
+    "HE_DEPTH_HUE":           "HE · 깊이 색상",
+    "HE_DEPTH_RIPPLE":        "HE · 깊이 파문",
+}
+
+
+def rgb_effect_list():
+    """
+    VIA 드롭다운에 넣을 효과 목록을 **펌웨어 enum 순서 그대로** 만든다.
+
+    ★ 손으로 적으면 안 된다. 순서는 rgb_matrix_effects.inc 의 나열 순서에
+      config.h 에서 켠 것만 남긴 결과이고, 커스텀 효과가 그 뒤에 붙는다.
+      효과를 하나 켜고 끄면 그 뒤의 번호가 전부 밀리는데, VIA 는 번호로만
+      말하므로 목록이 어긋나면 **엉뚱한 효과가 걸린다.**
+    """
+    qmk = ROOT / "src/ap/modules/qmk"
+    cfg = (BOARD_DIR / "config.h").read_text()
+
+    def enabled(name):
+        return re.search(rf"^\s*#\s*define\s+ENABLE_RGB_MATRIX_{name}\b",
+                         cfg, re.M) is not None
+
+    out = ["끔"]                      # RGB_MATRIX_NONE = 0
+
+    # 기본 효과 — .inc 가 include 하는 순서가 곧 enum 순서다
+    inc = (qmk / "quantum/rgb_matrix/animations/rgb_matrix_effects.inc").read_text()
+    for m in re.finditer(r'#include\s+"([a-z0-9_]+)_anim\.h"', inc):
+        anim = qmk / "quantum/rgb_matrix/animations" / f"{m.group(1)}_anim.h"
+        t = anim.read_text()
+        for e in re.finditer(r"RGB_MATRIX_EFFECT\(([A-Z0-9_]+)\)", t):
+            nm = e.group(1)
+            if nm == "SOLID_COLOR" or enabled(nm):
+                out.append(RGB_LABEL.get(nm, nm.replace("_", " ").title()))
+
+    # 커스텀 효과 — 기본 효과 뒤에 붙는다
+    kb = BOARD_DIR / "rgb_matrix_kb.inc"
+    if kb.exists():
+        t = kb.read_text()
+        for e in re.finditer(r"RGB_MATRIX_EFFECT\(([A-Z0-9_]+)\)", t):
+            nm = e.group(1)
+            if enabled(nm):
+                out.append(RGB_LABEL.get(nm, nm.replace("_", " ").title()))
+    return out
+
+
+def gen_rgb(kle, geo, leds, und):
+    """
+    QMK rgb_matrix 의 g_led_config 를 배치에서 만든다.
+
+    QMK 좌표계는 x 0~224, y 0~64 고정이다. 우리 배치는 1/4 키유닛이라 판 크기로
+    normalize 한다.
+
+    ★ matrix_co 는 (row, col) 하나에 LED 하나만 담는다. 스페이스바는 LED 가 셋인데
+      대표로 가운데를 넣는다 — 반응형 효과가 눌린 키를 찾는 용도라 그것으로 충분하고,
+      나머지 둘은 좌표만으로 효과에 참여한다.
+    """
+    xs = [(x, w) for x, y, w, h, _, _ in geo if x < 15.5]
+    bx = max(x + w for x, w in xs)
+    by = max(y + h for _, y, _, h, _, _ in geo)
+
+    def qx(v): return min(224, max(0, round(v * 224 / bx)))
+    def qy(v): return min(64,  max(0, round(v * 64 / by)))
+
+    # LED 인덱스별 물리 좌표 — 넓은 키는 폭을 나눠 퍼뜨린다
+    pos, i = [], 0
+    rows = {}
+    for x, y, w, h, s_, c_ in geo: rows.setdefault(round(y * 4), []).append((x, w, h, s_, c_))
+    for ri, ry in enumerate(sorted(rows)):
+        ks = sorted(rows[ry])
+        if ri % 2: ks = list(reversed(ks))
+        for x, w, h, s_, c_ in ks:
+            n = LED_WIDE_CNT if w >= LED_WIDE_U else 1
+            for k in range(n):
+                pos.append((x + w * (k + 0.5) / n, ry / 4 + h / 2))
+
+    co = [[255] * COLS for _ in range(ROWS)]
+    for i, (s_, c_) in enumerate(leds):
+        mid = LED_WIDE_CNT // 2
+        # 넓은 키는 가운데 것만 대표로 — 같은 (row,col) 이 연속으로 나오는 구간이다
+        if i and leds[i - 1] == (s_, c_):
+            if i + 1 < len(leds) and leds[i + 1] == (s_, c_):
+                co[s_][c_] = i          # 가운데
+            continue
+        if co[s_][c_] == 255:
+            co[s_][c_] = i
+
+    L = [
+        "/*",
+        " * rgb_config.c  —  자동 생성. 직접 고치지 말 것.",
+        " *   tools/gen_keymap.py 가 layout-kle.json 에서 만든다.",
+        " *",
+        " * g_led_config — QMK rgb_matrix 가 보는 배치.",
+        " *   matrix_co  (row, col) -> LED 인덱스, 없으면 NO_LED",
+        " *   point      LED 물리 좌표. x 0~224, y 0~64 로 normalize 한 값",
+        " *   flags      LED_FLAG_KEYLIGHT(4) = 키 밑, LED_FLAG_UNDERGLOW(2) = 언더글로우",
+        " */",
+        '#include "quantum.h"',
+        "",
+        "#ifdef RGB_MATRIX_ENABLE",
+        "",
+        "led_config_t g_led_config = {",
+        "  {   /* matrix_co */",
+    ]
+    for r in range(ROWS):
+        L.append("    { " + ", ".join("NO_LED" if v == 255 else f"{v:6d}" for v in co[r]) + " },")
+    L += ["  },", "  {   /* point */"]
+    for i in range(0, len(pos) + len(und), 6):
+        chunk = (pos + und)[i:i + 6]
+        L.append("    " + " ".join(f"{{{qx(x):3d},{qy(y):3d}}}," for x, y in chunk))
+    L += ["  },", "  {   /* flags */"]
+    fl = ["LED_FLAG_KEYLIGHT"] * len(pos) + ["LED_FLAG_UNDERGLOW"] * len(und)
+    for i in range(0, len(fl), 4):
+        L.append("    " + " ".join(f"{v}," for v in fl[i:i + 4]))
+    L += ["  },", "};", "", "#endif", ""]
+    return "\n".join(L)
+
+
 def addr_of(legend):
     s, c = legend.split("\n")[0].split(",")
     return int(s), int(c)
@@ -348,10 +479,37 @@ def cmd_gen():
     # 커스텀 메뉴 — 있으면 그대로 싣는다. VIA 가 이걸 보고 설정 UI 를 그린다.
     if MENUS_PATH.exists():
         menus = json.loads(MENUS_PATH.read_text()).get("menus")
+        if menus is None:
+            menus = []
+
+        # 조명 메뉴는 **생성한다.** 효과 번호가 펌웨어 enum 을 그대로 따라야 한다.
+        eff = rgb_effect_list()
+        if len(eff) > 1:
+            menus = [{
+                "label": "조명",
+                "content": [{
+                    "label": "RGB 매트릭스",
+                    "content": [
+                        {"label": "밝기", "type": "range", "options": [0, 255],
+                         "content": ["id_qmk_rgb_matrix_brightness", 3, 1]},
+                        {"label": "효과", "type": "dropdown", "options": eff,
+                         "content": ["id_qmk_rgb_matrix_effect", 3, 2]},
+                        {"showIf": "{id_qmk_rgb_matrix_effect} != 0",
+                         "label": "속도", "type": "range", "options": [0, 255],
+                         "content": ["id_qmk_rgb_matrix_effect_speed", 3, 3]},
+                        {"showIf": "{id_qmk_rgb_matrix_effect} != 0",
+                         "label": "색", "type": "color",
+                         "content": ["id_qmk_rgb_matrix_color", 3, 4]},
+                    ],
+                }],
+            }] + [m for m in menus if m != "qmk_rgb_matrix"]
+
         if menus:
             via["menus"] = menus
+            # 항목은 dict(직접 쓴 메뉴) 이거나 str(VIA 내장 메뉴 참조) 이다
             print(f"메뉴 {len(menus)}개 : "
-                  + ", ".join(m.get("label", "?") for m in menus))
+                  + ", ".join(m if isinstance(m, str) else m.get("label", "?")
+                              for m in menus))
     VIA_PATH.write_text(json.dumps(via, indent=2, ensure_ascii=False) + "\n")
     print(f"생성: {VIA_PATH.relative_to(ROOT)}")
 
@@ -488,6 +646,10 @@ def cmd_gen():
     HDR_PATH.parent.mkdir(parents=True, exist_ok=True)
     HDR_PATH.write_text("\n".join(L))
     print(f"생성: {HDR_PATH.relative_to(ROOT)}  ({len(keys)} 키)")
+
+    rgb_path = HDR_PATH.parent / "rgb_config.c"
+    rgb_path.write_text(gen_rgb(kle, geo, leds, und))
+    print(f"생성: {rgb_path.relative_to(ROOT)}  (LED {len(leds) + len(und)})")
 
     gen_qmk(kle, keys, names)
     dump_grid(kle)

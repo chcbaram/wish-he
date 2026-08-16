@@ -152,6 +152,75 @@
   },
   "menus": [
     {
+      "label": "조명",
+      "content": [
+        {
+          "label": "RGB 매트릭스",
+          "content": [
+            {
+              "label": "밝기",
+              "type": "range",
+              "options": [
+                0,
+                255
+              ],
+              "content": [
+                "id_qmk_rgb_matrix_brightness",
+                3,
+                1
+              ]
+            },
+            {
+              "label": "효과",
+              "type": "dropdown",
+              "options": [
+                "끔",
+                "단색",
+                "그라디언트 (위아래)",
+                "호흡",
+                "전체 순환",
+                "좌우 순환",
+                "무지개 갈매기",
+                "픽셀 플로우",
+                "HE · 깊이 밝기",
+                "HE · 깊이 색상",
+                "HE · 깊이 파문"
+              ],
+              "content": [
+                "id_qmk_rgb_matrix_effect",
+                3,
+                2
+              ]
+            },
+            {
+              "showIf": "{id_qmk_rgb_matrix_effect} != 0",
+              "label": "속도",
+              "type": "range",
+              "options": [
+                0,
+                255
+              ],
+              "content": [
+                "id_qmk_rgb_matrix_effect_speed",
+                3,
+                3
+              ]
+            },
+            {
+              "showIf": "{id_qmk_rgb_matrix_effect} != 0",
+              "label": "색",
+              "type": "color",
+              "content": [
+                "id_qmk_rgb_matrix_color",
+                3,
+                4
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
       "label": "QMK",
       "content": [
         {

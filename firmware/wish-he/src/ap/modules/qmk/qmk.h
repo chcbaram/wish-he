@@ -14,6 +14,7 @@ extern "C" {
 bool qmkCliInit(void);
 bool qmkInit(void);
 void qmkUpdate(void);
+void qmkRgbStat(uint32_t us);
 
 
 #ifdef __cplusplus

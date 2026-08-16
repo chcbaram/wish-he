@@ -687,7 +687,16 @@ void keyboard_task(void) {
         uint32_t        now_ms = timer_read32();
         if (now_ms != rgb_task_last_ms) {
             rgb_task_last_ms = now_ms;
+#if _USE_HW_PERF_STAT
+            /* [로컬] rgb_matrix_task 몫을 따로 센다 — keyboard_task 평균에 묻힌다 */
+            {
+                uint32_t t0 = micros();
+                rgb_matrix_task();
+                qmkRgbStat(micros() - t0);
+            }
+#else
             rgb_matrix_task();
+#endif
         }
     }
 #endif

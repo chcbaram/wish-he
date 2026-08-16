@@ -26,6 +26,9 @@
 #include "matrix.h"
 #include "dynamic_keymap.h"
 #include "keycode_config.h"
+#ifdef RGB_MATRIX_ENABLE
+#include "rgb_matrix.h"
+#endif
 #include <string.h>
 
 extern void viaPortInit(void);   /* keyboards/<보드>/via_port.c */
@@ -34,6 +37,7 @@ extern void viaPortInit(void);   /* keyboards/<보드>/via_port.c */
 extern host_driver_t usb_driver;   /* port/driver_usb.c */
 
 static void cliQmk(cli_args_t *args);
+static void qmkIdleTask(void);
 
 /*
  * keyboard_task() 한 바퀴 시간.
@@ -62,6 +66,22 @@ static volatile uint32_t task_us_cnt  = 0;
 static volatile uint32_t task_over_cnt = 0;
 
 /* 넘긴 순간이 언제였나 — 부팅 직후만인지 계속인지 가른다 */
+/* rgb_matrix_task 몫. keyboard_task 평균에 묻혀 안 보이므로 따로 센다. */
+static volatile uint32_t rgb_us_last = 0;
+static volatile uint32_t rgb_us_max  = 0;
+static volatile uint32_t rgb_us_sum  = 0;
+static volatile uint32_t rgb_us_cnt  = 0;
+static volatile uint32_t rgb_over_cnt = 0;
+
+void qmkRgbStat(uint32_t us)
+{
+  rgb_us_last = us;
+  if (us > rgb_us_max) rgb_us_max = us;
+  rgb_us_sum += us;
+  rgb_us_cnt++;
+  if (us > QMK_OVER_US) rgb_over_cnt++;
+}
+
 static volatile uint32_t task_over_ms_first = 0;
 static volatile uint32_t task_over_ms_last  = 0;
 
@@ -137,6 +157,30 @@ void qmkUpdate(void)
 #endif
 
   eeprom_task();
+  qmkIdleTask();
+}
+
+/*
+ * 서스펜드 들고 남.
+ *
+ * ★ 이 신호를 아무도 안 받고 있었다. 상류 QMK 는 프로토콜 계층(ChibiOS/LUFA)이
+ *   USB 서스펜드를 보고 suspend_power_down() 을 돌리는데, 우리 포트에는 그 계층이
+ *   없다. 그래서 호스트가 자도 LED 가 그대로 켜져 있었다.
+ *
+ *   rgb_matrix_set_suspend_state() 를 직접 부르지 않고 **QMK 표준 경로**를 탄다.
+ *   suspend_power_down_quantum() 이 백라이트·LED 표시등·오디오까지 같이 처리하므로
+ *   나중에 뭘 더 얹어도 자동으로 따라온다.
+ */
+static void qmkIdleTask(void)
+{
+  static bool prev = false;
+  bool        now  = hidKbdIsSuspended();
+
+  if (now == prev) return;
+  prev = now;
+
+  if (now) suspend_power_down();
+  else     suspend_wakeup_init();
 }
 
 
@@ -169,6 +213,11 @@ static void cliQmk(cli_args_t *args)
      * 매직 스왑이 켜져 있으면 매트릭스도 키맵도 맞는데 나가는 코드만 달라진다.
      * 한 번 당했으니 늘 보이게 둔다.
      */
+#if defined(RGB_MATRIX_ENABLE) && _USE_HW_PERF_STAT
+    cliPrintf("rgb_task      : last %d us, avg %d us, max %d us  (n=%d, %dus 초과 %d)\n",
+              (int)rgb_us_last, (int)(rgb_us_cnt ? rgb_us_sum / rgb_us_cnt : 0),
+              (int)rgb_us_max, (int)rgb_us_cnt, QMK_OVER_US, (int)rgb_over_cnt);
+#endif
     cliPrintf("keymap_config : 0x%04X  (nkro %d, 매직 스왑 %s)\n",
               (unsigned)keymap_config.raw, keymap_config.nkro,
               (keymap_config.raw & ~0x0080u) ? "★ 켜짐 — 비정상" : "없음");
@@ -257,6 +306,38 @@ static void cliQmk(cli_args_t *args)
     ret = true;
   }
 
+#ifdef RGB_MATRIX_ENABLE
+  /*
+   * RGB 켜고 끄기 · 모드 고르기.
+   *
+   * ★ 성능을 잴 때 이게 있어야 한다. 껐다 켠 **같은 자리에서** 루프 속도를 비교해야
+   *   RGB 몫이 나온다. rgb_matrix 없이 빌드한 펌웨어와 비교하면 다른 것도 같이
+   *   달라져 몫이 안 갈린다.
+   */
+  if (args->argc >= 1 && args->isStr(0, "rgb"))
+  {
+    if (args->argc == 2 && args->isStr(1, "on"))       rgb_matrix_enable_noeeprom();
+    else if (args->argc == 2 && args->isStr(1, "off")) rgb_matrix_disable_noeeprom();
+    else if (args->argc == 3 && args->isStr(1, "mode"))
+      rgb_matrix_mode_noeeprom((uint8_t)args->getData(2));
+    else if (args->argc == 3 && args->isStr(1, "val"))
+      rgb_matrix_sethsv_noeeprom(rgb_matrix_get_hue(), rgb_matrix_get_sat(),
+                                 (uint8_t)args->getData(2));
+    else if (args->argc != 1)
+    {
+      cliPrintf("qmk rgb on|off | mode <n> | val <0~%d>\n", RGB_MATRIX_MAXIMUM_BRIGHTNESS);
+      return;
+    }
+
+    cliPrintf("rgb    : %s\n", rgb_matrix_is_enabled() ? "켬" : "끔");
+    cliPrintf("mode   : %d / %d\n", rgb_matrix_get_mode(), RGB_MATRIX_EFFECT_MAX - 1);
+    cliPrintf("hsv    : %d %d %d  (밝기 상한 %d)\n",
+              rgb_matrix_get_hue(), rgb_matrix_get_sat(), rgb_matrix_get_val(),
+              RGB_MATRIX_MAXIMUM_BRIGHTNESS);
+    ret = true;
+  }
+#endif
+
   if (args->argc == 1 && args->isStr(0, "reset"))
   {
     task_us_last  = 0;
@@ -264,6 +345,7 @@ static void cliQmk(cli_args_t *args)
     task_us_sum   = 0;
     task_us_cnt   = 0;
     task_over_cnt = 0;
+    rgb_us_last = rgb_us_max = rgb_us_sum = rgb_us_cnt = rgb_over_cnt = 0;
     task_over_ms_first = 0;
     task_over_ms_last  = 0;
     cliPrintf("통계 리셋\n");
@@ -282,6 +364,9 @@ static void cliQmk(cli_args_t *args)
   {
     cliPrintf("qmk start\n");
     cliPrintf("qmk info\n");
+#ifdef RGB_MATRIX_ENABLE
+    cliPrintf("qmk rgb on|off | mode <n> | val <n>\n");
+#endif
     cliPrintf("qmk rate\n");
     cliPrintf("qmk log        USB 로 나가는 부트 리포트를 찍는다\n");
     cliPrintf("qmk reset\n");

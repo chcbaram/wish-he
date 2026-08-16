@@ -86,6 +86,7 @@ static volatile bool     is_configured = false;
 static volatile bool     is_tx_busy    = false;
 static volatile bool     is_pending    = false;   /* 아직 안 보낸 새 리포트가 있다 */
 static volatile uint32_t sent_cnt      = 0;
+static volatile bool     is_suspended  = false;
 
 static struct usbd_interface kbd_intf;
 
@@ -247,7 +248,23 @@ void hidKbdEventHandler(uint8_t busid, uint8_t event)
       is_tx_busy    = false;
       is_pending    = true;     /* 열거 직후 한 번은 현재 상태를 알린다 */
       sent_cnt      = 0;
+      is_suspended  = false;
       kbdArm();
+      break;
+
+    /*
+     * 호스트가 잠들었다.
+     *
+     * ★ 이 신호를 아무도 안 받고 있었다. 상류 QMK 는 프로토콜 계층(ChibiOS/LUFA)이
+     *   서스펜드를 보고 suspend_power_down() 을 돌리는데, 우리 포트에는 그 계층이
+     *   없다. 그래서 호스트가 자도 LED 가 그대로 켜져 있었다.
+     */
+    case USBD_EVENT_SUSPEND:
+      is_suspended = true;
+      break;
+
+    case USBD_EVENT_RESUME:
+      is_suspended = false;
       break;
 
     default:
@@ -274,6 +291,12 @@ bool hidKbdInit(void)
 bool hidKbdIsConfigured(void)
 {
   return is_configured;
+}
+
+/* 호스트가 잠들어 있는가. USB 규격상 서스펜드에서는 소비를 줄여야 한다. */
+bool hidKbdIsSuspended(void)
+{
+  return is_suspended;
 }
 
 uint32_t hidKbdGetSentCount(void)
