@@ -143,7 +143,8 @@ static uint32_t hidCmdArgLen(const uint8_t *p_rx)
     case HID_CMD_LAYOUT: return 1;   /* 시작 인덱스 */
     case HID_CMD_TRACK:  return 1;   /* on/off */
     case HID_CMD_SWITCH: return 1;   /* 인덱스 */
-    case HID_CMD_CAL:    return 1;   /* 하위 명령 */
+    /* 하위 명령. 행정 읽기만 시작 인덱스가 더 붙는다 */
+    case HID_CMD_CAL:    return (p_rx[1] == HID_CAL_STROKE) ? 2 : 1;
 
     case HID_CMD_KEYCFG:
       /* get: [하위, idx]   set: [하위, idx] + 값 14바이트 */
@@ -287,6 +288,27 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
           break;
 
         case HID_CAL_SAVE:   cal_save_req = true; break;
+
+        /*
+         * 진행 중인 행정. 상태 응답과 자리가 겹치므로 여기서 끝낸다.
+         *
+         *   IN [2] = 시작 인덱스   [3] = 개수   [4..] = LE16 값들
+         */
+        case HID_CAL_STROKE:
+        {
+          uint16_t v[HID_CAL_STROKE_MAX];
+          uint32_t n = keysCalStrokes(p_rx[2], v, HID_CAL_STROKE_MAX);
+
+          p_tx[2] = p_rx[2];
+          p_tx[3] = (uint8_t)n;
+          for (uint32_t i = 0; i < n; i++)
+          {
+            p_tx[HID_CAL_STROKE_OFF + i * 2 + 0] = (uint8_t)(v[i] & 0xFF);
+            p_tx[HID_CAL_STROKE_OFF + i * 2 + 1] = (uint8_t)(v[i] >> 8);
+          }
+          return true;
+        }
+
         default: break;                       /* 상태만 */
       }
 

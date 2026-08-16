@@ -57,6 +57,7 @@ bool     keysCalIsActive(void);
 uint32_t keysCalTotal(void);
 uint32_t keysCalDone(void);
 uint32_t keysCalBitmap(uint8_t *p_buf, uint32_t len);   /* 비트 i = 키 i 완료 */
+uint32_t keysCalStrokes(uint32_t start, uint16_t *p_out, uint32_t max);  /* 진행 중인 행정 */
 bool     keysCalSave(uint32_t *p_done, uint32_t *p_skip);
 
 /* 눌림 판정. row = MUX 스텝, col = ADC 채널 */

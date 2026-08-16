@@ -80,7 +80,17 @@ extern "C" {
 #define HID_CAL_START             1
 #define HID_CAL_SAVE              2
 #define HID_CAL_CANCEL            3
+#define HID_CAL_STROKE            4       /* 진행 중인 행정 읽기 — [2]=시작 인덱스 */
 #define HID_CAL_MAP_OFF           8
+
+/*
+ * 행정 응답의 값 자리와 한 프레임에 들어가는 개수.
+ *
+ * 64바이트에서 앞 4바이트(명령·하위·시작·개수)를 빼고 LE16 으로 채운다.
+ * 64키를 3프레임에 나눠 읽는다.
+ */
+#define HID_CAL_STROKE_OFF        4
+#define HID_CAL_STROKE_MAX        ((HID_EP_MPS - HID_CAL_STROKE_OFF) / 2)
 #define HID_KEYCFG_GET            0x00
 #define HID_KEYCFG_SET            0x01
 #define HID_KEYCFG_OFF            3       /* 값이 시작하는 자리 */

@@ -735,6 +735,44 @@ uint32_t keysCalDone(void)
   return n;
 }
 
+/*
+ * 지금까지 모인 행정을 키별로 준다 (카운트). 0 = 아직 못 잰 키.
+ *
+ * ★ 저장 전에도 읽을 수 있어야 한다.
+ *
+ *   보정 중에 도구가 keysGetKeyCfg 로 읽으면 **저장돼 있던 옛 값**이 나온다.
+ *   이번에 모으는 값은 저장할 때까지 cfg 에 들어가지 않기 때문이다. 누르는 대로
+ *   숫자가 갱신되는 것을 보여주려면 진행 중인 값을 따로 내줘야 한다.
+ *
+ *   완료 판정(keysCalIsDone)과 같은 식으로 잰다. 아직 기준에 못 미치는 키도
+ *   0 으로 준다 — 어중간한 값을 보여주면 다 눌린 것으로 오해한다.
+ *
+ * start 부터 max 개까지 채우고 채운 개수를 준다. 한 프레임에 다 안 들어가므로
+ * 도구가 나눠서 묻는다.
+ */
+uint32_t keysCalStrokes(uint32_t start, uint16_t *p_out, uint32_t max)
+{
+  uint32_t n = 0;
+
+  if (p_out == NULL) return 0;
+
+  for (uint32_t i = start; i < KEYS_MAX && n < max; i++, n++)
+  {
+    uint16_t st = (uint16_t)(i / KEYS_CH_MAX);
+    uint16_t c  = (uint16_t)(i % KEYS_CH_MAX);
+    int32_t  s;
+
+    p_out[n] = 0;
+
+    if (keysIsPresent(st, c) == false) continue;
+    if (cal_min_tmp[i] == 0xFFFF)      continue;
+
+    s = (int32_t)base[st][c] - (int32_t)cal_min_tmp[i];
+    if (s >= KEYS_CAL_STROKE_MIN) p_out[n] = (uint16_t)s;
+  }
+  return n;
+}
+
 /* 키별 완료 여부를 비트로 채운다. 비트 i = 키 인덱스 i. */
 uint32_t keysCalBitmap(uint8_t *p_buf, uint32_t len)
 {
