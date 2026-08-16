@@ -131,6 +131,7 @@ static uint32_t hidCmdArgLen(const uint8_t *p_rx)
   {
     case HID_CMD_LAYOUT: return 1;   /* 시작 인덱스 */
     case HID_CMD_TRACK:  return 1;   /* on/off */
+    case HID_CMD_SWITCH: return 1;   /* 인덱스 */
 
     case HID_CMD_KEYCFG:
       /* get: [하위, idx]   set: [하위, idx] + 값 14바이트 */
@@ -228,6 +229,36 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
       }
 
       p_tx[2] = (uint8_t)n;
+      break;
+    }
+
+    /*
+     * 스위치 종류표 — 한 번에 하나씩 준다.
+     *
+     * 항목이 열 개도 안 되므로 페이지를 나눌 것 없이 인덱스로 하나씩 묻는다.
+     * 이름이 문자열이라 한 프레임에 여러 개를 넣으면 자리 계산이 지저분해진다.
+     */
+    case HID_CMD_SWITCH:
+    {
+      uint32_t    idx   = p_rx[1];
+      uint32_t    total = keysGetSwitchCount();
+      const char *p_nm;
+      uint16_t    um;
+
+      p_tx[2] = (uint8_t)total;
+      p_tx[3] = (uint8_t)keysGetSwitchGenericCount();
+
+      if (idx >= total) break;          /* 범위 밖 — 개수만 알려주고 끝 */
+
+      um      = keysGetSwitchTravelUm(idx);
+      p_tx[4] = (uint8_t)(um & 0xFF);
+      p_tx[5] = (uint8_t)(um >> 8);
+
+      p_nm = keysGetSwitchName(idx);
+      for (uint32_t i = 0; i < (HID_EP_MPS - HID_SWITCH_NAME_OFF - 1) && p_nm[i]; i++)
+      {
+        p_tx[HID_SWITCH_NAME_OFF + i] = (uint8_t)p_nm[i];
+      }
       break;
     }
 

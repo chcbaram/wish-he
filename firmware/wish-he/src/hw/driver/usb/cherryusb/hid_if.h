@@ -48,6 +48,20 @@ extern "C" {
  *   idx 가 키 수를 넘으면 전 키에 적용한다 — "모두 선택"이 왕복 한 번이 된다.
  */
 #define HID_CMD_KEYCFG            0xC5
+#define HID_CMD_SWITCH            0xC6    /* 스위치 종류표 — 한 번에 하나 */
+
+/*
+ * 스위치 표 응답 배치.
+ *
+ *   OUT [1] = 인덱스
+ *   IN  [1] = 에코   [2] = 전체 개수   [3] = 일반형 개수
+ *       [4..5] = 전 행정 (LE16, 0.01mm)   [6..] = 이름 (NUL 종료)
+ *
+ * ★ 이 표를 도구에 박으면 안 된다. 스위치를 하나 추가하면 번호가 밀리는데
+ *   설정은 번호로 저장되므로, 어긋나면 사용자가 고른 것과 다른 스위치가 걸린다.
+ *   일반형 개수를 같이 주는 것은 도구가 목록에 구분선을 그으려고다.
+ */
+#define HID_SWITCH_NAME_OFF       6
 #define HID_KEYCFG_GET            0x00
 #define HID_KEYCFG_SET            0x01
 #define HID_KEYCFG_OFF            3       /* 값이 시작하는 자리 */
