@@ -2,6 +2,18 @@
   "board": "WISH60-HE",
   "firmwares": [
     {
+      "version": "V260816R18",
+      "board": "WISH60-HE",
+      "date": "2026-08-16",
+      "bin": "V260816R18/wish60-he-V260816R18.bin",
+      "size": 136752,
+      "crc": "0xBAED9A73",
+      "notes": [
+        "RGB 밝기 상한을 18에서 54로 — 유채색이 3배 밝아진다. 흰색 전 판은 리미터가 예전 밝기로 되돌린다",
+        "VIA 키맵에 Lighting 키코드 갈래가 나온다 (정의 파일에 keycodes 누락)"
+      ]
+    },
+    {
       "version": "V260816R17",
       "board": "WISH60-HE",
       "date": "2026-08-16",

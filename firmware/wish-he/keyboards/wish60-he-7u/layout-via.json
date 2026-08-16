@@ -150,6 +150,9 @@
       ]
     ]
   },
+  "keycodes": [
+    "qmk_rgb_matrix_keycodes"
+  ],
   "menus": [
     {
       "label": "Lighting",
