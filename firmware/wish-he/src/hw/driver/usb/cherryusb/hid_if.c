@@ -751,6 +751,9 @@ void hidIfUpdate(void)
   {
     raw_pending = false;
     if (raw_recv != NULL) raw_recv(raw_pending_buf, HID_EP_MPS);
+
+    /* 다 처리했으니 이제 다음 명령을 받는다 (위 OUT 콜백의 흐름제어) */
+    usbd_ep_start_read(HID_BUSID, HID_OUT_EP, rx_report, HID_EP_MPS);
   }
 
   if (pending_action == ACTION_NONE) return;
@@ -806,15 +809,29 @@ static void hidOutCallback(uint8_t busid, uint8_t ep, uint32_t nbytes)
         tx_pending_ms = millis();
       }
     }
-    else if (raw_recv != NULL && raw_pending == false)
+    else if (raw_recv != NULL)
     {
       /* 모르는 명령 — 메인 루프로 미룬다. VIA 는 EEPROM 을 건드린다 */
       memcpy(raw_pending_buf, rx_report, HID_EP_MPS);
       raw_pending = true;
+
+      /*
+       * ★ 여기서는 **재무장하지 않는다.** 흐름제어가 필요하다.
+       *
+       *   예전에는 `raw_pending` 이 이미 참이면 새 명령을 조용히 버리고 곧바로
+       *   재무장했다. 요청 하나에 응답 하나인 통로에서 요청이 사라지면, 그 뒤로
+       *   **모든 응답이 한 칸씩 밀린다** — 호스트는 A 의 응답을 B 의 것으로 읽고,
+       *   재시도로도 못 푼다. 실제로 굽고 난 뒤 "Receiving incorrect response" 가
+       *   끝없이 나고 화면이 로딩에서 멈췄다.
+       *
+       *   OUT 을 재무장하지 않으면 컨트롤러가 다음 OUT 을 NAK 한다. 호스트는
+       *   그냥 기다렸다 다시 보낸다 — USB 가 원래 그러라고 만든 장치다.
+       *   재무장은 hidIfUpdate() 가 그 명령을 처리한 뒤에 한다.
+       */
+      return;
     }
   }
 
-  /* 즉시 재무장 — 이 채널은 흐름제어가 필요 없다 */
   usbd_ep_start_read(busid, HID_OUT_EP, rx_report, HID_EP_MPS);
 }
 
