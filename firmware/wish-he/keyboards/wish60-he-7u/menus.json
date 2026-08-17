@@ -38,12 +38,235 @@
               ]
             },
             {
+              "label": "Tapping Term (default 200)",
+              "type": "range",
+              "options": [
+                50,
+                500
+              ],
+              "content": [
+                "id_qmk_tapping_term",
+                14,
+                2
+              ]
+            },
+            {
               "label": "NKRO",
               "type": "toggle",
               "content": [
                 "id_qmk_nkro",
                 15,
                 1
+              ]
+            },
+            {
+              "label": "Hold On Other Key Press and Tapping Term are saved per profile. NKRO applies to all profiles.",
+              "type": "label",
+              "content": [
+                "Note"
+              ]
+            }
+          ]
+        },
+        {
+          "label": "SOCD",
+          "content": [
+            {
+              "label": "Pair 1",
+              "type": "toggle",
+              "content": [
+                "id_socd1_enable",
+                10,
+                1
+              ]
+            },
+            {
+              "showIf": "{id_socd1_enable} == 1",
+              "label": "- Key 1",
+              "type": "keycode",
+              "content": [
+                "id_socd1_key1",
+                10,
+                2
+              ]
+            },
+            {
+              "showIf": "{id_socd1_enable} == 1",
+              "label": "- Key 2",
+              "type": "keycode",
+              "content": [
+                "id_socd1_key2",
+                10,
+                3
+              ]
+            },
+            {
+              "label": "Pair 2",
+              "type": "toggle",
+              "content": [
+                "id_socd2_enable",
+                11,
+                1
+              ]
+            },
+            {
+              "showIf": "{id_socd2_enable} == 1",
+              "label": "- Key 1",
+              "type": "keycode",
+              "content": [
+                "id_socd2_key1",
+                11,
+                2
+              ]
+            },
+            {
+              "showIf": "{id_socd2_enable} == 1",
+              "label": "- Key 2",
+              "type": "keycode",
+              "content": [
+                "id_socd2_key2",
+                11,
+                3
+              ]
+            },
+            {
+              "label": "Press both of a pair and only the newest one is sent. Saved per profile.",
+              "type": "label",
+              "content": [
+                "Note"
+              ]
+            }
+          ]
+        },
+        {
+          "label": "Hold To Repeat",
+          "content": [
+            {
+              "label": "Enable",
+              "type": "toggle",
+              "content": [
+                "id_ghost_enable",
+                12,
+                1
+              ]
+            },
+            {
+              "showIf": "{id_ghost_enable} == 1",
+              "label": "First Delay",
+              "type": "dropdown",
+              "options": [
+                [
+                  "50 ms",
+                  5
+                ],
+                [
+                  "100 ms",
+                  10
+                ],
+                [
+                  "150 ms",
+                  15
+                ],
+                [
+                  "200 ms",
+                  20
+                ],
+                [
+                  "250 ms",
+                  25
+                ],
+                [
+                  "300 ms",
+                  30
+                ]
+              ],
+              "content": [
+                "id_ghost_delay",
+                12,
+                2
+              ]
+            },
+            {
+              "showIf": "{id_ghost_enable} == 1",
+              "label": "Repeat Interval",
+              "type": "dropdown",
+              "options": [
+                [
+                  "50 ms",
+                  5
+                ],
+                [
+                  "60 ms",
+                  6
+                ],
+                [
+                  "70 ms",
+                  7
+                ],
+                [
+                  "80 ms",
+                  8
+                ],
+                [
+                  "90 ms",
+                  9
+                ],
+                [
+                  "100 ms",
+                  10
+                ],
+                [
+                  "110 ms",
+                  11
+                ],
+                [
+                  "120 ms",
+                  12
+                ],
+                [
+                  "130 ms",
+                  13
+                ],
+                [
+                  "140 ms",
+                  14
+                ],
+                [
+                  "150 ms",
+                  15
+                ],
+                [
+                  "160 ms",
+                  16
+                ],
+                [
+                  "170 ms",
+                  17
+                ],
+                [
+                  "180 ms",
+                  18
+                ],
+                [
+                  "190 ms",
+                  19
+                ],
+                [
+                  "200 ms",
+                  20
+                ]
+              ],
+              "content": [
+                "id_ghost_repeat",
+                12,
+                3
+              ]
+            },
+            {
+              "label": "Hold two or more keys and they are re-sent as if tapped. Saved per profile.",
+              "type": "label",
+              "content": [
+                "Note"
               ]
             }
           ]

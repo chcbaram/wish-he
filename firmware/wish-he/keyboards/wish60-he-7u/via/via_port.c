@@ -21,6 +21,11 @@
 #include "log.h"
 #include "dynamic_keymap.h"
 
+#include "ee_user.h"
+#include "taphold.h"
+#include "socd.h"
+#include "ghost.h"
+
 /*
  * ── 키맵도 프로파일마다 한 벌 ────────────────────────────────────────────
  *
@@ -40,6 +45,7 @@
 static uint8_t km_prof_override = 0xFF;   /* 0xFF = 지금 프로파일을 따른다 */
 
 static void keymapFillEmptyProfiles(void);
+static void userLoad(uint8_t p);
 static volatile bool rgb_reload_req;
 
 void via_init_kb(void)
@@ -112,15 +118,12 @@ static void keymapFillEmptyProfiles(void)
  */
 enum via_channel
 {
-  id_ch_qmk  = 14,
-  id_ch_nkro = 15,
-  id_ch_he   = 16,    /* 우리 것 */
-};
-
-/* 값 ID — QMK 헤더의 id_* 와 겹치지 않게 접두어를 다르게 둔다 */
-enum via_qmk_value
-{
-  val_hold_okp = 1,
+  id_ch_socd_a = 10,  /* SOCD 묶음 1 */
+  id_ch_socd_b = 11,  /* SOCD 묶음 2 */
+  id_ch_ghost  = 12,
+  id_ch_qmk    = 14,
+  id_ch_nkro   = 15,
+  id_ch_he     = 16,  /* 우리 것 */
 };
 
 enum via_nkro_value
@@ -197,48 +200,31 @@ enum via_he_value
  *     0 이었다 — 업데이트하고 나니 탭홀드가 꺼진 채로 올라왔다. 값이 살아 있는
  *     것이 아니라 **한 번 다시 정해 주면 되는** 불리언 하나다.
  */
-typedef struct PACKED
-{
-  rgb_config_t rgb[KEYMAP_PROFILE_COUNT];   /* 프로파일별 조명 8B x 4 */
-  uint8_t      hold_okp;                    /* 탭홀드 — 프로파일 공유 */
-} ee_user_t;
-
-#define EE_USER(field)                                                         \
-  ((void *)((uint32_t)EECONFIG_USER_DATABLOCK + offsetof(ee_user_t, field)))
-
-#define EE_USER_HOLD_OKP    EE_USER(hold_okp)
-
-_Static_assert(sizeof(ee_user_t) <= EECONFIG_USER_DATA_SIZE,
-               "사용자 영역 항목이 512B 를 넘는다");
-
-/* 조명 칸이 움직이면 이미 쓰는 보드의 프로파일별 조명이 한 칸씩 어긋난다 */
-_Static_assert(offsetof(ee_user_t, rgb) == 0,
-               "조명 칸은 맨 앞을 지켜야 한다 — 새 항목은 뒤에 더할 것");
-
-static uint8_t hold_okp = 1;
-
-
-
-
-/*---------------------------------------------------------------------------
- *  Hold On Other Key Press — 런타임 토글
- *
- *  탭홀드 키를 누른 채 다른 키를 치면 곧바로 홀드로 확정할지 정한다. 게임에서는
- *  켜는 쪽이, 타이핑에서는 끄는 쪽이 낫다고들 해서 사용자가 고르게 한다.
- *---------------------------------------------------------------------------*/
-bool get_hold_on_other_key_press(uint16_t keycode, keyrecord_t *record)
-{
-  (void)keycode;
-  (void)record;
-  return (hold_okp != 0);
-}
 
 void viaPortInit(void)
 {
   keymap_config_t clean;
 
-  hold_okp = eeprom_read_byte((const uint8_t *)EE_USER_HOLD_OKP);
-  if (hold_okp > 1) hold_okp = 1;      /* 지운 적 없는 EEPROM 은 0xFF 다 */
+  /* 매직이 맞을 때만 저장된 값을 믿는다 — 위 USER_MAGIC 주석 참고 */
+  if (eeprom_read_byte((const uint8_t *)EE_USER_MAGIC) != USER_MAGIC)
+  {
+    /*
+     * 네 벌을 **다** 채운다. 지금 프로파일만 채우면 나머지 셋이 0 인 채로 남아,
+     * 옮겨 가는 순간 탭텀 0 이라 모든 탭홀드가 즉시 홀드가 된다.
+     *
+     * 매직은 **맨 나중에** 쓴다 — 중간에 끊기면 다음 부팅에 다시 여기로 온다.
+     */
+    for (uint8_t p = 0; p < KEYMAP_PROFILE_COUNT; p++)
+    {
+      tapHoldSetDefault(p);
+      socdSetDefault(p);
+      ghostSetDefault(p);
+    }
+    eeprom_update_byte((uint8_t *)EE_USER_MAGIC, USER_MAGIC);
+    logPrintf("[  ] 사용자 설정 네 벌을 기본값으로 되돌림\n");
+  }
+
+  userLoad(keysProfGet());
 
   /*
    * 이미 망가진 EEPROM 을 되살린다.
@@ -261,6 +247,28 @@ void viaPortInit(void)
   }
 }
 
+/*
+ * EEPROM 을 통째로 지울 때 우리 기본값을 같이 심는다. (QMK 의 weak 를 덮어쓴다)
+ *
+ * 매직 검사만 있어도 다음 부팅에 되살아나기는 한다. 하지만 지운 직후부터 다시 켤
+ * 때까지 RAM 에 옛 값이 남아, 설정 도구에는 여전히 옛 값이 보인다. 여기서 같이 맞춰
+ * 두면 재부팅을 기다릴 것이 없다.
+ *
+ * ★ 512B 를 통째로 쓰는 함수다. ee_user_t 를 그대로 넘기면 안 된다 — 34B 짜리를
+ *   512B 로 읽어 간다. 영역 크기의 버퍼를 잡고 그 위에 얹는다.
+ */
+void eeconfig_init_user_datablock(void)
+{
+  uint8_t buf[EECONFIG_USER_DATA_SIZE] = {0};
+
+  /* 영역을 0 으로 밀고, 매직은 안 쓴다 — 다음 부팅에 viaPortInit 이 다시 채운다 */
+  eeconfig_update_user_datablock(buf);
+
+  tapHoldInit();
+  socdInit();
+  ghostInit();
+}
+
 
 
 
@@ -268,19 +276,8 @@ void viaPortInit(void)
  *  채널별 처리
  *---------------------------------------------------------------------------*/
 
-static void viaQmkSet(uint8_t *p_val)
-{
-  if (p_val[0] == val_hold_okp)
-  {
-    hold_okp = p_val[1] ? 1 : 0;
-    eeprom_update_byte((uint8_t *)EE_USER_HOLD_OKP, hold_okp);
-  }
-}
-
-static void viaQmkGet(uint8_t *p_val)
-{
-  if (p_val[0] == val_hold_okp) p_val[1] = hold_okp;
-}
+static void viaQmkSet(uint8_t *p_val) { tapHoldViaSet(p_val); }
+static void viaQmkGet(uint8_t *p_val) { tapHoldViaGet(p_val); }
 
 static void viaNkroSet(uint8_t *p_val)
 {
@@ -374,6 +371,9 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length)
         case id_ch_qmk:    viaQmkSet(p_val);    return;
         case id_ch_nkro:   viaNkroSet(p_val);   return;
         case id_ch_he:     viaHeSet(p_val);     return;
+        case id_ch_socd_a: socdViaSet(0, p_val); return;
+        case id_ch_socd_b: socdViaSet(1, p_val); return;
+        case id_ch_ghost:  ghostViaSet(p_val);   return;
         default: break;
       }
       break;
@@ -384,6 +384,9 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length)
         case id_ch_qmk:     viaQmkGet(p_val);     return;
         case id_ch_nkro:    viaNkroGet(p_val);    return;
         case id_ch_he:      viaHeGet(p_val);      return;
+        case id_ch_socd_a:  socdViaGet(0, p_val); return;
+        case id_ch_socd_b:  socdViaGet(1, p_val); return;
+        case id_ch_ghost:   ghostViaGet(p_val);   return;
         default: break;
       }
       break;
@@ -439,6 +442,13 @@ enum {
 
 bool process_record_kb(uint16_t keycode, keyrecord_t *record)
 {
+  /*
+   * ★ 프로파일 키코드보다 **먼저** 흘린다. 아래는 자기 키를 처리하고 false 로
+   *   끊는 갈래가 있어서, 뒤에 두면 그 경우에 안 불린다.
+   */
+  socdProcess(keycode, record);
+  ghostProcess(keycode, record);
+
   if (record->event.pressed)
   {
     switch (keycode)
@@ -558,10 +568,33 @@ static void profRgbApply(uint8_t p)
  */
 static volatile bool rgb_reload_req = false;
 
+/*
+ * 그 프로파일 칸에서 우리 설정을 통째로 올린다.
+ *
+ * ★ 조명과 달리 **내려놓는 짝이 없다.**
+ *
+ *   조명은 RAM(rgb_matrix_config)에 살고 VIA 가 우리를 안 거치고 바꾸므로, 떠나기
+ *   전에 지금 것을 칸에 내려놓아야 한다. 나머지는 우리 손을 반드시 거치고(설정 도구
+ *   명령) 그때 이미 제 칸에 썼다. 그래서 올리기만 하면 된다.
+ */
+static void userLoad(uint8_t p)
+{
+  tapHoldLoad(p);
+  socdLoad(p);
+  ghostLoad(p);
+}
+
 void keysProfChanged_kb(uint8_t idx)
 {
-  if (idx == 0xFF) profRgbStore(keysProfGet());
-  else             profRgbApply(idx);
+  if (idx == 0xFF)
+  {
+    profRgbStore(keysProfGet());
+  }
+  else
+  {
+    profRgbApply(idx);
+    userLoad(idx);
+  }
 }
 
 /* 메인 루프에서 부른다 (keys.c 의 keysCfgUpdate 가 이어서 부른다) */
@@ -571,4 +604,12 @@ void keysProfUpdate_kb(void)
 
   rgb_reload_req = false;
   rgb_matrix_reload_from_eeprom();
+}
+
+/*
+ * QMK 가 매 루프 부른다 — 연타의 박자를 여기서 센다.
+ */
+void housekeeping_task_kb(void)
+{
+  ghostUpdate();
 }

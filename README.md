@@ -28,7 +28,7 @@ QMK/VIA 를 얹어 키맵·매크로를 그대로 쓰면서 홀이펙트 기능�
 LED 83개를 CPU 없이 흘리기, 스캔을 62us 에서 25us 로, 거리를 곡선으로 제대로 재기 —
 **왜 그렇게 됐는지**가 코드보다 거기에 더 많다.
 
-→ **[firmware/wish-he/docs](firmware/wish-he/docs/README.md)** (16편)
+→ **[firmware/wish-he/docs](firmware/wish-he/docs/README.md)** (17편)
 
 ## 이 저장소
 
@@ -36,7 +36,7 @@ LED 83개를 CPU 없이 흘리기, 스캔을 62us 에서 25us 로, 거리를 곡
 firmware/wish-he/
   src/          펌웨어
   keyboards/    보드별 레이아웃·키맵
-  docs/         만드는 이야기 16편
+  docs/         만드는 이야기 17편
   tools/        굽기·측정·릴리즈 (dev.py, iap_update.py, make_release.py …)
 ```
 

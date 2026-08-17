@@ -72,15 +72,20 @@ set(QMK_SRC_FILES
   ${QMK_ROOT}/port/rgb_matrix_port.c
 )
 
-# 보드 배치에서 생성한 g_led_config
-if (EXISTS "${QMK_BOARD}/rgb_config.c")
-  list(APPEND QMK_SRC_FILES ${QMK_BOARD}/rgb_config.c)
-endif()
-
-# 보드별 VIA 커스텀 메뉴 처리 (있으면)
-if (EXISTS "${QMK_BOARD}/via_port.c")
-  list(APPEND QMK_SRC_FILES ${QMK_BOARD}/via_port.c)
-endif()
+# 보드별 코드
+#
+#   <보드>/         배치에서 생성한 g_led_config 등
+#   <보드>/via/     설정 도구에 붙는 것들 — 채널 라우팅, 탭홀드, SOCD, 연타 …
+#
+# ★ 파일을 하나씩 적지 않는다. 기능이 늘면 파일이 늘고, 그때마다 여기를 고치는 것을
+#   잊어 "왜 안 붙나" 로 헤매게 된다. keymap.c 는 keymap_introspection.c 가 직접
+#   #include 하므로 여기서 빼야 한다.
+file(GLOB QMK_BOARD_SRC CONFIGURE_DEPENDS
+  ${QMK_BOARD}/*.c
+  ${QMK_BOARD}/via/*.c
+)
+list(REMOVE_ITEM QMK_BOARD_SRC ${QMK_BOARD}/keymap.c)
+list(APPEND QMK_SRC_FILES ${QMK_BOARD_SRC})
 
 file(GLOB QMK_SRC_GLOB CONFIGURE_DEPENDS
   ${QMK_ROOT}/quantum/logging/*.c
@@ -103,6 +108,7 @@ set(QMK_INC_DIR
   ${QMK_ROOT}/quantum/rgb_matrix/animations
   ${QMK_ROOT}/quantum/rgb_matrix/animations/runners
   ${QMK_BOARD}
+  ${QMK_BOARD}/via
 )
 
 # QMK 가 보드를 찾는 세 진입점
@@ -127,3 +133,10 @@ add_compile_definitions(MOUSE_SHARED_EP)
 # Hold On Other Key Press 를 VIA 에서 켜고 끈다 -> per-key 콜백 경로가 필요하다
 add_compile_definitions(HOLD_ON_OTHER_KEY_PRESS)
 add_compile_definitions(HOLD_ON_OTHER_KEY_PRESS_PER_KEY)
+
+# 탭텀도 VIA 에서 조절한다 -> 마찬가지로 per-key 콜백 경로가 필요하다
+#
+# ★ QUICK_TAP_TERM_PER_KEY 를 같이 켠다. 안 켜면 퀵탭텀이 컴파일 때 TAPPING_TERM(200)
+#   으로 굳어(action_tapping.c:26), 사용자가 탭텀을 내렸을 때 `퀵탭텀 <= 탭텀` 이 깨진다.
+add_compile_definitions(TAPPING_TERM_PER_KEY)
+add_compile_definitions(QUICK_TAP_TERM_PER_KEY)

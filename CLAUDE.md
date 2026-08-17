@@ -9,7 +9,7 @@ WISH60 HE 홀이펙트 키보드 펌웨어. HPM5361(RISC-V, 400MHz) 위에서 �
 이어서 할 일의 **유일한 목록**이다. 대화 맥락은 압축되면 사라지므로 여기가 인계 지점이다.
 무언가를 끝내면 거기서 지우고, 알아낸 것은 거기에 남긴다.
 
-그 아래 16편이 "왜 그렇게 됐는지" 를 담고 있다. 코드를 고치기 전에 관련 편을 본다.
+그 아래 17편이 "왜 그렇게 됐는지" 를 담고 있다. 코드를 고치기 전에 관련 편을 본다.
 
 ## 짐작하지 말고 잰다
 
@@ -26,6 +26,20 @@ python3 tools/dev.py burst                # 왕복 시험 — 응답 소실·어
 짐작으로 고치다 여러 번 빗나갔고, 직접 재서 한 번에 갈린 적이 많다. **가설을 세웠으면
 고치기 전에 재서 확인한다.** 아니라고 나오면 그 사실도 문서에 남긴다 — 안 되는 길을
 적어 두는 것이 되는 길만큼 값지다.
+
+## 기능을 더하거나 고쳤으면 성능도 잰다
+
+**굽기 전에 한 번, 굽고 나서 한 번.** 예외 없다.
+
+```sh
+python3 tools/dev.py cli "qmk reset"    # 통계는 누적이다 — 재기 전에 0 으로
+python3 tools/dev.py cli "qmk info"     # keyboard_task / rgb_task 의 avg·max·초과
+python3 tools/dev.py cli "keys time"    # 스캔 단계별 시간
+```
+
+스캔이 25us 대에서 도는 실시간 루프다. 기능 하나가 조용히 태스크 시간을 늘려도 웹
+화면에서는 안 보이고, 한참 뒤 `scan over` 카운터로만 드러난다 — 그때는 무엇이 늘렸는지
+가릴 수가 없다. 전후 값을 나란히 적어 둔다.
 
 ## 손대면 안 되는 것
 
@@ -80,3 +94,15 @@ python3 tools/iap_update.py build/wish-he.bin      # USB 로. JTAG 불필요
 웹앱은 별도 저장소다 — [chcbaram/via-he](https://github.com/chcbaram/via-he),
 https://chcbaram.github.io/via-he/ 에서 돈다. 장치 쪽 프로토콜을 바꾸면 그쪽도 같이
 고쳐야 한다 (`0xC0`~ 대역이 우리 확장, `0xFF60` 이 VIA 채널).
+
+**메뉴(`keyboards/<보드>/menus.json`)를 고쳤으면** 정의를 다시 만들어 웹앱에 넘긴다.
+
+```sh
+python3 tools/gen_keymap.py --board <보드>            # layout-via.json 을 새로 만든다
+cp keyboards/<보드>/layout-via.json  ../../../via-he/local-kbs/<보드>.json
+cd ../../../via-he && bun scripts/add-local-kbs.ts    # 변환 + 등록 + 캐시 해시 갱신
+```
+
+★ **`public/definitions/v3/` 에 직접 복사하면 안 된다.** 편집용 원본과 앱이 읽는 형식이
+  다르다(`keymap` vs `keys`+`optionKeys`). 그냥 넣으면 키보드가 붙는 순간 화면이 죽는다.
+  자세한 것은 via-he 의 `CLAUDE.md` 에 있다.
