@@ -600,16 +600,17 @@ void keysProfChanged_kb(uint8_t idx)
 /* 메인 루프에서 부른다 (keys.c 의 keysCfgUpdate 가 이어서 부른다) */
 void keysProfUpdate_kb(void)
 {
+  /*
+   * ★ 연타의 박자를 여기서 센다.
+   *
+   *   처음에는 housekeeping_task_kb() 에 두었는데 **그 함수를 아무도 안 부른다** —
+   *   housekeeping_task() 자체가 이 트리에서 호출되는 곳이 없다. 그래서 연타가
+   *   한 번도 안 돌았다. 이 함수는 ap.c 의 메인 루프가 확실히 부른다.
+   */
+  ghostUpdate();
+
   if (rgb_reload_req == false) return;
 
   rgb_reload_req = false;
   rgb_matrix_reload_from_eeprom();
-}
-
-/*
- * QMK 가 매 루프 부른다 — 연타의 박자를 여기서 센다.
- */
-void housekeeping_task_kb(void)
-{
-  ghostUpdate();
 }

@@ -1,6 +1,7 @@
 #include "ghost.h"
 #include "socd.h"
 #include "ee_user.h"
+#include "action_util.h"
 
 static ghost_cfg_t ghost;
 
@@ -78,13 +79,30 @@ void ghostProcess(uint16_t keycode, keyrecord_t *record)
 static void ghostBeat(void)
 {
   report_keyboard_t saved;
+#ifdef NKRO_ENABLE
+  report_nkro_t saved_nkro;
+#endif
 
+  /*
+   * ★ **clear_keys() 앞에서** 저장해야 한다. 그 함수는 NKRO 를 알아서, NKRO 가
+   *   물려 있으면 nkro_report 를 비운다. 뒤에서 저장하면 이미 비워진 것을 담는다.
+   *
+   * ★ 두 벌을 다 저장한다. NKRO 일 때 키는 keyboard_report 가 아니라 nkro_report
+   *   로 나간다 (action_util.c 의 send_keyboard_report). 6KRO 것만 되돌리면 키가
+   *   비워진 채로 남아 연타가 멈춘다.
+   */
   memcpy(&saved, keyboard_report, sizeof(saved));
+#ifdef NKRO_ENABLE
+  memcpy(&saved_nkro, nkro_report, sizeof(saved_nkro));
+#endif
 
   clear_keys();
   send_keyboard_report();
 
   memcpy(keyboard_report, &saved, sizeof(saved));
+#ifdef NKRO_ENABLE
+  memcpy(nkro_report, &saved_nkro, sizeof(saved_nkro));
+#endif
   send_keyboard_report();
 }
 
