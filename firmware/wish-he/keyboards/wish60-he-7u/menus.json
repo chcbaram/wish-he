@@ -72,65 +72,65 @@
           "label": "SOCD",
           "content": [
             {
-              "label": "Pair 1",
+              "label": "KEY BIND 1",
               "type": "toggle",
               "content": [
-                "id_socd1_enable",
+                "id_qmk_kill_switch_enable_lr",
                 10,
                 1
               ]
             },
             {
-              "showIf": "{id_socd1_enable} == 1",
-              "label": "- Key 1",
+              "showIf": "{id_qmk_kill_switch_enable_lr} == 1",
+              "label": "- KEY 1",
               "type": "keycode",
               "content": [
-                "id_socd1_key1",
+                "id_qmk_kill_switch_left",
                 10,
                 2
               ]
             },
             {
-              "showIf": "{id_socd1_enable} == 1",
-              "label": "- Key 2",
+              "showIf": "{id_qmk_kill_switch_enable_lr} == 1",
+              "label": "- KEY 2",
               "type": "keycode",
               "content": [
-                "id_socd1_key2",
+                "id_qmk_kill_switch_right",
                 10,
                 3
               ]
             },
             {
-              "label": "Pair 2",
+              "label": "KEY BIND 2",
               "type": "toggle",
               "content": [
-                "id_socd2_enable",
+                "id_qmk_kill_switch_enable_ud",
                 11,
                 1
               ]
             },
             {
-              "showIf": "{id_socd2_enable} == 1",
-              "label": "- Key 1",
+              "showIf": "{id_qmk_kill_switch_enable_ud} == 1",
+              "label": "- KEY 1",
               "type": "keycode",
               "content": [
-                "id_socd2_key1",
+                "id_qmk_kill_switch_up",
                 11,
                 2
               ]
             },
             {
-              "showIf": "{id_socd2_enable} == 1",
-              "label": "- Key 2",
+              "showIf": "{id_qmk_kill_switch_enable_ud} == 1",
+              "label": "- KEY 2",
               "type": "keycode",
               "content": [
-                "id_socd2_key2",
+                "id_qmk_kill_switch_down",
                 11,
                 3
               ]
             },
             {
-              "label": "Press both of a pair and only the newest one is sent. Saved per profile.",
+              "label": "Press both of a bind and only the newest one is sent. Saved per profile.",
               "type": "label",
               "content": [
                 "Note"
@@ -139,20 +139,20 @@
           ]
         },
         {
-          "label": "Hold To Repeat",
+          "label": "Anti-Ghosting",
           "content": [
             {
               "label": "Enable",
               "type": "toggle",
               "content": [
-                "id_ghost_enable",
+                "id_qmk_kkuk_enable",
                 12,
                 1
               ]
             },
             {
-              "showIf": "{id_ghost_enable} == 1",
-              "label": "First Delay",
+              "showIf": "{id_qmk_kkuk_enable} == 1",
+              "label": "First Delay Time",
               "type": "dropdown",
               "options": [
                 [
@@ -181,14 +181,14 @@
                 ]
               ],
               "content": [
-                "id_ghost_delay",
+                "id_qmk_kkuk_delay_time",
                 12,
                 2
               ]
             },
             {
-              "showIf": "{id_ghost_enable} == 1",
-              "label": "Repeat Interval",
+              "showIf": "{id_qmk_kkuk_enable} == 1",
+              "label": "Repeat Time",
               "type": "dropdown",
               "options": [
                 [
@@ -216,48 +216,12 @@
                   10
                 ],
                 [
-                  "110 ms",
-                  11
-                ],
-                [
-                  "120 ms",
-                  12
-                ],
-                [
-                  "130 ms",
-                  13
-                ],
-                [
-                  "140 ms",
-                  14
-                ],
-                [
-                  "150 ms",
-                  15
-                ],
-                [
-                  "160 ms",
-                  16
-                ],
-                [
-                  "170 ms",
-                  17
-                ],
-                [
-                  "180 ms",
-                  18
-                ],
-                [
-                  "190 ms",
-                  19
-                ],
-                [
                   "200 ms",
                   20
                 ]
               ],
               "content": [
-                "id_ghost_repeat",
+                "id_qmk_kkuk_repeat_time",
                 12,
                 3
               ]
