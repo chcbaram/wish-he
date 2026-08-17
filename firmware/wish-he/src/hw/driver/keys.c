@@ -1,0 +1,5001 @@
+/*
+ * keys.c  —  홀이펙트 키 스캔 (ADC 시퀀스 + 아날로그 MUX)
+ *
+ * 64키를 8채널 x 8스텝으로 읽는다. ADC0/ADC1 이 각각 4채널을 동시에 훑고,
+ * 3비트 MUX 주소(PY00~PY02)를 8번 돌려 스텝을 바꾼다.
+ *
+ *   for step in 0..7:
+ *       DO[PY].VALUE = mux_addr[step]        주소 쓰기
+ *       세틀링 대기
+ *       ADC0 / ADC1 시퀀스 SW 트리거
+ *       완료 대기 (ISR 이 세우는 플래그를 스핀)
+ *       DO[PY].VALUE = mux_addr[step + 1]    ★ 다음 주소를 결과 읽기 "전에"
+ *       결과 버퍼에서 8채널 읽기
+ *
+ * 마지막 두 줄의 순서가 핵심이다. 다음 스텝의 세틀링이 이번 스텝의 결과 처리와
+ * 겹쳐서 공짜가 된다. 그래서 주소 테이블에 되돌이용 원소가 하나 더 붙는다.
+ *
+ * ★ 시퀀스 DMA 는 HDMA 채널을 쓰지 않는다. ADC 가 자체 AHB 라이터로 직접 메모리에
+ *   쓰므로 hw_def.h 의 DMA 채널 배분과 무관하다.
+ */
+
+#include "keys.h"
+
+
+#ifdef _USE_HW_KEYS
+
+#include "cli.h"
+#include "hpm_adc16_drv.h"
+#include "hpm_gpio_drv.h"
+#include "hpm_clock_drv.h"
+#include "hpm_interrupt.h"
+#include "hpm_soc_feature.h"
+
+/* keyboards/<모델>/layout.h — tools/gen_keymap.py 가 KLE 에서 생성한다 */
+#include "layout.h"
+#include "ws2812.h"
+#include "flash.h"
+#include "hpm_crc32.h"
+
+
+#define KEYS_SEQ_LEN        KEYS_CH_MAX_PER_ADC   /* ADC 하나가 훑는 채널 수 */
+
+/*
+ * MUX 주소 순서 — 그레이 코드.
+ *
+ * 스텝당 1비트만 바뀌어 인접 채널 크로스토크가 적다. 9번째 원소는 마지막 스텝에서
+ * "다음 주소"를 미리 쓰기 위한 되돌이값이다 (0번 스텝 주소와 같아야 한다).
+ */
+static const uint8_t mux_addr[KEYS_STEP_MAX + 1] =
+{
+  6, 7, 5, 4, 0, 1, 3, 2,   6
+};
+
+/*
+ * ADC 시퀀스 채널.
+ *
+ * ★ 채널 번호는 패드 번호와 다르다. PB00~PB07 -> ch8~ch15, PB08~PB15 -> ch0~ch7 로
+ *   8만큼 돌아가 있다. 순서도 오름차순이 아니므로 이 배열 그대로 써야 한다.
+ */
+static const uint8_t adc0_seq_ch[KEYS_SEQ_LEN] = { 15, 14, 12,  8 };  /* PB07 PB06 PB04 PB00 */
+static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB05 PB01 PB02 */
+
+/* 아날로그로 잡을 패드. 실제 등록은 8개지만 16개 전부를 잡아 둔다. */
+#define KEYS_ANALOG_PAD_FIRST   IOC_PAD_PB00
+#define KEYS_ANALOG_PAD_CNT     16
+
+/* MUX 주소 핀 — PY00~PY03. 주소는 3비트지만 4번째 핀도 출력으로 고정한다. */
+#define KEYS_MUX_GPIO_PORT      GPIO_DO_GPIOY
+#define KEYS_MUX_PAD_FIRST      IOC_PAD_PY00
+#define KEYS_MUX_PIN_CNT        4
+#define KEYS_MUX_PIN_MASK       ((1U << KEYS_MUX_PIN_CNT) - 1U)
+
+/* PIOC 의 ALT3 = "패드를 SoC 쪽에 넘긴다". PIOC 를 안 건드리면 IOC 설정이 먹지 않는다. */
+#define KEYS_PIOC_SOC_CTRL      IOC_PAD_FUNC_CTL_ALT_SELECT_SET(3)
+
+/*
+ * 세틀링 — 주소를 쓴 뒤 아날로그가 안정될 때까지.
+ *
+ * 홀 센서 자체의 응답은 0.1us 미만이고 MUX 스위칭도 그 수준이라 매우 짧다.
+ * 400MHz 에서 16 사이클 = 40ns.
+ */
+#define KEYS_SETTLE_CYCLES      16
+
+/* 완료를 기다리다 이만큼 돌면 포기한다. 스핀이 영원히 걸리는 것만 막으면 된다. */
+#define KEYS_WAIT_LIMIT         100000
+
+
+/*
+ * ★ 잡음 출처를 2026-08-17 에 실측으로 갈랐다. **평균으로는 못 잡는다.**
+ *
+ *   `keys noise 60000` 을 조건을 바꿔 가며 다섯 번 (매번 170만 회 스캔) —
+ *
+ *     조건                        전 행정 대비 p-p
+ *     기준 (조리개 5, 누적 3)          1.87 %
+ *     ADC 조리개 5 -> 16               1.87 %   변화 없음, 스캔만 29->39us
+ *     조명 드라이브 0mA                 1.87 %   변화 없음
+ *     누적 3 -> 6                      1.67 %
+ *     누적 3 -> 12                     1.41 %
+ *
+ *   ★ 백색 잡음이면 누적 N 배에 1/sqrt(N) 로 줄어야 한다 (3->12 면 1.87 -> 0.94).
+ *     실제 기울기는 **N^-0.2** 다. 즉 절반으로 줄이려면 N 을 **32배(=96)** 해야 하고
+ *     그러면 군지연이 1.4ms 다. 쓸 수 없다.
+ *
+ *   ★ 그래서 남는 결론 — 우리 잡음은 **저주파(1/f)** 가 지배한다.
+ *     ADC 조리개도 아니고 조명 전류도 아니다.
+ *     **소프트웨어 필터를 더 얹는 것은 답이 아니다.**
+ *
+ *   ★ 그리고 **셀마다 독립이다.** 같은 날 한 번 더 갈랐다 —
+ *
+ *     150초 270프레임에서 64셀을 같이 받아, 프레임마다 전체 중앙값을 빼 봤다.
+ *
+ *       그냥             셀별 p-p 평균 17.8
+ *       중앙값 뺀 뒤                  17.9   (-1%, 안 준다)
+ *       같이 움직이는 성분 자체         3.0
+ *
+ *     즉 기준전압·전원 같은 **공통 성분이 없다.** 기준셀이나 중앙값을 빼는
+ *     "군지연 0" 짜리 공짜 트릭은 안 통한다. 남는 것은 센서 자체다 —
+ *     **펌웨어로는 이 바닥을 못 내린다.**
+ *
+ *     (단 CLI 로 초당 2번 받은 것이라 느린 성분만 봤다. kHz 대 공통 잡음까지
+ *      배제하려면 여기서 스캔 속도로 셀 간 상관을 계산해야 한다.)
+ *
+ * 누적 개수 — 표본 몇 개를 더해서 하나로 쓰나.
+ *
+ * ★ 왜 더하나. 잡음이 sqrt(N) 배로만 커지기 때문이다.
+ *
+ *   표본 3개를 더하면 신호는 3배, 잡음은 sqrt(3)=1.73 배가 된다.
+ *
+ *   ★ 실측은 1.31 배였다 — 이론의 1.73 배가 아니다.
+ *
+ *     누적 1개   p-p 평균 17,  눈금 0~4095    스트로크 836  대비 2.03 %
+ *     누적 3개   p-p 평균 39,  눈금 0~12285   스트로크 2508 대비 1.55 %
+ *
+ *   생값 비율이 39/17 = 2.29 다. 완전 무상관이면 1.73, 완전 상관이면 3.0 이므로
+ *   연속 스캔 사이에 상관계수 0.45 쯤이 남아 있다. 5편에서 잡은 센서 상관시간
+ *   10.6us 에 스캔 간격 28us 면 상관이 0.07 이어야 하니, 이 잔여분은 센서 열잡음이
+ *   아니라 전원·기준전압·MUX 쪽의 더 느린 요동이다. 누적으로는 못 지운다.
+ *
+ *   그래서 개수를 5, 7 로 늘려도 비례해서 좋아지지 않는다. 더 필요하면 상관 성분
+ *   자체를 봐야 한다.
+ *
+ *   그래도 남길 값어치는 있다. 래피드 트리거가 0.1mm 를 다루는데
+ *
+ *     잡음 sigma (p-p/6)   0.0135mm  ->  0.0102mm     여유 7.4 sigma -> 10 sigma
+ *     데드밴드 / 스트로크     0.84 %   ->   0.48 %
+ *
+ *   방향 반전 판정이 잡음을 따라갈 확률이 그만큼 준다.
+ *
+ * ★ 블록이 아니라 이동합이다.
+ *
+ *   3개를 모아 한 번씩 판정하면 판정 주기가 1/3 로 떨어진다. 스캔이 35kHz 라
+ *   최근 3개의 합을 매 스캔 갱신해도 부담이 없으므로, 판정 횟수를 잃지 않고 같은
+ *   sqrt(3) 을 얻는다.
+ *
+ *     블록    [1 2 3] 판정   [4 5 6] 판정
+ *     이동합  [1 2 3] 판정 / [2 3 4] 판정 / [3 4 5] 판정 ...
+ *
+ *   대가는 이동평균의 군지연 1샘플 = 28us 다. 6편에서 IIR 을 버린 이유(63% 에
+ *   152us, 90% 에 342us)와는 자릿수가 다르다.
+ */
+#define KEYS_ACC_CNT            3
+
+/*
+ * 부팅 씨앗값 — 두 단계다. 성격이 달라서 나눠 놓았다.
+ *
+ *   버리는 스캔 : 전원 인가 직후 ADC 레퍼런스·센서 바이어스가 자리잡는 시간.
+ *                 평균에 넣으면 기준값이 오염되므로 그냥 버린다.
+ *   평균낼 스캔 : 노이즈 감쇠. 샘플 수의 제곱근에 비례한다 (1024회 = 32배).
+ *
+ * ★ keysInit() 은 usbInit() 앞에 있다. 여기 쓰는 시간이 그대로 USB 열거 지연이 된다.
+ *   38us 스캔 기준으로 1024+128 회면 약 44ms — 체감되지 않는다.
+ *   더 길게 잡는 구현도 있지만, 우리는 러닝 최대값 추적이 계속 보정하므로
+ *   씨앗값의 정밀도에 그만큼 기대지 않는다. 더 올리려면 이 숫자만 키우면 된다.
+ */
+#define KEYS_CAL_DISCARD        128
+#define KEYS_CAL_SAMPLES        1024
+
+/*
+ * keys map 의 보고 임계값.
+ *
+ * 이 명령은 매 프레임 64셀 중 최댓값을 고르므로 사실상 노이즈의 극단을 본다.
+ * 실측 노이즈 바닥이 약 300 이라 300 으로 두면 쉬지 않고 찍힌다. 넉넉히 띄운다.
+ */
+#define KEYS_MAP_REPORT_MIN     75
+
+/* keys noise 측정 시간 */
+#define KEYS_NOISE_MS           3000
+
+/*
+ * 보정 — 이 깊이까지 눌러야 "끝까지 눌렀다" 로 본다.
+ *
+ * 실측 풀 스트로크가 약 838 이라 그 60% 다. 너무 높게 잡으면 사용자가 아무리 눌러도
+ * 안 끝나고, 낮게 잡으면 덜 눌린 값이 바닥값으로 저장된다.
+ */
+#define KEYS_CAL_STROKE_MIN     (500 * KEYS_ACC_CNT)
+
+/*
+ * 보정 종료 제스처. 터미널 없이 키보드만 있을 때도 끝낼 수 있어야 한다.
+ * 보정 중에는 리포트를 막아두므로 조합이 호스트로 새어나가지 않는다.
+ *
+ * ★ 저장과 취소를 갈라야 한다. 조합을 누르는 순간 그 키들도 보정되므로, 하나로
+ *   묶어두면 "취소하려고 눌렀는데 두 키짜리 보정이 저장되는" 일이 생긴다.
+ */
+#define KEYS_MOD_KC             0xE0   /* Left Ctrl */
+#define KEYS_CANCEL_KC          0x29   /* Esc   — 취소 (저장 안 함) */
+#define KEYS_SAVE_KC            0x28   /* Enter — 여기까지 저장하고 끝 */
+
+/*
+ * keys bar — 눌린 깊이를 가로 막대로.
+ *
+ * 스트로크가 실측 838 이라 상한을 900 으로 두면 끝까지 눌러도 막대가 넘치지 않는다.
+ * 새 슬롯을 잡는 하한은 노이즈(±6)보다 충분히 커야 손 뗀 셀이 끼어들지 않는다.
+ */
+#define KEYS_BAR_SLOTS          6
+#define KEYS_BAR_W              40
+#define KEYS_BAR_FULL           (900 * KEYS_ACC_CNT)
+#define KEYS_BAR_MIN            (30 * KEYS_ACC_CNT)
+
+/* keys layout — 화면에 그릴 때 1 키유닛을 몇 칸으로 볼 것인가 */
+#define KEYS_GEO_UNIT           4       /* layout.h 좌표 단위 (1키 = 4) */
+#define KEYS_VIEW_UNIT          3       /* 화면 칸 */
+#define KEYS_VIEW_W             72
+
+/*
+ * ★ 이 아래 숫자는 전부 12비트 영역이다 (원시 16비트를 >>4 한 값).
+ *
+ *   왜 버리는가 — 실측 노이즈 p-p 가 16비트로 약 200 이다. 하위 4비트(16)는 그보다
+ *   한참 작아서 정보가 없다. 12비트로 내리면 테이블이 절반이 되고 상수가 읽히며,
+ *   8편 EEPROM 저장량도 절반이 된다.
+ *
+ * 실측 (12비트 환산)
+ *   기준값(무압)      약 2500 ~ 2880    (셀 간 편차 약 360)
+ *   풀 스트로크       약 838            (누르면 값이 내려간다)
+ *   무압 노이즈 p-p   약 12   (= ±6)
+ *
+ * 스트로크의 30% 에서 눌림, 19% 에서 해제. 둘 사이 간격이 히스테리시스다.
+ */
+/*
+ * ★ 이제 판정에 쓰이지 않는다.
+ *
+ *   8편에 실측으로 정한 값이고 오래 기본값 노릇을 했다. 지금은 설정(0.01mm)을
+ *   키별 스트로크로 풀어 만든 thr[] 이 판정을 맡는다 — VIA 슬라이더가 판정에
+ *   닿게 하려면 그래야 했다. 근거를 남기려고 값만 둔다.
+ *
+ *     250 * 3 = 750 카운트 ~= 1.20mm,  156 * 3 = 468 ~= 0.75mm
+ */
+#define KEYS_PRESS_LEVEL        (250 * KEYS_ACC_CNT)
+#define KEYS_RELEASE_LEVEL      (156 * KEYS_ACC_CNT)
+
+/*
+ * 기준값 추적 — 안 눌린 상태가 물리적 극단(자석이 가장 멀다)이므로 러닝 최대값이다.
+ * 이 덕에 키를 누른 채 부팅해도 손을 떼는 순간 기준값이 제자리를 찾는다.
+ */
+/*
+ * 드리프트 보정.
+ *
+ * 기준값이 러닝 최대값이라 구조적으로 노이즈 꼭대기에 걸린다. 평활 후 평상시 편차가
+ * 약 100 남으므로 그걸 천천히 걷어내야 한다.
+ *
+ * ★ 밴드는 노이즈(약 120)와 액추에이션(4000) 사이여야 한다.
+ *   해제 임계값(2500)까지 열면 손가락을 살짝 얹은 상태(2000)까지 보정 대상이 되어
+ *   기준값이 눌린 쪽으로 끌려간다.
+ *
+ * ★ 주기는 스캔 횟수가 아니라 실제 시간으로 센다.
+ *   스캔 속도가 호출자마다 1000배 넘게 다르다 (CLI 20회/초 vs 메인 루프 26000회/초).
+ *   온도 드리프트는 물리 현상이니 ms 로 세는 게 맞다.
+ */
+#define KEYS_DRIFT_BAND         (50 * KEYS_ACC_CNT)
+#define KEYS_DRIFT_MS           512     /* 이 시간마다 기준값을 한 걸음 움직인다 */
+
+/*
+ * ★ 걸음은 눈금을 따라간다.
+ *
+ *   누적을 넣으면서 눈금이 3배가 됐는데 걸음이 1카운트 그대로면 **물리적으로 3배
+ *   느려진다.** 한 걸음이 스트로크의 1/836 에서 1/2508 로 줄기 때문이다. 온도
+ *   드리프트를 따라잡는 속도가 그만큼 처진다.
+ *
+ *   그래서 걸음도 KEYS_ACC_CNT 만큼 준다 — 512ms 에 스트로크의 1/836, 누적 전과 같다.
+ */
+#define KEYS_DRIFT_STEP         KEYS_ACC_CNT
+
+/*
+ * 이보다 크게 해제 방향으로 벌어지면 "진짜 해제"로 보고 즉시 기준값을 옮긴다.
+ * 노이즈(±6)보다 충분히 크고 스트로크(838)보다 충분히 작아야 한다.
+ * 누른 채 부팅한 키가 손을 뗄 때 수백 카운트가 뛰므로 여기에 걸린다.
+ */
+#define KEYS_LATCH_JUMP         (31 * KEYS_ACC_CNT)
+
+/*
+ * 부팅 캘리브레이션 이상치 판정.
+ *
+ * 기준값이 전체 중앙값보다 이만큼 아래면 "그 키는 눌린 채로 측정됐다"고 본다.
+ * 스트로크(838)와 정상 편차(360) 사이라 양쪽 모두와 안전한 거리가 있다.
+ */
+#define KEYS_CAL_OUTLIER        (500 * KEYS_ACC_CNT)
+
+/* 원시 16비트를 이만큼 내려 12비트 영역으로 쓴다 */
+#define KEYS_RAW_SHIFT          4
+
+
+
+/*
+ * ★ 이 아래 임계값들은 전부 "누적된 합" 눈금이다.
+ *
+ *   12비트 표본 하나가 아니라 3개의 합이므로 범위가 0~12285 다. 값의 근거는 8편
+ *   실측(12비트)에 있으므로 그 값을 그대로 두고 KEYS_ACC_CNT 를 곱한다 —
+ *   누적 개수를 바꿔도 따라오고, 원래 근거가 어디서 왔는지도 남는다.
+ */
+
+/*
+ * 데드밴드 폭.
+ *
+ * ★ 왜 IIR 이 아니라 데드밴드인가 — 지연 때문이다.
+ *
+ *   처음에는 1차 IIR(1/4)을 썼다. 노이즈는 잘 줄었지만 정착이 63% 에 4스캔(152us),
+ *   90% 에 9스캔(342us) 걸린다. 키를 누르는 내내 뒤처진 값을 내므로 그대로 입력
+ *   지연이 된다. 8kHz 저지연이 이 보드의 존재 이유인데 필터 하나로 절반을 까먹는다.
+ *
+ *   데드밴드는 밴드보다 큰 변화에는 같은 샘플에서 즉시 따라간다 — 지연 0. 대신
+ *   ±BAND 로 양자화된다. 밴드 7 이면 스트로크 838 을 120단계로 나누므로 충분하다.
+ *
+ *   기준값 추적이 노이즈 꼭대기를 붙잡는 걸 막는다는 목적도 그대로 달성된다.
+ *   밴드 안쪽 움직임은 출력에 아예 반영되지 않아 추적기가 노이즈를 보지 못한다.
+ *
+ *   12비트 영역에서 ±7 이다. 실측 노이즈 ±6 바로 위다.
+ */
+/*
+ * ★ 여기만 3배가 아니다.
+ *
+ *   눈금은 3배가 되지만 잡음은 sqrt(3)=1.73 배만 커진다. 밴드는 잡음을 덮는 물건이니
+ *   잡음을 따라가야 한다 — 3배로 키우면 애써 줄인 잡음만큼 분해능을 도로 버린다.
+ *
+ *     7 x 3 / 1.73 = 12.1  ->  12
+ *
+ *   결과적으로 밴드가 스트로크에서 차지하는 비율이 7/838 에서 12/2514 로 줄어,
+ *   같은 지연 0 을 유지하면서 분해능이 1.7배 좋아진다.
+ */
+#define KEYS_DEADBAND           12
+
+
+/*
+ * 스위치 종류표 — 펌웨어 상수.
+ *
+ * 보정을 안 해도 mm 환산이 되도록 공칭 스트로크를 갖고 있는다. 사용자가 보정하면
+ * 키별 실측값이 이걸 대신한다. 키마다 종류 인덱스를 저장해두고 설정은 mm 로 다룬다.
+ *
+ * travel_um 은 0.01mm 단위다 (400 = 4.00mm).
+ *
+ * stroke_cnt 는 그 행정에 해당하는 ADC 카운트(12비트)다. 보정하지 않은 키를 mm 로
+ * 환산하려면 이게 있어야 한다 — 카운트만으로는 몇 mm 인지 알 수 없기 때문이다.
+ * 값의 근거는 8편의 실측이다: 61키 보정에서 최소 757 / 최대 893 / 평균 836.
+ * 그래서 4.0mm 자리에 836 을 넣고 나머지는 행정에 비례시켰다.
+ */
+/*
+ * ── 거리 환산 곡선 ────────────────────────────────────────────────────────
+ *
+ * ★ 홀 출력은 거리에 대해 직선이 아니다.
+ *
+ *   자석이 멀어지면 자기장은 거리의 세제곱에 가깝게 떨어진다. 그런데 여기서는 두
+ *   점(무압·바닥) 사이를 곧게 이어 읽고 있었다. 그러면 **가운데가 크게 어긋난다** —
+ *   하필 그 가운데가 사람이 실제로 쓰는 액추에이션 구간이다.
+ *
+ *   이 보드에 꽂힌 GEON RAW HE (160 -> 720 Gs, 3.4mm) 기준으로 —
+ *
+ *     입력지점 0.50mm 로 잡으면 실제로는 1.10mm 에서 눌렸다  (+0.60)
+ *     입력지점 1.00mm 로 잡으면 실제로는 1.79mm 에서 눌렸다  (+0.79)
+ *
+ * ★ 재지 않고 계산으로 얻는다.
+ *
+ *   축방향 자화 원통 자석의 축상 자기장은 식이 알려져 있고 미지수가 둘(유효 갭,
+ *   잔류자속)이다. 제조사가 주는 두 점이면 둘 다 풀린다. 63키를 심 끼워 눌러
+ *   재야 할 이유가 없다 (docs/ref/he-magnet-model.md, tools/he_magnet_fit.py).
+ *
+ * ★ 정규화하면 개체차가 사라진다.
+ *
+ *   u = (읽은값 - 무압) / (바닥 - 무압) 에서 곡선 **모양**은 자석 세기와 센서
+ *   오프셋에 무관하다 — 아핀 변환이 분자·분모에서 소거되기 때문이다. 그래서
+ *   종류당 표 하나면 되고, 키별로는 두 점만 있으면 된다 (이미 보정에서 얻는다).
+ *
+ * ★ 거리를 균일 분할한다. u 를 균일 분할하면 곡선이 가파른 구간에서 해상도가
+ *   무너진다 — 첫 칸 하나가 거리로 0.6mm 를 덮어 버린다.
+ *
+ * 표는 33칸, 값은 Q15 (32767 = 1.0). 칸 i 가 곧 i/32 행정이다. 데이터시트에서
+ * 계산되는 값이라 EEPROM 에 둘 이유가 없다 — 여기 상수로 둔다.
+ */
+#define KEYS_CURVE_N     33
+#define KEYS_CURVE_SEG   (KEYS_CURVE_N - 1)   /* 칸 사이 구간 수 = 32 */
+#define KEYS_CURVE_ONE   32767                /* Q15 의 1.0 */
+
+/* 160 -> 720 Gs, 3.4mm. 직선으로 읽으면 최대 0.80mm 어긋난다 */
+static const uint16_t curve_geon_raw_he[KEYS_CURVE_N] =
+{
+      0,   362,   743,  1144,  1565,  2010,  2478,  2973,
+   3494,  4045,  4628,  5244,  5896,  6586,  7318,  8094,
+   8918,  9793, 10724, 11713, 12767, 13890, 15087, 16365,
+  17730, 19188, 20748, 22419, 24208, 26126, 28184, 30393,
+  32767,
+};
+
+/* 120 -> 700 Gs, 3.5mm. 최대 0.95mm */
+static const uint16_t curve_gateron_jade[KEYS_CURVE_N] =
+{
+      0,   300,   617,   954,  1311,  1689,  2091,  2518,
+   2973,  3457,  3972,  4522,  5109,  5737,  6407,  7125,
+   7894,  8719,  9605, 10557, 11581, 12684, 13873, 15155,
+  16541, 18040, 19662, 21421, 23328, 25399, 27651, 30100,
+  32767,
+};
+
+/* 102 -> 905 Gs, 4.1mm. 최대 1.37mm — 비가 클수록 더 휜다 */
+static const uint16_t curve_gateron_ks20[KEYS_CURVE_N] =
+{
+      0,   213,   440,   683,   943,  1223,  1523,  1845,
+   2193,  2567,  2971,  3408,  3881,  4393,  4949,  5554,
+   6213,  6932,  7717,  8577,  9520, 10555, 11695, 12952,
+  14340, 15877, 17581, 19474, 21580, 23929, 26551, 29484,
+  32767,
+};
+
+/* 120 -> 800 Gs, 4.0mm. 최대 1.18mm */
+static const uint16_t curve_gateron_fox[KEYS_CURVE_N] =
+{
+      0,   267,   550,   851,  1171,  1512,  1875,  2263,
+   2677,  3120,  3594,  4102,  4646,  5231,  5860,  6537,
+   7266,  8053,  8903,  9823, 10819, 11899, 13073, 14349,
+  15739, 17255, 18910, 20720, 22703, 24876, 27261, 29883,
+  32767,
+};
+
+
+typedef struct
+{
+  const char *name;
+  uint16_t    travel_um;
+  uint16_t    stroke_cnt;   /* 미보정 키의 mm 환산 기준 (12비트 카운트) */
+
+  /*
+   * 데이터시트가 주는 두 점 (Gs). 0 이면 모른다.
+   *
+   * ★ 이 둘이면 곡선이 결정된다.
+   *
+   *   축방향 자화 원통 자석의 축상 자기장은 식이 알려져 있고, 미지수가 둘(유효 갭,
+   *   잔류자속)이다. 초기·바닥 두 점이면 둘 다 풀린다. 그래서 곡선을 재려고 심을
+   *   끼울 필요가 없다 (docs/ref/he-magnet-model.md).
+   *
+   *   모르는 스위치는 0 으로 둔다 — 도구가 "직선으로 읽는 중" 이라고 말한다.
+   *   짐작한 값을 넣어 두면 그게 실측인 척한다.
+   */
+  uint16_t    flux_rest_gs;
+  uint16_t    flux_bottom_gs;
+
+  /*
+   * 거리 환산 곡선. NULL 이면 직선으로 읽는다.
+   *
+   * 위 두 점에서 계산한 것이라 둘이 늘 짝이다 — 두 점을 아는데 곡선이 없거나 그
+   * 반대이면 표를 잘못 적은 것이다.
+   */
+  const uint16_t *curve;
+} keys_switch_t;
+
+static const keys_switch_t keys_switch[] =
+{
+  /*
+   * ★ GENERIC 칸은 없앴다.
+   *
+   *   "어떤 스위치인지 모를 때" 쓰라고 4.00mm 직선 한 칸을 뒀었는데, 그 일을 이제
+   *   커스텀 슬롯이 더 잘한다 — 이름을 붙일 수 있고, 행정을 정할 수 있고, 자속을
+   *   0 으로 두면 똑같이 직선이다. 같은 일을 하는 길이 둘이면 하나는 반드시 낡는다.
+   *
+   *   빼면서 번호가 한 칸씩 밀렸다. 그래서 설정 기록의 버전을 8 로 올린다 —
+   *   안 올리면 사용자가 배정해 둔 스위치가 조용히 옆 것으로 바뀐다.
+   */
+  { "GEON RAW HE",      340, 838 * KEYS_ACC_CNT, 160, 720, curve_geon_raw_he },
+
+  /*
+   * ── 두 점 제원을 아는 제품 ──────────────────────────────────────
+   *
+   * 제조사가 공개하는 초기·바닥 자속이다. 이 둘이 있으면 도구가 곡선을 그려
+   * 직선 환산과 견줄 수 있다.
+   *
+   * stroke_cnt 는 여전히 이 보드에서 재야 하는 값이라 일반형과 같은 어림값을
+   * 쓴다 — 보정하면 키별 실측이 대신한다.
+   */
+  { "Gateron Jade",     350, 731 * KEYS_ACC_CNT, 120, 700, curve_gateron_jade },
+  { "Gateron Jade Pro", 350, 731 * KEYS_ACC_CNT, 120, 700, curve_gateron_jade },
+  { "Gateron KS-20",    410, 857 * KEYS_ACC_CNT, 102, 905, curve_gateron_ks20 },
+  { "Gateron Fox",      400, 836 * KEYS_ACC_CNT, 120, 800, curve_gateron_fox },
+};
+
+/*
+ * 앞의 몇 개가 일반형인가 — 이제 0 이다.
+ *
+ * 내장 표는 전부 제원이 고정된 제품이고, "제원을 모르는 스위치" 는 커스텀 슬롯이
+ * 맡는다. 호스트가 목록에 행정을 적을지 말지를 이 값으로 갈랐는데, 0 이면 전부
+ * 적는다 — 고칠 수 있는 값이 하나도 없으므로 목록의 숫자가 거짓말이 될 일이 없다.
+ */
+#define KEYS_SWITCH_GENERIC_CNT   0
+
+/*
+ * 이 보드에 실제로 꽂힌 스위치.
+ *
+ * ★ 기본값을 일반형 4.0mm 로 두었던 것이 틀렸다.
+ *
+ *   실제는 3.4mm 다. 카운트 기준 판정은 영향이 없지만 mm 표시가 전부 18% 어긋난다 —
+ *   "입력지점 1.00mm" 가 실제로는 0.85mm 였다.
+ */
+#define KEYS_SWITCH_DEFAULT       0
+
+#define KEYS_SWITCH_CNT   (sizeof(keys_switch) / sizeof(keys_switch[0]))
+
+/*
+ * ── 커스텀 스위치 ────────────────────────────────────────────────────────
+ *
+ * ★ 내장 번호 뒤에 이어 붙이지 않는다. **비트 7 로 가른다.**
+ *
+ *   이어 붙이면, 나중에 내장 표에 한 줄을 더하는 순간 커스텀이 한 칸씩 밀린다.
+ *   그때 구조체는 안 바뀌므로 **버전도 안 올라가고 기록도 유효한 채로** 모든 키의
+ *   스위치가 조용히 딴것을 가리킨다 — 알아챌 방법이 없는 종류의 사고다.
+ *
+ *   비트로 가르면 내장 128 · 커스텀 128 이고 절벽이 없다. 덤으로 스위치 표를
+ *   내보내는 0xC6 을 안 건드려도 된다.
+ */
+#define KEYS_SW_CUSTOM_BIT   0x80U        /* sw_type: 0x80 | slot */
+
+/*
+ * 기록이 잡아 두는 칸(8)과 지금 화면에 여는 칸(4)을 나눈다.
+ *
+ * 늘릴 때 아래 상수 하나만 고치면 된다 — 기록 크기가 안 변하니 버전도 그대로고,
+ * 사용자 정의도 안 날아간다.
+ */
+#define KEYS_SW_SLOT_MAX     8
+#define KEYS_SW_CUSTOM_CNT   4
+
+#define KEYS_SW_IS_CUSTOM(t)   (((t) & KEYS_SW_CUSTOM_BIT) != 0)
+#define KEYS_SW_SLOT_OF(t)     ((uint32_t)((t) & ~KEYS_SW_CUSTOM_BIT))
+
+
+/*
+ * 저장 레코드.
+ *
+ * ★ 부팅 경로에서는 읽기만 한다. 읽기는 XIP 라 인터럽트를 막지 않으므로 안전하다.
+ *   쓰기는 사용자가 명시할 때만 (keys save). 부팅 중 플래시를 쓰다 실패하면
+ *   어디로 갈지 설계가 어려워지고, 실제로 그것 때문에 한 번 브릭을 만들었다.
+ */
+/*
+ * P()->rt_flags
+ *
+ *   KEYS_RT_CONT — 연속 RT.
+ *
+ *     보통 RT 는 입력지점 아래에서만 살아 있다. 키가 그 위로 돌아오면 풀리고,
+ *     다시 입력지점을 넘어야 붙는다. 연속 RT 는 전 구간에서 계속 살려 둔다 —
+ *     얕게 톡톡 치는 구간에서도 방향 반전만으로 입력·해제가 난다.
+ */
+#define KEYS_RT_ON         (1U << 0)
+#define KEYS_RT_BOTTOM     (1U << 1)
+#define KEYS_RT_CONT       (1U << 2)
+
+#define KEYS_CAL_MAGIC     0x4C41434BUL   /* 'KCAL' — 보정 */
+#define KEYS_SET_MAGIC     0x5445534BUL   /* 'KSET' — 설정(프로파일) */
+#define KEYS_SW_MAGIC      0x43575349UL   /* 'ISWC' — 커스텀 스위치 정의 */
+
+/* 프로파일 개수 */
+#define KEYS_PROF_CNT      4
+
+/*
+ * 2: 누적으로 눈금 3배   3: 래피드 트리거 항목   4: 전 항목을 키별로
+ * 5: 보정과 설정을 두 저장소로 나누고 프로파일 네 벌 + 중간점 자리
+ * 6: keys_sw_cal_t 24 -> 32
+ * 7: 커스텀 스위치. 안 쓰던 칸(sw[16]·중간점)과 gen_travel_um 을 걷어냈다
+ *
+ * ★ 7 에서는 **옮겨 심지 않는다.** 사용자가 그러라고 했다 — 호환 때문에 구조가
+ *   지저분해지는 쪽이 더 나쁘다. 보정과 설정이 둘 다 기본값으로 돌아가므로 업데이트
+ *   후 보정을 한 번 다시 해야 한다. 대신 옛 구조체 정의와 마이그레이터 둘, 그리고
+ *   그것들이 잡고 있던 .bss 3KB 가 같이 사라졌다.
+ *
+ * ★ 이번이 마지막으로 버리는 판이 되게 한다. keysBlobValid 가 기록마다 제 버전을
+ *   받으므로, 앞으로 한 기록을 고쳐도 나머지 둘은 안 날아간다.
+ */
+#define KEYS_CAL_VERSION   7
+/*
+ * 8: GENERIC 을 표에서 뺐다 — 내장 번호가 한 칸씩 밀리므로 설정을 버려야 한다.
+ *
+ * ★ **보정은 안 버린다.** keys_cal_t 는 그대로라 7 을 지킨다.
+ *
+ *   앞서 기록마다 제 버전을 받게 해 둔 것이 여기서 값을 한다. 예전 구조였으면
+ *   스위치 표에서 한 줄 빼자고 63키를 다시 눌러야 했다.
+ */
+#define KEYS_SET_VERSION   8
+
+/* 스위치 정의는 제 버전을 갖는다 — 위 둘과 따로 논다 */
+#define KEYS_SW_VERSION    1
+
+/*
+ * ── 저장은 성격에 따라 두 곳으로 나눈다 ──────────────────────────────────
+ *
+ * ★ 보정은 프로파일에 들어가면 안 된다.
+ *
+ *   보정은 **이 보드의 이 스위치를 잰 값**이고, 프로파일은 **취향**이다. 섞어 두면
+ *   프로파일을 바꿀 때 mm 값이 같이 달라지고, 63키를 네 번 눌러야 한다.
+ *   웹 도구의 설정 파일에서 보정값을 뺀 것과 같은 이유다.
+ *
+ *   저장 자리도 따로 둔다. 보정을 저장할 때 프로파일을 다시 쓸 이유가 없고,
+ *   그 반대도 마찬가지다.
+ */
+
+/* 키 하나의 보정 — 보드마다 한 벌 */
+typedef struct
+{
+  uint16_t cal_max;                     /* 무압 실측 (0 = 미보정) */
+  uint16_t cal_min;                     /* 바닥 실측 */
+
+  uint8_t  noise_pp;                    /* 실측 잡음 폭 — 데드존 자동값의 근거 */
+  uint8_t  flags;                       /* bit0 = 보정됨 */
+  uint8_t  rsv[10];
+} keys_key_cal_t;                       /* 16 바이트 x 64 키 = 1024 B */
+
+/*
+ * ── 커스텀 스위치 정의 ───────────────────────────────────────────────────
+ *
+ * 내장 표에 없는 스위치를 사용자가 적어 넣는 칸이다.
+ *
+ * ★ 담는 것은 "이름 + 행정 + 데이터시트 두 점" 이 전부다.
+ *
+ *   두 점이면 곡선이 결정된다 — 축상 자기장 식의 미지수가 둘(유효 갭, 잔류자속)인데
+ *   두 점이면 둘 다 풀린다. 그래서 33칸 LUT(66바이트)를 담을 이유가 없다. 부팅 때
+ *   만든다 (keysCurveBuild).
+ *
+ *   표를 올려받는 쪽도 생각해 봤지만 접었다. 32바이트 리포트에 66바이트를 조각내
+ *   보내야 하고, 받은 표가 단조인지·끝이 32767 인지 검사하는 코드가 솔버만큼 든다.
+ *   무엇보다 두 점과 표를 같이 담으면 둘이 조용히 어긋난다 — 진실이 둘이 된다.
+ *
+ * ★ 보정에도 설정에도 안 넣고 **제 기록**을 준다 (hw_def.h 의 HW_FLASH_SW_A).
+ *   보정은 이 개체를 잰 값이라 나누면 안 되고, 이건 데이터시트 값이라 나누라고 있는
+ *   것이다. 수명이 반대다.
+ */
+typedef struct
+{
+  /*
+   * 사용자가 붙인 이름. **비어 있으면 "아직 안 고쳤다"** 는 뜻이다.
+   *
+   * 값 자체는 늘 유효하다 — 빈 기록도 기본값(GEON RAW HE)으로 채워져 있다. 그래서
+   * "정의 없는 슬롯" 이라는 상태가 아예 없고, 붕 뜨는 배정도 생기지 않는다.
+   * 이름은 화면에서 CUSTOM 1 로 보일지 이름으로 보일지만 가른다.
+   */
+  char     name[12];
+
+  uint16_t travel_um;                   /* 전 행정 0.01mm */
+
+  /*
+   * 데이터시트 두 점 (Gs). **0 이면 직선으로 읽는다.**
+   *
+   * "행정은 아는데 데이터시트가 없다" 가 실제로 있다. 그때는 곡선 없이 그 행정의
+   * 직선이면 되고, 그게 예전 GENERIC + 행정 슬라이더가 하던 일이다.
+   */
+  uint16_t flux_rest_gs;
+  uint16_t flux_bottom_gs;
+
+  uint8_t  kind;                        /* 0 = 두 점 모델. 1 = 실측 표 (나중) */
+  uint8_t  rsv[9];
+} keys_sw_one_t;                        /* 28 바이트 */
+
+/*
+ * 키 하나의 설정 — 프로파일마다 한 벌.
+ *
+ * ★ 키별이 기본이다. 전역은 "모두 선택"일 뿐이다.
+ *
+ *   키를 골라 설정하는 화면에서는 "모두 선택"이 곧 전역이다. 전역 설정이라는
+ *   개념을 따로 두면 키별 값과 어느 쪽이 이기는지가 계속 문제가 된다.
+ *
+ *   그래서 판정은 언제나 이 구조체를 본다. 프로파일의 전역 필드는 (a) 새 설정을
+ *   만들 때의 기본값이고 (b) VIA 가 전역으로 읽고 쓸 때 64키에 뿌리는 값이다.
+ */
+typedef struct
+{
+  uint16_t press_um;       /* 입력지점        0.01mm */
+  uint16_t release_um;     /* 해제지점        0.01mm */
+  uint16_t rt_press_um;    /* RT 재입력       0.01mm */
+  uint16_t rt_release_um;  /* RT 입력 해제    0.01mm */
+  uint16_t bottom_um;      /* 바닥 보호       0.01mm */
+  uint16_t dead_um;        /* 데드존          0.01mm */
+
+  uint8_t  sw_type;        /* 스위치 종류 인덱스 */
+  uint8_t  rt_flags;       /* KEYS_RT_* */
+
+  /*
+   * 예약. **쓸 곳을 정해 두고 잡는다.**
+   *
+   *   여기 있던 gen_travel_um 을 걷어냈다 — 일반형의 행정을 키마다 정하는 값이었는데,
+   *   이제 그 일은 커스텀 스위치 슬롯이 한다(자속을 0 으로 두면 그 행정의 직선이다).
+   *   같은 일을 하는 길이 둘이면 하나는 반드시 낡는다.
+   *
+   *   빠진 2바이트를 rsv 로 메워 **24바이트를 지킨다.** 크기가 그대로면 다음에 2바이트
+   *   짜리 항목을 더할 때 버전을 안 올려도 된다 — 둘째 입력지점(2B), SOCD 짝·모드(2B).
+   */
+  uint8_t  rsv[10];
+} keys_key_set_t;          /* 24 바이트 x 64 키 = 1536 B */
+
+/* 프로파일 한 벌 */
+typedef struct
+{
+  uint16_t press_um;     /* 입력지점    0.01mm — 절대 위치 */
+  uint16_t release_um;   /* 해제지점    0.01mm — 절대 위치 */
+
+  /*
+   * 래피드 트리거 — 절대 위치가 아니라 "방향이 바뀐 뒤 얼마나 움직였나"로 판정한다.
+   *
+   * ★ 누름과 해제를 따로 둔다.
+   *
+   *   하나로 묶는 구현이 많지만 게임에서는 비대칭이 유리한 경우가 실제로 있다
+   *   (빠르게 떼고 천천히 누르기).
+   */
+  uint16_t rt_press_um;   /* 되눌림 반응 행정  0.01mm */
+  uint16_t rt_release_um; /* 되뗌   반응 행정  0.01mm */
+
+  /*
+   * 바닥 보호 — 바닥에서 이만큼 안쪽에서는 RT 해제를 끈다.
+   *
+   *   RT 해제는 "가장 깊었던 지점에서 얼마나 올라왔나"로 판정한다. 바닥까지 눌러
+   *   붙잡고 있으면 그 기준점이 바닥에 고정되는데, 손가락은 누르는 동안에도
+   *   0.1~0.3mm 씩 미세하게 풀린다. 그 이완만으로 해제가 나가 키가 툭툭 끊긴다.
+   *
+   *   일반 모드에서는 해제 지점이 절대값이라 바닥에서 멀어 안 생긴다. RT 특유의
+   *   문제다. 잡음 때문이 아니다 — 0.1mm 는 9 sigma 라 잡음은 못 넘는다.
+   */
+  uint16_t bottom_um;    /* 바닥 보호 구간  0.01mm */
+
+  /*
+   * 데드존 — 쉬는 위치 근처에서 이만큼은 아예 안 본다.
+   *
+   *   ★ 바닥 보호와 다른 물건이다. 이쪽은 **위**다.
+   *
+   *     데드존     진동·공차로 값이 흔들려도 우발적 입력이 안 나가게 막는다
+   *     바닥 보호   끝까지 눌러 붙잡을 때 손가락 이완으로 RT 해제가 나가는 걸 막는다
+   *
+   *   기본값 0 이다 — 우리 기준값이 키마다 러닝 최대로 따라가므로 평소에는 필요
+   *   없고, 진동이 있는 환경에서 사용자가 올린다.
+   */
+  uint16_t dead_um;      /* 데드존  0.01mm */
+
+  uint8_t  sw_type_def;  /* 기본 스위치 종류 */
+  uint8_t  rt_flags;     /* bit0 = RT 켬, bit1 = 바닥 보호 켬 */
+
+  /*
+   * 프로파일 이름. 지금은 번호뿐이라 어느 것이 게임용인지 외워야 한다.
+   *
+   * 자리만 잡아 둔다 — 화면과 HID 는 아직 안 붙였다.
+   */
+  char     name[12];
+
+  uint8_t  rsv[18];   /* gen_travel_um 이 빠진 2바이트를 메워 크기를 지킨다 */
+
+  keys_key_set_t key[KEYS_MAX];
+} keys_prof_t;
+
+/* 보정 저장소 — 보드마다 하나 */
+typedef struct
+{
+  uint32_t magic;
+  uint16_t version;
+  uint16_t length;
+  uint32_t seq;
+
+  /*
+   * ★ 여기 있던 중간점(pt_cnt·pt_um·pt_frac)과 종류별 칸(sw[16], 512B)을 걷어냈다.
+   *
+   *   심을 끼워 곡선을 재는 길을 위해 잡아 뒀는데 읽는 코드가 끝내 안 생겼고, 그
+   *   길은 이제 커스텀 스위치 기록(keys_sw_t)으로 간다. 두 군데에 같은 개념이
+   *   반쯤씩 있는 것이 제일 나쁘다.
+   */
+  keys_key_cal_t key[KEYS_MAX];         /* 키마다 두 점 */
+
+  uint32_t crc;
+} keys_cal_t;
+
+/*
+ * 커스텀 스위치 저장소 — 보드마다 하나. 프로파일을 안 따른다.
+ */
+typedef struct
+{
+  uint32_t magic;
+  uint16_t version;
+  uint16_t length;
+  uint32_t seq;
+
+  keys_sw_one_t sw[KEYS_SW_SLOT_MAX];
+
+  /*
+   * 실측 곡선 자리 — 33칸 x 2B x 8슬롯.
+   *
+   * 지금은 안 쓴다. 미리 잡아 두는 이유는 **다음에 또 버리지 않기 위해서**다.
+   * 심 실측 경로(kind = 1)를 얹을 때 구조체 크기가 안 변하면 버전도 안 올라간다.
+   */
+  uint8_t  rsv[KEYS_SW_SLOT_MAX * KEYS_CURVE_N * 2];
+
+  uint32_t crc;
+} keys_sw_t;
+
+/* 설정 저장소 — 프로파일 네 벌 */
+typedef struct
+{
+  uint32_t magic;
+  uint16_t version;
+  uint16_t length;
+  uint32_t seq;
+
+  uint8_t  active;       /* 지금 쓰는 프로파일 */
+  uint8_t  rsv[3];
+
+  keys_prof_t prof[KEYS_PROF_CNT];
+
+  uint32_t crc;
+} keys_set_t;
+
+static keys_cal_t cal_st;
+static keys_set_t set_st;
+static keys_sw_t  sw_st;
+static volatile bool sw_dirty = false;   /* 스위치 정의를 나중에 굽는다 */
+
+/*
+ * 슬롯 안에 들어가는지 여기서 막는다.
+ *
+ * 넘치면 다음 슬롯을 덮어쓴다 — 설정이 E2P(VIA 키맵)를 밀어내는 식이라 증상이
+ * 엉뚱한 데서 나온다. 구조체를 늘릴 때 바로 걸리게 해 둔다.
+ */
+_Static_assert(sizeof(keys_cal_t) <= (HW_FLASH_CAL_B - HW_FLASH_CAL_A),
+               "보정 저장소가 슬롯을 넘는다");
+_Static_assert(sizeof(keys_set_t) <= (HW_FLASH_SET_B - HW_FLASH_SET_A),
+               "설정 저장소가 슬롯을 넘는다");
+_Static_assert(sizeof(keys_sw_t)  <= (HW_FLASH_SW_B  - HW_FLASH_SW_A),
+               "스위치 정의 저장소가 슬롯을 넘는다");
+
+/*
+ * 화면에 여는 칸이 기록이 잡아 둔 칸을 넘으면 안 된다 — 넘으면 sw[] 밖을 읽는다.
+ */
+_Static_assert(KEYS_SW_CUSTOM_CNT <= KEYS_SW_SLOT_MAX,
+               "여는 칸이 기록이 잡아 둔 칸보다 많다");
+
+/*
+ * 짧게 쓰려고 둔다. 어느 프로파일을 보는지가 한 곳에만 있어야 한다 —
+ * 여기저기서 set_st.prof[set_st.active] 를 적으면 전환을 넣을 때 하나를 놓친다.
+ */
+static inline keys_prof_t     *P(void)          { return &set_st.prof[set_st.active]; }
+static inline keys_key_set_t  *KS(uint32_t i)   { return &P()->key[i]; }
+static inline keys_key_cal_t  *KC(uint32_t i)   { return &cal_st.key[i]; }
+
+
+/*
+ * ADC 시퀀스 DMA 버퍼.
+ *
+ * ADC 가 직접 쓰므로 캐시에 걸리면 안 된다. .noncacheable.non_init 은 NOLOAD 라
+ * 0 초기화되지 않는다 — 첫 스캔 전에는 쓰레기값이 들어 있다고 봐야 한다.
+ * 결과는 32비트 워드에 패킹되고 하위 16비트가 값이다 (dma_seq16bit 미사용).
+ *
+ * ★ volatile 이어야 한다.
+ *   ATTR_PLACE_AT_NONCACHEABLE_BSS 는 **하드웨어 캐시** 이야기라 컴파일러와는 무관하다.
+ *   컴파일러 눈에는 아무도 쓰지 않는 배열이라, -O2 에서는 읽기를 합치거나 루프 밖으로
+ *   끌어낼 수 있다. 특히 "채워질 때까지 기다리는" 회전은 volatile 없이는 성립하지 않는다.
+ */
+ATTR_PLACE_AT_NONCACHEABLE_BSS __attribute__((aligned(ADC_SOC_DMA_ADDR_ALIGNMENT)))
+static volatile uint32_t adc0_buf[KEYS_SEQ_LEN];
+
+ATTR_PLACE_AT_NONCACHEABLE_BSS __attribute__((aligned(ADC_SOC_DMA_ADDR_ALIGNMENT)))
+static volatile uint32_t adc1_buf[KEYS_SEQ_LEN];
+
+
+/*
+ * 누적 링 — 셀마다 최근 KEYS_ACC_CNT 개의 12비트 표본을 들고 있다.
+ *
+ * 합을 매번 다시 더하지 않는다. 가장 오래된 값을 빼고 새 값을 더한다 (스캔당 셀마다
+ * 뺄셈 하나, 덧셈 하나). 링의 어느 칸을 덮어쓸지는 스캔 단위로 정해지므로 8x8 이
+ * 같은 칸을 쓴다 — 인덱스를 셀마다 들 필요가 없다.
+ */
+static uint16_t acc_hist[KEYS_STEP_MAX][KEYS_CH_MAX][KEYS_ACC_CNT];
+static uint16_t acc_sum[KEYS_STEP_MAX][KEYS_CH_MAX];
+static uint32_t acc_idx = 0;
+
+/*
+ * 키별 임계값 — 카운트 단위로 미리 풀어 둔다.
+ *
+ * 설정은 0.01mm 인데 판정은 카운트로 한다. 환산에는 키별 스트로크가 필요해서
+ * 나눗셈이 들어가는데, 그걸 35kHz x 64셀 루프 안에서 할 수는 없다. 설정이나
+ * 보정이 바뀔 때만 다시 만든다.
+ */
+/*
+ * ★ RT 문턱은 하나가 아니라 **깊이 구역마다 하나**다.
+ *
+ *   입력지점 같은 절대 위치는 곡선을 태우면 그만이다. 그런데 RT 의 두 값은 위치가
+ *   아니라 **이동량**이라, 곡선에서는 같은 이동량이라도 어디서 움직였느냐에 따라
+ *   카운트가 딴판이다. 하나로 잡으면 한 지점에서만 맞는다.
+ *
+ *   RT 0.50mm 를 카운트 하나로 잡았을 때 실제 되돌림 거리 —
+ *
+ *     깊이 1.0mm -> 1.00mm    깊이 2.0mm -> 0.60mm    깊이 3.3mm -> 0.24mm
+ *
+ *   깊이 눌린 상태일수록 두 배로 예민해진다. 타이핑에서 손가락이 머무는 곳이 거기다.
+ *
+ * ★ 매 표본마다 역변환을 할 수는 없다 (35kHz x 64셀). 그래서 미리 구워 둔다.
+ *
+ *   구역은 정규화 값 u 의 상위 3비트다. 뜨거운 루프에서 하는 일은 곱셈 하나와
+ *   시프트 하나 — 나눗셈도 탐색도 없다.
+ *
+ *   구역을 정하는 자리는 지금 깊이가 아니라 **기준점(peak)** 이다. 되돌림은 거기서
+ *   시작하는 이동이라, 문턱도 그 자리의 기울기로 재야 맞다.
+ */
+#define KEYS_RT_ZONE_BITS   3
+#define KEYS_RT_ZONE_CNT    (1 << KEYS_RT_ZONE_BITS)   /* 8 */
+
+typedef struct
+{
+  uint16_t press;        /* 입력지점 (깊이 카운트) */
+  uint16_t release;      /* 해제지점 */
+  uint16_t bottom_lo;    /* 이 깊이 이상이면 바닥 보호 구간 */
+  uint16_t dead;         /* 이 깊이 미만은 아예 안 본다 */
+  uint8_t  rt_flags;     /* 키별 KEYS_RT_* */
+
+  uint16_t rt_press[KEYS_RT_ZONE_CNT];     /* RT 재입력 반응 행정 — 구역별 */
+  uint16_t rt_release[KEYS_RT_ZONE_CNT];   /* RT 입력 해제 반응 행정 — 구역별 */
+} keys_thr_t;
+
+static keys_thr_t thr[KEYS_MAX];
+
+static void            keysThrRebuild(void);
+static void            keysCfgFanout(void);
+static uint16_t        keysStrokeCnt(uint32_t i);
+static inline uint8_t  keysSwType(uint32_t i);
+static void            keysSwRefBuiltinInit(void);
+static void            keysSwRefCustomInit(void);
+static void            keysCurveRecipInit(void);
+static uint16_t        keysTravelUmOf(uint32_t i);
+
+/*
+ * RT 반응 행정의 하한 (카운트).
+ *
+ *   실측 잡음 p-p 가 40 이다. 반응 행정이 그보다 작으면 RT 가 잡음을 방향 반전으로
+ *   읽어 키가 제멋대로 눌렸다 떼진다. 잡음의 1.5배를 하한으로 둔다 — 0.096mm 쯤이라
+ *   0.096mm 쯤이다.
+ */
+#define KEYS_RT_MIN_CNT    60
+
+/*
+ * RT 판정용 상태.
+ *
+ *   peak    눌린 동안은 가장 깊었던 지점, 떼진 동안은 가장 얕았던 지점
+ *   rt_arm  RT 가 걸려 있는가 (연속 RT 가 아니면 입력지점 위로 돌아올 때 풀린다)
+ */
+static uint16_t peak[KEYS_STEP_MAX][KEYS_CH_MAX];
+static uint16_t rt_arm[KEYS_STEP_MAX];
+
+static uint16_t raw[KEYS_STEP_MAX][KEYS_CH_MAX];    /* 누적합(0~12285) — 판정·표시는 전부 이걸 쓴다 */
+static uint16_t base[KEYS_STEP_MAX][KEYS_CH_MAX];   /* 무압 기준값 (러닝 최대) */
+static uint16_t pressed[KEYS_STEP_MAX];             /* 행별 눌림 비트마스크 */
+
+/*
+ * 표시용 스퀄치 — 비트가 서 있으면 "쉬는 중" 이라 깊이를 0 으로 준다.
+ *
+ * 판정과 따로 두는 이유는 keysTrack 안 주석에 있다. 부팅 직후는 전부 쉬는 중으로
+ * 시작해야 잡음이 먼저 새지 않는다.
+ */
+static uint16_t squelch[KEYS_STEP_MAX] = {
+  0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF
+};
+
+/*
+ * 스퀄치 문턱 (카운트). 키마다 스트로크가 달라 여기서 풀어 둔다.
+ *
+ * ★ 설정이 아니라 상수다. 잡음 바닥에서 나온 값이라 사용자가 정할 것이 아니다.
+ *
+ *   `keys noise 60000` 으로 60초(175만 회 스캔) 재니 가만히 둔 키의 깊이가
+ *   대부분 셀에서 0.02~0.06mm, 최악 한 셀에서 0.10mm 였다. 그 위에서 자른다.
+ *
+ *   거리로 잡는 이유는 곡선 때문이다. 같은 카운트 편차가 행정 맨 위에서는 거리로
+ *   여섯 배쯤 부풀려지므로, 카운트로 잡으면 스위치를 바꿀 때마다 뜻이 달라진다.
+ *
+ *   잡음까지 보고 싶으면 화면의 **원시 ADC 값** 을 켜면 된다 — 그쪽은 안 거른다.
+ */
+#define KEYS_SQUELCH_UM   12    /* 0.12mm — 실측 잡음 바닥 0.10 위 */
+
+static uint16_t squelch_cnt[KEYS_MAX];
+static bool     is_calibrated = false;
+static uint32_t scan_time_us = 0;
+
+/*
+ * 스캔 주기가 고른지 본다.
+ *
+ * 13편의 드리프트 분산과 래피드 트리거는 둘 다 "판정이 일정 주기로 온다"를 깔고
+ * 있다. 평균만 보면 고른지 알 수 없어서 최대·초과 횟수를 같이 센다.
+ */
+#define KEYS_SCAN_OVER_US   60          /* 정상 28us 의 두 배 */
+static uint32_t scan_us_max   = 0;
+static uint32_t scan_over_cnt = 0;
+static uint32_t scan_cnt      = 0;
+static bool     is_init      = false;
+static uint32_t timeout_cnt  = 0;
+static uint32_t cal_time_ms  = 0;
+static uint32_t drift_ms     = 0;
+static bool     is_cfg_loaded = false;
+
+/*
+ * keys 명령이 도는 동안에는 HID 리포트를 막는다.
+ *
+ * 측정하려고 누른 키가 호스트로 그대로 입력되어 터미널이 엉키거나 CLI 가 끊긴다.
+ * 매핑·보정처럼 전 키를 눌러야 하는 작업에서는 치명적이다.
+ */
+static bool     report_off = false;
+
+/* 보정 중 키별 바닥값 수집용 */
+static uint16_t cal_min_tmp[KEYS_MAX];
+
+/*
+ * 그 바닥값을 잰 **그 순간의 기준값**.
+ *
+ * ★ 저장할 때의 base 를 쓰면 안 된다.
+ *
+ *   base 는 살아 있는 값이다. 드리프트 보정이 512ms 마다 한 걸음씩 움직이고, 키를
+ *   뗄 때 큰 변화면 즉시 따라붙는다. 전 키를 도는 데 몇 분이 걸리므로, 저장 시점의
+ *   base 로 전 키의 행정을 계산하면 **처음에 누른 키일수록 다른 기준으로 재게 된다.**
+ *
+ *   그리고 도구가 보여주는 값도 같은 이유로 누르기를 끝낸 뒤에까지 계속 흔들렸다.
+ *   "다 됐는데 왜 숫자가 안 멈추나" 로 보인다.
+ *
+ *   바닥값을 갱신하는 그 순간의 base 를 같이 붙잡아 둔다. 위아래 두 점이 같은
+ *   순간의 것이 되어 행정이 정확해지고, 다 누른 키는 숫자가 멎는다.
+ */
+static uint16_t cal_max_tmp[KEYS_MAX];
+
+/*
+ * 지정한 두 키코드가 동시에 눌려 있는가.
+ *
+ * 보정 중에는 리포트를 막아두므로 키 조합을 종료 신호로 쓸 수 있다. 터미널 없이
+ * 키보드만 연결한 상태에서도 끝낼 수 있어야 하기 때문이다.
+ *
+ * 자리를 박아두지 않고 키맵에서 찾는다 — 키맵이 바뀌어도 따라간다.
+ */
+/*
+ * ★ 루프 명령은 키보드만으로도 빠져나올 수 있어야 한다.
+ *
+ *   report_off 를 켜는 명령(map·learn·layout·show·bar·watch·raw)이 도는 동안에는
+ *   키보드가 리포트를 안 보낸다. 그런데 콘솔은 그 키보드로 치는 터미널이다 —
+ *   Ctrl-C 를 칠 방법이 없어서 USB 를 뽑는 수밖에 없었다. cal 만 자체 탈출이
+ *   있었는데, 나머지도 같아야 한다.
+ *
+ *   ★ Esc 단독이 아니라 Ctrl+Esc 다.
+ *
+ *     처음에 Esc 단독으로 만들었더니 keys cal 이 망가졌다. 보정은 Esc 키까지
+ *     전부 눌러야 하는데 그 순간 빠져나가 버린다. cal 이 원래 쓰던 조합과 같게
+ *     맞춘다 — 보정 중에 Ctrl 과 Esc 를 동시에 누를 일은 없다.
+ */
+static bool keysComboHeld(uint8_t kc1, uint8_t kc2);
+
+static bool keysCliKeep(void)
+{
+  if (cliKeepLoop() == false) return false;
+
+  /* 리포트를 막는 동안에만 — 평소에는 Ctrl+Esc 가 호스트로 가야 한다 */
+  if (report_off && keysComboHeld(KEYS_MOD_KC, KEYS_CANCEL_KC)) return false;
+
+  return true;
+}
+
+static bool keysComboHeld(uint8_t kc1, uint8_t kc2)
+{
+  bool a = false;
+  bool b = false;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      uint8_t kc;
+
+      if (keysGetPressed(st, c) == false) continue;
+
+      kc = keys_keymap[st][c];
+      if (kc == kc1) a = true;
+      if (kc == kc2) b = true;
+    }
+  }
+  return (a && b);
+}
+
+/*
+ * ── 보정 핵 ────────────────────────────────────────────────────────────
+ *
+ * ★ CLI 루프 안에 있던 것을 밖으로 뺐다.
+ *
+ *   `keys cal` 이 수집·판정·저장을 한 함수 안에서 다 했다. CLI 로만 쓸 때는
+ *   문제가 없었는데, 웹 도구에서 부르려니 통째로 다시 짜야 할 판이었다.
+ *   같은 일을 두 벌 두면 반드시 갈라진다 — 핵을 빼서 둘이 나눠 쓰게 한다.
+ *
+ * 무압 기준값은 러닝 최대값이 늘 추적하므로 여기서 할 일이 없다. 바닥값만
+ * 모은다 — 그건 실제로 끝까지 눌러야만 알 수 있다.
+ */
+static bool cal_active = false;
+
+static bool keysCalIsDone(uint16_t row, uint16_t col);
+static bool keysCalSaveBlob(void);
+
+bool keysCalIsActive(void)
+{
+  return cal_active;
+}
+
+void keysCalStart(void)
+{
+  for (uint32_t i = 0; i < KEYS_MAX; i++)
+  {
+    cal_min_tmp[i] = 0xFFFF;
+    cal_max_tmp[i] = 0;
+  }
+  cal_active = true;
+}
+
+void keysCalCancel(void)
+{
+  cal_active = false;
+}
+
+/*
+ * 표본 하나를 더한다. 스캔마다 불려도 되게 싸게 짰다 — 64칸 최소값 갱신뿐이다.
+ * 켜져 있을 때만 도므로 평상시 비용은 분기 하나다.
+ */
+void keysCalCollect(void)
+{
+  if (cal_active == false) return;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      uint32_t i = st * KEYS_CH_MAX + c;
+      uint16_t v;
+
+      if (keysIsPresent(st, c) == false) continue;
+
+      v = raw[st][c];
+      if (v < cal_min_tmp[i])
+      {
+        cal_min_tmp[i] = v;
+        cal_max_tmp[i] = base[st][c];   /* 같은 순간의 기준값을 짝지어 둔다 */
+      }
+    }
+  }
+}
+
+uint32_t keysCalTotal(void)
+{
+  uint32_t n = 0;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++) if (keysIsPresent(st, c)) n++;
+  }
+  return n;
+}
+
+uint32_t keysCalDone(void)
+{
+  uint32_t n = 0;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      if (keysIsPresent(st, c) && keysCalIsDone(st, c)) n++;
+    }
+  }
+  return n;
+}
+
+/*
+ * 지금까지 모인 행정을 키별로 준다 (카운트). 0 = 아직 못 잰 키.
+ *
+ * ★ 저장 전에도 읽을 수 있어야 한다.
+ *
+ *   보정 중에 도구가 keysGetKeyCfg 로 읽으면 **저장돼 있던 옛 값**이 나온다.
+ *   이번에 모으는 값은 저장할 때까지 cfg 에 들어가지 않기 때문이다. 누르는 대로
+ *   숫자가 갱신되는 것을 보여주려면 진행 중인 값을 따로 내줘야 한다.
+ *
+ *   완료 판정(keysCalIsDone)과 같은 식으로 잰다. 아직 기준에 못 미치는 키도
+ *   0 으로 준다 — 어중간한 값을 보여주면 다 눌린 것으로 오해한다.
+ *
+ * start 부터 max 개까지 채우고 채운 개수를 준다. 한 프레임에 다 안 들어가므로
+ * 도구가 나눠서 묻는다.
+ */
+uint32_t keysCalStrokes(uint32_t start, uint16_t *p_out, uint32_t max)
+{
+  uint32_t n = 0;
+
+  if (p_out == NULL) return 0;
+
+  for (uint32_t i = start; i < KEYS_MAX && n < max; i++, n++)
+  {
+    uint16_t st = (uint16_t)(i / KEYS_CH_MAX);
+    uint16_t c  = (uint16_t)(i % KEYS_CH_MAX);
+    int32_t  s;
+
+    p_out[n] = 0;
+
+    if (keysIsPresent(st, c) == false) continue;
+    if (cal_min_tmp[i] == 0xFFFF)      continue;
+
+    s = (int32_t)cal_max_tmp[i] - (int32_t)cal_min_tmp[i];
+    if (s >= KEYS_CAL_STROKE_MIN) p_out[n] = (uint16_t)s;
+  }
+  return n;
+}
+
+/* 키별 완료 여부를 비트로 채운다. 비트 i = 키 인덱스 i. */
+uint32_t keysCalBitmap(uint8_t *p_buf, uint32_t len)
+{
+  uint32_t need = (KEYS_MAX + 7) / 8;
+
+  if (len < need) return 0;
+  for (uint32_t i = 0; i < need; i++) p_buf[i] = 0;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      uint32_t i = st * KEYS_CH_MAX + c;
+
+      if (keysIsPresent(st, c) && keysCalIsDone(st, c)) p_buf[i / 8] |= (uint8_t)(1u << (i % 8));
+    }
+  }
+  return need;
+}
+
+/*
+ * 끝난 키만 저장한다.
+ *
+ * ★ 부분 저장을 허용한다. 레이아웃에는 옵션 소켓(스플릿 백스페이스 등)이 다 들어
+ *   있지만 실제로는 그중 하나만 끼운다. "전부 끝나야 저장" 으로 막으면 영영
+ *   저장할 수 없다. 나머지는 종류표의 공칭값을 계속 쓰면 된다.
+ */
+bool keysCalSave(uint32_t *p_done, uint32_t *p_skip)
+{
+  uint32_t done = 0, skip = 0;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      uint32_t i = st * KEYS_CH_MAX + c;
+
+      if (keysIsPresent(st, c) == false) continue;
+
+      if (keysCalIsDone(st, c))
+      {
+        KC(i)->cal_max = cal_max_tmp[i];
+        KC(i)->cal_min = cal_min_tmp[i];
+        KC(i)->flags  |= 0x01;
+        done++;
+      }
+      else
+      {
+        skip++;
+      }
+    }
+  }
+
+  cal_active = false;
+  if (p_done) *p_done = done;
+  if (p_skip) *p_skip = skip;
+
+  if (done == 0) return false;
+  return keysCalSaveBlob();
+}
+
+static bool keysCalIsDone(uint16_t row, uint16_t col)
+{
+  uint32_t i = row * KEYS_CH_MAX + col;
+
+  if (i >= KEYS_MAX)                return false;
+  if (cal_min_tmp[i] == 0xFFFF)     return false;
+
+  return ((int32_t)cal_max_tmp[i] - (int32_t)cal_min_tmp[i]) >= KEYS_CAL_STROKE_MIN;
+}
+static bool     drift_due    = false;
+
+static void keysCalRejectOutlier(void);
+static bool keysCfgLoad(void);
+static bool keysCfgSave(void);
+static ATTR_RAMFUNC void keysTrack(uint32_t step);
+static inline void keysFilter(uint32_t step, uint32_t ch, uint32_t packed);
+
+#if CLI_USE(HW_KEYS)
+static void cliKeys(cli_args_t *args);
+#endif
+
+
+
+
+/*---------------------------------------------------------------------------
+ *  완료 대기
+ *---------------------------------------------------------------------------*/
+
+/*
+ * ★ 인터럽트를 쓰지 않는다.
+ *
+ *   처음에는 ADC 완료 인터럽트로 플래그를 세우고 스캔 루프가 그걸 스핀으로 기다렸다.
+ *   그런데 어차피 기다릴 거면 상태 레지스터를 직접 보면 된다 — 인터럽트가 하는 일이
+ *   플래그 하나 세우는 것뿐이었다.
+ *
+ *   인터럽트 부하가 만만치 않았다. 8스텝 x ADC 2개 x 초당 15,000 스캔이면
+ *   초당 24만 번이다. 그 ISR 들이 USB 완료 콜백을 밀어내서 다음 마이크로프레임(125us)
+ *   안에 재무장하지 못했고, 리포트가 8000/s 가 아니라 6000/s 로 떨어졌다.
+ */
+/*
+ * ★ SEQ_CMPT 폴링도 걷어냈다.
+ *
+ *   한동안 "SEQ_CMPT 를 기다린 뒤 DMA 칸이 채워지길 기다린다"로 두 번 기다렸는데,
+ *   DMA 기록은 변환이 끝나야 일어난다 — 뒤엣것이 앞엣것을 이미 포함한다.
+ *   두 번 기다리는 값이 스캔 1회에 4.5us 였다.
+ *
+ *   플래그는 이제 아무도 보지 않으므로 지우지도 않는다. `keys adc` 진단만 읽는다.
+ */
+
+
+/*---------------------------------------------------------------------------
+ *  초기화
+ *---------------------------------------------------------------------------*/
+static void keysInitPins(void)
+{
+  /* 아날로그 입력 — PB00~PB15 */
+  for (uint32_t i = 0; i < KEYS_ANALOG_PAD_CNT; i++)
+  {
+    HPM_IOC->PAD[KEYS_ANALOG_PAD_FIRST + i].FUNC_CTL = IOC_PAD_FUNC_CTL_ANALOG_MASK;
+  }
+
+  /*
+   * MUX 주소 — PY00~PY03.
+   *
+   * ★ PY 패드는 IOC 만으로는 연결되지 않는다. PIOC 도 함께 SOC(3) 으로 넘겨야
+   *   SoC 쪽 GPIO 가 패드를 잡는다.
+   */
+  for (uint32_t i = 0; i < KEYS_MUX_PIN_CNT; i++)
+  {
+    HPM_IOC->PAD[KEYS_MUX_PAD_FIRST + i].FUNC_CTL  = IOC_PY00_FUNC_CTL_GPIO_Y_00;
+    HPM_PIOC->PAD[KEYS_MUX_PAD_FIRST + i].FUNC_CTL = KEYS_PIOC_SOC_CTRL;
+  }
+
+  gpio_enable_port_output_with_mask(HPM_GPIO0, KEYS_MUX_GPIO_PORT, KEYS_MUX_PIN_MASK);
+  gpio_write_port(HPM_GPIO0, KEYS_MUX_GPIO_PORT, mux_addr[0]);
+}
+
+static bool keysInitAdc(ADC16_Type *ptr, const uint8_t *seq_ch, volatile uint32_t *buf)
+{
+  adc16_config_t         cfg;
+  adc16_channel_config_t ch_cfg;
+  adc16_seq_config_t     seq_cfg;
+  adc16_dma_config_t     dma_cfg;
+
+  adc16_get_default_config(&cfg);
+  cfg.res         = adc16_res_12_bits;
+  cfg.conv_mode   = adc16_conv_mode_sequence;
+  /*
+   * ADC 클럭 = AHB0(133MHz) / 이 값. 변환 한 번은 `sample_cycle + 21` 클럭이다
+   * (SDK 의 ADC16_SOC_MAX_CONV_CLK_NUM 과 실측이 맞는다).
+   *
+   * ★ 3 이 최적점이다 — 2026-08-17 에 셋을 다 재 봤다.
+   *
+   *     div  ADC클럭   ADC변환   스캔   잡음 p-p (평균/최대)
+   *      4   33.3MHz   23.75us   29us      47 / 55
+   *      3   44.4MHz   19.12us   26us      42 / 53     ← 빠르고 조용하다
+   *      2   66.7MHz   14.50us   25us      47 / 63     ← 최대가 나빠진다
+   *
+   *   4 -> 3 은 **스캔이 13% 빨라지면서 잡음도 11% 준다.** 2 로 더 가면 스캔 이득은
+   *   거의 없고(26->25us) 최대 잡음만 커진다 — SAR 정착 여유가 모자라기 시작하는 것으로
+   *   보인다.
+   *
+   * ★ 크로스토크도 확인했다 (한 키를 끝까지 누른 채 64셀을 비교).
+   *
+   *   결합은 **같은 ch 의 다른 스텝**으로 간다 — 같은 아날로그 배선이니 시퀀스가 아니라
+   *   mux 스텝 사이다. 2,470 카운트를 누를 때 최대 결합이
+   *
+   *     div 4  +8.5 (0.35%)      div 3  +10.0 (0.40%)
+   *
+   *   차이가 측정 산포 안이다. **클럭을 올려도 크로스토크가 의미 있게 안 는다.**
+   *   절대값도 10카운트 = 0.016mm 로 잡음 바닥(p-p 42 = 0.067mm) 밑이다.
+   *
+   * ★ 규격 확인 — **44.4MHz 는 안이다.** 공표 사양이 12비트 4 MSPS 이고, SDK 가
+   *   12비트 변환을 `adc16_res_12_bits = 14` 클럭으로 잡는다. 4 MSPS = 250ns 이므로
+   *   그 처리량을 내려면 ADC 클럭이 최소 **~56MHz** 는 되어야 한다. 44.4 는 26% 여유고,
+   *   66.7 은 그 선을 넘는다 — div 2 에서 p-p 최대만 나빠진 것과 정확히 맞는다.
+   *
+   *   (데이터시트 원본은 못 구해 공표 사양에서 역산한 것이다. 원본을 보게 되면
+   *    ADC16 최대 입력 클럭 수치로 이 줄을 대체할 것.)
+   */
+  cfg.adc_clk_div = 3;
+  cfg.sel_sync_ahb = false;
+  cfg.adc_ahb_en  = true;          /* 시퀀스 모드는 AHB 라이터가 필요하다 */
+
+  if (adc16_init(ptr, &cfg) != status_success) return false;
+
+  adc16_get_channel_default_config(&ch_cfg);
+  /*
+   * 샘플 조리개.
+   *
+   * ★ 늘려도 소용없다 — 재 봤다 (2026-08-17).
+   *
+   *   5 -> 16 으로 3.2배 넓혀 60초씩 두 번 (스캔 150만 회) 쟀는데 잡음이 그대로였다.
+   *
+   *     조리개 5   p-p 평균 47, 최대 55,  스캔 29us
+   *     조리개 16  p-p 평균 47, 최대 53,  스캔 39us   ← 34% 느려지고 잡음은 그대로
+   *
+   *   즉 우리 잡음 바닥은 S/H 정착이나 소스 임피던스가 아니다. 센서 자체의 출력
+   *   잡음과 저주파 성분(드리프트·전원)이 지배한다. ADC 쪽을 아무리 손봐도 안 준다.
+   *
+   *   ★ 그러니 여기를 다시 올리려면 **먼저 잡음 출처가 바뀌었다는 근거**가 있어야
+   *     한다. 스캔율만 잃는다.
+   */
+  ch_cfg.sample_cycle = 5;
+  for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++)
+  {
+    ch_cfg.ch = seq_ch[i];
+    if (adc16_init_channel(ptr, &ch_cfg) != status_success) return false;
+  }
+
+  memset(&seq_cfg, 0, sizeof(seq_cfg));
+  seq_cfg.seq_len    = KEYS_SEQ_LEN;
+  seq_cfg.sw_trig_en = true;       /* 스캔 루프가 직접 트리거한다 */
+  seq_cfg.hw_trig_en = false;
+
+  /*
+   * ★ 이름에 속으면 안 된다.
+   *   CONT_EN    = "트리거 한 번에 큐 끝까지 진행" — 우리가 원하는 것
+   *   RESTART_EN = "끝나면 다시 처음부터" (CONT_EN 과 같이 켤 때만 의미)
+   *
+   *   CONT_EN 을 끄면 트리거 1회에 변환이 딱 1개만 일어나고 멈춘다.
+   *   그러면 완료 인터럽트가 영영 오지 않아 스캔이 통째로 타임아웃한다.
+   */
+  seq_cfg.cont_en    = true;
+  seq_cfg.restart_en = false;
+  for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++)
+  {
+    seq_cfg.queue[i].ch = seq_ch[i];
+
+    /*
+     * ★ SEQ_INT_EN 은 시퀀스 전체가 아니라 "이 큐 원소가 끝나면 알려라" 다.
+     *   전부 false 로 두면 완료 인터럽트가 영영 오지 않는다 (스캔이 통째로 타임아웃).
+     *   마지막 원소에만 켜서 시퀀스 끝에 한 번만 받는다.
+     */
+    seq_cfg.queue[i].seq_int_en = (i == (KEYS_SEQ_LEN - 1));
+  }
+  if (adc16_set_seq_config(ptr, &seq_cfg) != status_success) return false;
+
+  memset(&dma_cfg, 0, sizeof(dma_cfg));
+
+  /*
+   * ADC 는 시스템 버스로 쓰므로 코어 로컬 주소(ILM/DLM)가 아니라 시스템 주소를 줘야 한다.
+   * AXI SRAM 이면 변환이 항등이지만, 버퍼를 옮겼을 때 조용히 깨지는 걸 막는다.
+   */
+  dma_cfg.start_addr          = (uint32_t *)core_local_mem_to_sys_address(0, (uint32_t)buf);
+  dma_cfg.buff_len_in_4bytes  = KEYS_SEQ_LEN;
+  dma_cfg.stop_pos            = 0;
+  dma_cfg.stop_en             = false;
+  if (adc16_init_seq_dma(ptr, &dma_cfg) != status_success) return false;
+
+  /* 완료는 폴링으로 본다. 인터럽트는 켜지 않는다. */
+  adc16_clear_status_flags(ptr, ADC16_INT_STS_SEQ_CMPT_MASK);
+
+  return true;
+}
+
+bool keysInit(void)
+{
+  bool ret = true;
+
+
+  clock_add_to_group(clock_adc0, 0);
+  clock_add_to_group(clock_adc1, 0);
+  clock_set_adc_source(clock_adc0, clk_adc_src_ahb0);
+  clock_set_adc_source(clock_adc1, clk_adc_src_ahb0);
+
+  keysInitPins();
+
+  if (keysInitAdc(HPM_ADC0, adc0_seq_ch, adc0_buf) == false) ret = false;
+  if (keysInitAdc(HPM_ADC1, adc1_seq_ch, adc1_buf) == false) ret = false;
+
+  is_init = ret;
+
+#if CLI_USE(HW_KEYS)
+  cliAdd("keys", cliKeys);
+#endif
+
+  /*
+   * 저장된 설정을 읽는다. 읽기뿐이라 인터럽트를 막지 않아 부팅 경로에서 안전하다.
+   * 없거나 깨졌으면 기본값으로 계속 간다 — 여기서 멈추면 복구가 막힌다.
+   */
+  is_cfg_loaded = keysCfgLoad();
+
+  /*
+   * 순서가 있다 — 뒤엣것이 앞엣것에 기댄다.
+   *
+   *   역수 -> 내장 서술자 -> 커스텀 서술자(곡선을 만든다) -> 임계값
+   *
+   * 커스텀은 저장된 두 점에서 곡선을 만드는 일이라 keysCfgLoad 뒤여야 한다.
+   */
+  keysCurveRecipInit();
+  keysSwRefBuiltinInit();
+  keysSwRefCustomInit();
+  keysThrRebuild();          /* 설정을 읽었으니 임계값을 푼다 */
+
+  if (ret)
+  {
+    keysCalibrate();
+  }
+
+  logPrintf("[%s] keysInit()\n", ret ? "OK" : "E_");
+  if (ret)
+  {
+    logPrintf("     %d step x %d ch = %d keys, cal %d\n",
+              KEYS_STEP_MAX, KEYS_CH_MAX, KEYS_MAX, is_calibrated);
+  }
+
+  return ret;
+}
+
+
+
+
+/*---------------------------------------------------------------------------
+ *  스캔
+ *---------------------------------------------------------------------------*/
+static inline void keysSettle(void)
+{
+  for (uint32_t i = 0; i < KEYS_SETTLE_CYCLES; i++)
+  {
+    __asm volatile ("nop");
+  }
+}
+
+/*
+ * ★ "변환 끝"과 "버퍼에 앉음"은 다른 사건이다.
+ *
+ *   SEQ_CMPT 는 마지막 채널의 **변환**이 끝났다는 뜻이다. 그 결과가 버스를 건너
+ *   DMA 버퍼에 앉기까지는 시간이 더 걸린다. -O0 일 때는 플래그를 보고 버퍼를 읽기까지
+ *   코드가 충분히 느려서 드러나지 않았는데, -O2 로 그 간격이 좁아지자 각 시퀀스의
+ *   **마지막 원소**(ch3 · ch7)만 직전 스캔 값을 읽었다.
+ *
+ *     노이즈 p-p    다른 셀 3~9      ch3 · ch7  12 ~ 231
+ *
+ *   순서 문제라 핀을 바꿔도 소용없다. 원시값이 한 스텝 밀리므로 **엉뚱한 키가 눌린
+ *   것으로 판정된다** — 실제로 그렇게 나타났다.
+ *
+ *   ★ cycle_bit 은 못 쓴다.
+ *     DMA 워드 최상위 비트가 버퍼를 한 바퀴 돌 때마다 뒤집힌다고 되어 있지만,
+ *     SW 트리거가 시퀀스를 0번부터 다시 시작시켜서 포인터가 감기지 않는다.
+ *     수백만 스캔을 돈 뒤 덤프해도 네 워드 모두 bit31 = 0 이었다.
+ *
+ *   그래서 **마지막 칸을 비워 두고 채워지는 것을 본다.** DMA 워드는 채널 번호가
+ *   실려 있어 절대 0 이 아니다. 칸은 순서대로 채워지므로 마지막이 왔으면 앞은 이미 왔다.
+ *   보통은 비교 한 번에 끝난다 — 늦었을 때만 돈다.
+ */
+static inline void keysDmaArm(void)
+{
+  adc0_buf[KEYS_SEQ_LEN - 1] = 0;
+  adc1_buf[KEYS_SEQ_LEN - 1] = 0;
+}
+
+static inline bool keysWaitDma(void)
+{
+  uint32_t spin = 0;
+
+  while (adc0_buf[KEYS_SEQ_LEN - 1] == 0 || adc1_buf[KEYS_SEQ_LEN - 1] == 0)
+  {
+    if (++spin > KEYS_WAIT_LIMIT)
+    {
+      timeout_cnt++;
+      return false;
+    }
+  }
+  return true;
+}
+
+/*
+ * 데드밴드 필터.
+ *
+ * 밴드보다 크게 움직일 때만 출력이 따라간다. 큰 변화는 같은 샘플에서 즉시 반영되므로
+ * 지연이 없다. 밴드 안쪽 잔파도는 출력에 아예 나타나지 않는다.
+ */
+static inline void keysFilter(uint32_t step, uint32_t ch, uint32_t packed)
+{
+  uint16_t v12 = (uint16_t)((packed & 0xFFFF) >> KEYS_RAW_SHIFT);
+  int32_t  v;
+  int32_t  o;
+
+  /* 링을 한 칸 밀어 합을 갱신한다 — 가장 오래된 것을 빼고 새 것을 더한다 */
+  v = (int32_t)acc_sum[step][ch] - (int32_t)acc_hist[step][ch][acc_idx] + (int32_t)v12;
+  acc_hist[step][ch][acc_idx] = v12;
+  acc_sum[step][ch]           = (uint16_t)v;
+
+  /* 데드밴드는 합 눈금에 건다 */
+  o = (int32_t)raw[step][ch];
+
+  if      (v > o + KEYS_DEADBAND) o = v - KEYS_DEADBAND;
+  else if (v < o - KEYS_DEADBAND) o = v + KEYS_DEADBAND;
+
+  raw[step][ch] = (uint16_t)o;
+}
+
+/*
+ * 기준값 추적 + 눌림 판정.
+ *
+ * 안 눌린 상태가 물리적 극단(자석이 가장 멀어 값이 가장 크다)이므로 기준값은
+ * 러닝 최대값이다. 이 하나로 세 가지가 같이 해결된다.
+ *
+ *   - 누른 채 부팅  -> 손을 떼는 순간 제 값을 찾는다
+ *   - 온도 드리프트 -> 위로 새면 즉시, 아래로 새면 천천히 따라간다
+ *   - 개체 편차     -> 셀마다 제 기준을 갖는다
+ */
+/*
+ * 거리(0.01mm) -> 정규화 값 u (Q15). 곡선을 앞으로 읽는 일이다.
+ *
+ * 표가 거리를 균일 분할해 두었으므로 자리는 곱셈 하나로 나온다 — 탐색이 필요 없다.
+ * 판정 문턱을 만들 때 쓴다.
+ */
+static uint32_t keysCurveToU(const uint16_t *c, uint32_t um, uint32_t travel)
+{
+  uint32_t pos, idx, frac;
+
+  if (um == 0 || travel == 0) return 0;
+  if (um >= travel)           return KEYS_CURVE_ONE;
+
+  /* um <= travel <= 410 이라 um * 32 << 16 은 32비트 안이다 (최대 8.6e8) */
+  pos  = (((uint32_t)um * KEYS_CURVE_SEG) << 16) / travel;
+  idx  = pos >> 16;
+  frac = pos & 0xFFFF;
+
+  if (idx >= KEYS_CURVE_SEG) return KEYS_CURVE_ONE;
+
+  return c[idx] + ((((uint32_t)c[idx + 1] - c[idx]) * frac) >> 16);
+}
+
+/*
+ * 키별 스트로크의 역수 — 설정·보정이 바뀔 때 다시 만든다 (keysThrRebuild).
+ *
+ * u = d * 32767 / stroke 의 나눗셈을 없앤다. 시프트를 12 로 두면 남는 곱이
+ * 최대 12285 x 89475 = 1.1e9 라 32비트 안이고, u 오차는 32767 분의 1 이다 —
+ * 우리 단위(0.01mm)의 양자화보다 작아서 안 보인다.
+ */
+#define KEYS_STROKE_RECIP_SH   12
+
+static uint32_t stroke_recip[KEYS_MAX];
+
+/*
+ * 곡선 칸 간격의 역수 — 부팅 때 한 번 만든다. Q31 (2^31 / 간격).
+ *
+ * ★ 나눗셈을 없애려고 둔다.
+ *
+ *   상용 펌웨어를 뜯어 보니 같은 수를 쓰고 있었다. 부팅 때 32768/i 표(i=1..255)를
+ *   채워 두고 스캔 경로에서는 곱셈+시프트만 한다. 우리도 그대로 가져온다.
+ *
+ * ★ 상수로 박지 않고 부팅 때 만든다.
+ *
+ *   곡선에서 계산되는 값이라 손으로 적어 두면 **곡선을 고칠 때 짝이 어긋난다.**
+ *   32칸 나눗셈 몇 번은 부팅에서 보이지도 않는다.
+ *
+ * 곡선이 없는 종류(일반형)는 칸이 0 이라 안 쓴다.
+ */
+static uint32_t curve_recip[KEYS_SWITCH_CNT][KEYS_CURVE_SEG];
+
+/* 커스텀 슬롯은 곡선도 역수도 부팅 때 만든다 — 상수 표가 없다 */
+static uint16_t cust_curve[KEYS_SW_SLOT_MAX][KEYS_CURVE_N];
+static uint32_t cust_recip[KEYS_SW_SLOT_MAX][KEYS_CURVE_SEG];
+
+/* 곡선 한 벌에서 구간 역수를 만든다 */
+static void keysRecipFill(const uint16_t *c, uint32_t *out)
+{
+  for (uint32_t i = 0; i < KEYS_CURVE_SEG; i++)
+  {
+    uint32_t span = (uint32_t)c[i + 1] - c[i];
+
+    out[i] = (span > 0) ? ((uint32_t)0x80000000U / span) : 0;
+  }
+}
+
+static void keysCurveRecipInit(void)
+{
+  for (uint32_t s = 0; s < KEYS_SWITCH_CNT; s++)
+  {
+    const uint16_t *c = keys_switch[s].curve;
+
+    if (c == NULL) continue;
+    keysRecipFill(c, curve_recip[s]);
+  }
+}
+
+
+/*---------------------------------------------------------------------------
+ *  곡선 만들기 — 데이터시트 두 점에서 (정수만)
+ *
+ *  축방향 자화 원통 자석의 축상 자기장은 B(z) = (Br/2) * f(z) 이고
+ *
+ *      f(z) = (z+L)/sqrt((z+L)^2 + R^2) - z/sqrt(z^2 + R^2)
+ *
+ *  미지수는 둘(유효 갭 z0, 잔류자속 Br)이다. 그런데 **두 점의 비를 잡으면 Br 이
+ *  약분되어** 미지수가 하나가 된다.
+ *
+ *      f(z0) / f(z0 + T) = bottom / rest
+ *
+ *  z0 만 이분법으로 풀면 곡선이 나온다. 앱(heMakeCurve)과 tools/he_magnet_fit.py 가
+ *  하는 계산이 이것이고, 여기서는 정수로 한다.
+ *
+ *  ★ 부동소수를 안 쓴다. 이 코어에 FPU 가 없다 (rv32imac).
+ *
+ *    float 판과 대조해 보니 LUT 마디마다 32767 대비 최대 21(0.06%) 차이고, 그나마
+ *    1µm 이분 해상도 탓이지 고정소수점 탓이 아니다. 거리로 7µm — 이 곡선이 고치려는
+ *    오차가 0.94mm 다.
+ *
+ *  ★ 잔차는 64비트로 잡는다. f() 가 Q20 이라 1.05e6 이고 자속이 2000 이면
+ *    2.1e9 로 int32 를 넘는다.
+ *---------------------------------------------------------------------------*/
+
+/* 자석 치수 (µm) — 앱의 MAG_R / MAG_L 과 같은 값이어야 한다 */
+#define KEYS_MAG_R_UM   2000
+#define KEYS_MAG_L_UM   2000
+
+#define KEYS_SHAPE_Q     24
+
+/* 64비트 정수 제곱근 — 뉴턴법. libm 을 안 부르려고 둔다 */
+static uint32_t keysISqrt64(uint64_t v)
+{
+  uint64_t x;
+  uint64_t y;
+
+  if (v == 0) return 0;
+
+  /* 초기값은 비트폭 절반 — 몇 번이면 수렴한다 */
+  x = 1ULL << ((64 - __builtin_clzll(v) + 1) / 2);
+  for (uint32_t i = 0; i < 8; i++)
+  {
+    y = (x + v / x) / 2;
+    if (y >= x) break;
+    x = y;
+  }
+  return (uint32_t)x;
+}
+
+/*
+ * z/sqrt(z^2 + R^2) 을 Q24 로 — 1.0 이 16.7e6 이라 int32 에 든다.
+ *
+ * ★ 제곱근에 소수 8비트를 준다 (KEYS_SQRT_F).
+ *
+ *   그냥 정수 제곱근을 쓰면 내림 오차가 상대 1e-4 다. 작아 보이지만 shape() 이
+ *   **거의 같은 두 값의 차**라 그 오차가 50배 넘게 증폭된다 — 실제로 곡선이 앱
+ *   모델과 0.47% 어긋났다(154/32767).
+ *
+ *   sqrt(v * 2^16) = sqrt(v) * 2^8 이므로 미리 밀어 넣고 나중에 같이 맞춘다.
+ *   0.05% 로 떨어진다. 16비트까지 줘도 더 안 좋아진다 — 거기부터는 Q24 몫이다.
+ */
+#define KEYS_SQRT_F      8
+
+static int32_t keysAxisQ20(int32_t z_um)
+{
+  uint64_t zz = (uint64_t)z_um * (uint64_t)z_um
+              + (uint64_t)KEYS_MAG_R_UM * (uint64_t)KEYS_MAG_R_UM;
+  uint32_t r  = keysISqrt64(zz << (2 * KEYS_SQRT_F));
+
+  if (r == 0) return 0;
+  return (int32_t)(((uint64_t)z_um << (KEYS_SHAPE_Q + KEYS_SQRT_F)) / r);
+}
+
+/* f(z) — 값이 클수록 자석이 가깝다. Q20 */
+static int32_t keysShapeQ20(int32_t z_um)
+{
+  return keysAxisQ20(z_um + KEYS_MAG_L_UM) - keysAxisQ20(z_um);
+}
+
+/*
+ * 두 점에서 곡선 33칸(Q15)을 만든다. 못 풀면 false — 그때는 직선으로 읽는다.
+ *
+ * out[i] 는 "전 행정의 i/32 만큼 눌렸을 때의 정규화 값" 이다. **거리 등간격**으로
+ * 뽑는다 — u 등간격으로 뽑으면 첫 칸이 0.6mm 를 덮어 그 구간이 뭉개진다.
+ */
+static bool keysCurveBuild(uint16_t rest_gs, uint16_t bot_gs,
+                           uint16_t travel_um, uint16_t *out)
+{
+  int32_t lo = 50;
+  int32_t hi = 20000;
+  int32_t t_um;
+  int32_t z0;
+  int32_t b_bottom;
+  int32_t b_rest;
+  int32_t span;
+
+  if (rest_gs == 0 || bot_gs <= rest_gs || travel_um == 0) return false;
+
+  /*
+   * ★ 단위를 맞춘다. 이 파일의 "um" 은 **0.01mm** 다.
+   *
+   *   자석 치수는 진짜 µm 로 잡았는데(2000 = 2.0mm) 행정은 0.01mm 단위라 340 이
+   *   3.40mm 다. 그대로 더하면 3.40mm 를 0.34mm 로 읽어, 두 점의 비가 모델이 낼 수
+   *   있는 범위를 벗어나고 이분법이 근을 못 찾는다 — 곡선이 통째로 안 나왔다.
+   */
+  t_um = (int32_t)travel_um * 10;
+
+  /*
+   * 잔차 g(z) = f(z)*rest - f(z+T)*bot 의 부호를 본다.
+   *
+   * 나눗셈 없이 교차곱으로 두는 것이 요점이다 — 비를 직접 만들면 정밀도를 잃는다.
+   */
+  #define RESID(z)  ((int64_t)keysShapeQ20(z) * (int64_t)rest_gs                \
+                   - (int64_t)keysShapeQ20((z) + t_um) * (int64_t)bot_gs)
+
+  if ((RESID(lo) < 0) == (RESID(hi) < 0)) return false;
+
+  for (uint32_t i = 0; i < 24; i++)
+  {
+    int32_t mid = lo + (hi - lo) / 2;
+
+    if (mid == lo) break;
+    if ((RESID(lo) < 0) == (RESID(mid) < 0)) lo = mid;
+    else                                     hi = mid;
+  }
+  z0 = lo;
+  #undef RESID
+
+  b_bottom = keysShapeQ20(z0);                 /* 끝까지 눌렀을 때 */
+  b_rest   = keysShapeQ20(z0 + t_um);          /* 안 눌렀을 때 */
+  span     = b_bottom - b_rest;
+  if (span <= 0) return false;
+
+  for (uint32_t i = 0; i < KEYS_CURVE_N; i++)
+  {
+    /* 깊이 d 에서의 갭은 z0 + (T - d) 다 */
+    int32_t d = (int32_t)(((uint32_t)t_um * i) / KEYS_CURVE_SEG);
+    int32_t b = keysShapeQ20(z0 + t_um - d);
+    int32_t u = (int32_t)(((int64_t)(b - b_rest) * KEYS_CURVE_ONE) / span);
+
+    if (u < 0)                 u = 0;
+    if (u > KEYS_CURVE_ONE)    u = KEYS_CURVE_ONE;
+
+    /* 단조를 지킨다 — 뒤집히면 역수가 음수 span 을 잡는다 */
+    if (i > 0 && u < out[i - 1]) u = out[i - 1];
+
+    out[i] = (uint16_t)u;
+  }
+
+  /* 양 끝을 못 박는다. keysCurveToUm 이 c[32] 를 전 행정으로 본다 */
+  out[0]                 = 0;
+  out[KEYS_CURVE_SEG]    = KEYS_CURVE_ONE;
+  return true;
+}
+
+
+/*---------------------------------------------------------------------------
+ *  스위치 해결자 — sw_type 하나로 내장과 커스텀을 함께 본다
+ *
+ *  ★ 표를 직접 찌르는 자리를 여기 하나로 모은다.
+ *
+ *    예전에는 keys_switch[sw] 를 여덟 군데에서 직접 읽었고, 그중 하나(keys cfg 출력)는
+ *    범위 검사가 아예 없었다. 커스텀 번호가 들어오면 그 자리는 표 밖에서 포인터를
+ *    읽어 하드폴트다. 종류를 늘릴 때마다 여덟 군데를 같이 고치는 구조가 애초에 틀렸다.
+ *---------------------------------------------------------------------------*/
+typedef struct
+{
+  const char     *name;
+  uint16_t        travel_um;
+  uint16_t        stroke_cnt;
+  uint16_t        flux_rest_gs;
+  uint16_t        flux_bottom_gs;
+  const uint16_t *curve;      /* NULL = 직선 */
+  const uint32_t *recip;
+} keys_sw_ref_t;
+
+static keys_sw_ref_t sw_ref_builtin[KEYS_SWITCH_CNT];
+static keys_sw_ref_t sw_ref_custom[KEYS_SW_SLOT_MAX];
+
+/* 4.00mm 에 836 카운트(12비트 x 3누적)가 실측 기준이다 */
+static uint16_t keysNominalStroke(uint16_t travel_um)
+{
+  return (uint16_t)(((uint32_t)travel_um * 836U * KEYS_ACC_CNT) / 400U);
+}
+
+static void keysSwRefBuiltinInit(void)
+{
+  for (uint32_t i = 0; i < KEYS_SWITCH_CNT; i++)
+  {
+    sw_ref_builtin[i].name           = keys_switch[i].name;
+    sw_ref_builtin[i].travel_um      = keys_switch[i].travel_um;
+    sw_ref_builtin[i].stroke_cnt     = keys_switch[i].stroke_cnt;
+    sw_ref_builtin[i].flux_rest_gs   = keys_switch[i].flux_rest_gs;
+    sw_ref_builtin[i].flux_bottom_gs = keys_switch[i].flux_bottom_gs;
+    sw_ref_builtin[i].curve          = keys_switch[i].curve;
+    sw_ref_builtin[i].recip          = curve_recip[i];
+  }
+}
+
+/*
+ * 커스텀 한 칸을 푼다. 저장된 두 점에서 곡선을 만들어 얹는다.
+ *
+ * 자속이 0 이면 곡선 없이 직선이다 — "행정은 아는데 데이터시트가 없다" 가 그 자리다.
+ */
+static void keysSwRefCustomOne(uint32_t slot)
+{
+  const keys_sw_one_t *d = &sw_st.sw[slot];
+  keys_sw_ref_t       *r = &sw_ref_custom[slot];
+
+  r->name           = d->name;
+  r->travel_um      = (d->travel_um > 0) ? d->travel_um : 400;
+  r->flux_rest_gs   = d->flux_rest_gs;
+  r->flux_bottom_gs = d->flux_bottom_gs;
+
+  /*
+   * ★ 카운트는 앱이 줄 수 없다.
+   *
+   *   "전 행정이 몇 카운트인가" 는 데이터시트가 아니라 이 보드의 자석·센서 기하가
+   *   정한다. 0 으로 두면 stroke_recip 이 0 이 되어 모든 임계값이 바닥으로 깔리고
+   *   0.02mm 짜리 헤어트리거가 된다 — 행정에서 유도한다.
+   */
+  r->stroke_cnt = keysNominalStroke(r->travel_um);
+
+  if (keysCurveBuild(d->flux_rest_gs, d->flux_bottom_gs,
+                     r->travel_um, cust_curve[slot]))
+  {
+    keysRecipFill(cust_curve[slot], cust_recip[slot]);
+    r->curve = cust_curve[slot];
+    r->recip = cust_recip[slot];
+  }
+  else
+  {
+    r->curve = NULL;
+    r->recip = NULL;
+  }
+}
+
+static void keysSwRefCustomInit(void)
+{
+  for (uint32_t i = 0; i < KEYS_SW_SLOT_MAX; i++) keysSwRefCustomOne(i);
+}
+
+/*
+ * sw_type -> 서술자.
+ *
+ * 모르는 번호는 GENERIC(0)이 아니라 **기본 스위치**로 떨어진다. 0 으로 접으면
+ * 4.00mm 직선이 되어 이 보드(3.40mm)의 mm 가 전부 18% 어긋난다.
+ */
+static const keys_sw_ref_t *keysSwRef(uint8_t t)
+{
+  if (KEYS_SW_IS_CUSTOM(t))
+  {
+    uint32_t slot = KEYS_SW_SLOT_OF(t);
+
+    if (slot < KEYS_SW_SLOT_MAX) return &sw_ref_custom[slot];
+  }
+  else if (t < KEYS_SWITCH_CNT)
+  {
+    return &sw_ref_builtin[t];
+  }
+  return &sw_ref_builtin[KEYS_SWITCH_DEFAULT];
+}
+
+/*
+ * 키마다 푼 서술자 — keysThrRebuild 가 채운다.
+ *
+ * 부팅 순서상 채워지기 전에 읽힐 수 있으므로 NULL 이면 그 자리에서 푼다.
+ */
+static const keys_sw_ref_t *sw_ref[KEYS_MAX];
+
+static const keys_sw_ref_t *keysSwRefOf(uint32_t i)
+{
+  const keys_sw_ref_t *r = (i < KEYS_MAX) ? sw_ref[i] : NULL;
+
+  return (r != NULL) ? r : keysSwRef(keysSwType(i));
+}
+
+/* 그 번호를 실제로 쓸 수 있나 — 범위 관문이 이걸 본다 */
+static bool keysSwTypeValid(uint8_t t)
+{
+  if (KEYS_SW_IS_CUSTOM(t)) return KEYS_SW_SLOT_OF(t) < KEYS_SW_CUSTOM_CNT;
+  return t < KEYS_SWITCH_CNT;
+}
+
+/*
+ * 정규화 값 u (Q15) -> 거리(0.01mm). 곡선을 거꾸로 읽는 일이다.
+ *
+ * 33칸이라 이진 탐색이 비교 5회다.
+ *
+ * ★ **여기는 생각보다 뜨거운 자리다.**
+ *
+ *   표시 경로라 한가한 줄 알았는데, RGB 의 HE 효과가 매 프레임 65키의 깊이를
+ *   묻는다 (rgb_matrix_kb.inc). 처음에 편하다고 64비트 나눗셈을 썼더니 RGB 태스크
+ *   평균이 21 -> 34us 로 뛰었다 — RV32 에서 64비트 나눗셈은 소프트웨어 루틴이다.
+ *
+ *   지금은 나눗셈이 하나도 없다. 곱셈 하나와 시프트뿐이다.
+ *
+ * ★ 64비트 곱은 남겨 둔다. 나눗셈과 달리 명령 두 개(mul + mulhu)라 싸고, 전 행정을
+ *   넘어선 구간에서 32비트를 넘길 수 있다. 가지를 치는 것보다 이쪽이 낫다.
+ */
+#define KEYS_CURVE_POS_MAX  (160U << 16)   /* 전 행정의 5배. 32비트 곱을 지킨다 */
+
+static uint32_t keysCurveToUm(const keys_sw_ref_t *r, uint32_t u, uint32_t travel)
+{
+  const uint16_t *c = r->curve;
+  uint32_t lo = 0;
+  uint32_t hi = KEYS_CURVE_SEG;
+  uint32_t pos;
+
+  if (u == 0) return 0;
+
+  if (u >= c[hi])
+  {
+    /*
+     * 전 행정을 넘었다 — 마지막 칸의 기울기로 늘린다.
+     *
+     * ★ 여기서 자르면 안 된다. 보정은 "공칭 행정이 맞나" 를 재는 일인데, 실제로
+     *   더 깊이 들어가는 키가 있어도 잘려서 그 사실이 안 보인다.
+     */
+    lo = hi - 1;
+  }
+  else
+  {
+    while (hi - lo > 1)
+    {
+      uint32_t mid = (lo + hi) / 2;
+
+      if (c[mid] <= u) lo = mid;
+      else             hi = mid;
+    }
+  }
+
+  /* (u - c[lo]) / span 을 Q16 으로. 역수가 Q31 이라 >> 15 면 Q16 이다 */
+  pos = (lo << 16)
+      + (uint32_t)(((uint64_t)(u - c[lo]) * r->recip[lo]) >> 15);
+
+  if (pos > KEYS_CURVE_POS_MAX) pos = KEYS_CURVE_POS_MAX;
+
+  /* pos 는 칸 단위 Q16. 32칸이 전 행정이므로 >> (16 + 5) */
+  return (pos * travel) >> 21;
+}
+
+/*
+ * 설정(0.01mm)을 키별 카운트로 풀어 둔다.
+ *
+ * ★ 이걸 넣기 전까지 판정은 전역 상수(KEYS_PRESS_LEVEL 등)를 썼다.
+ *   VIA 입력지점 슬라이더가 EEPROM 만 바꾸고 판정에는 닿지 않았다는 뜻이다.
+ *
+ * ★ **여기가 감각을 정하는 자리다.** 곡선이 있으면 여기서 쓴다.
+ *
+ *   화면에 보이는 깊이(keysGetDepthUm)만 곡선으로 고치면 표시만 맞고 실제 눌리는
+ *   자리는 그대로다. 사용자가 정하는 것은 "몇 mm 에서 눌리나" 이고, 그것이 카운트로
+ *   번역되는 자리가 바로 여기다.
+ *
+ * ★ 래피드 트리거의 두 값(rt_press·rt_release)은 **위치가 아니라 이동량**이다.
+ *
+ *   곡선에서는 같은 이동량이라도 어디서 움직였느냐에 따라 카운트가 다르다 —
+ *   바닥 근처에서 0.5mm 는 위쪽 0.5mm 보다 훨씬 많은 카운트다. 제대로 하려면 매
+ *   표본마다 역변환을 해야 하는데 35kHz x 64셀 루프에는 못 넣는다.
+ *
+ *   그래서 이동량은 지금처럼 직선으로 둔다. 절대 위치(입력·해제·데드존·바닥)는
+ *   곡선으로 정확해지고, 이동량은 예전과 같은 어림이다 — 나빠지는 것은 없다.
+ *
+ * 환산에 키별 스트로크가 필요해 나눗셈이 들어간다. 35kHz x 64셀 루프 안에서는 못
+ * 하므로 설정·보정이 바뀔 때만 다시 만든다.
+ */
+static void keysThrRebuild(void)
+{
+  for (uint32_t i = 0; i < KEYS_MAX; i++)
+  {
+    const keys_key_set_t *k = KS(i);
+    /*
+     * ★ 서술자를 여기서 키마다 캐시한다.
+     *
+     *   푸는 값이 어차피 필요한 자리라 공짜고, 그러면 뜨거운 쪽(keysGetDepthUm)이
+     *   분기 없이 배열 하나만 읽는다.
+     */
+    const keys_sw_ref_t *r = keysSwRef(keysSwType(i));
+    uint32_t stroke;
+    uint32_t travel;
+    const uint16_t *curve;
+    keys_thr_t *t   = &thr[i];
+
+    sw_ref[i] = r;
+    stroke = keysStrokeCnt(i);
+    travel = keysTravelUmOf(i);
+    curve  = r->curve;
+
+    if (travel == 0) travel = 400;
+
+    /* 깊이 환산이 쓸 역수. 여기서 만들어 두면 그쪽에 나눗셈이 안 남는다 */
+    stroke_recip[i] = (stroke > 0)
+                    ? (((uint32_t)KEYS_CURVE_ONE << KEYS_STROKE_RECIP_SH) / stroke)
+                    : 0;
+
+    /*
+     * um -> 카운트. um 400, stroke 2700 이라도 32비트 안이다.
+     *
+     * 여기는 설정이 바뀔 때만 도는 자리라 나눗셈을 그냥 둔다 — 없앨 값어치가 없다.
+     */
+    #define UM2CNT(um)                                                       \
+      ((uint16_t)(curve                                                      \
+        ? ((keysCurveToU(curve, (um), travel) * stroke) / KEYS_CURVE_ONE)    \
+        : (((uint32_t)(um) * stroke) / travel)))
+
+    /* 이동량은 곡선을 안 쓴다 — 위 주석 참고 */
+    #define UM2CNT_LIN(um)  ((uint16_t)(((uint32_t)(um) * stroke) / travel))
+
+    t->press      = UM2CNT(k->press_um);
+    t->release    = UM2CNT(k->release_um);
+    t->dead       = UM2CNT(k->dead_um);
+    t->rt_flags   = k->rt_flags;
+
+    /* 표시용 스퀄치는 설정이 아니라 상수다 — 위 선언의 주석 참고 */
+    squelch_cnt[i] = UM2CNT(KEYS_SQUELCH_UM);
+
+    /*
+     * RT 문턱을 깊이 구역마다 굽는다.
+     *
+     * 구역 한가운데의 정규화 값 u 를 잡고, 거기서 rt_um 만큼 움직였을 때 u 가 얼마나
+     * 변하는지를 카운트로 옮긴다. 곡선이 없으면 어느 구역이나 같은 값이 나오므로
+     * 갈래를 나눌 필요가 없다 — 식 하나가 두 경우를 다 덮는다.
+     */
+    for (uint32_t z = 0; z < KEYS_RT_ZONE_CNT; z++)
+    {
+      uint32_t u0 = z * (KEYS_CURVE_ONE / KEYS_RT_ZONE_CNT)
+                  + (KEYS_CURVE_ONE / KEYS_RT_ZONE_CNT) / 2;
+      uint32_t m0 = curve ? keysCurveToUm(r, u0, travel)
+                          : (u0 * travel) / KEYS_CURVE_ONE;
+      uint32_t up, dn;
+
+      #define Z_U(mm)  (curve ? keysCurveToU(curve, (mm), travel)             \
+                              : (((uint32_t)(mm) * KEYS_CURVE_ONE) / travel))
+
+      /*
+       * 되뗌 — 기준점에서 이만큼 올라온다.
+       *
+       * 맨 위 구역에서는 그만큼 올라갈 자리가 없어 무압까지가 전부다. 그게 맞다 —
+       * 더 올라갈 데가 없으면 무압으로 돌아온 것이 곧 해제다.
+       */
+      up = (m0 > k->rt_release_um) ? (m0 - k->rt_release_um) : 0;
+      t->rt_release[z] = (uint16_t)(((u0 - Z_U(up)) * stroke) / KEYS_CURVE_ONE);
+
+      /*
+       * 되눌림 — 기준점에서 이만큼 내려간다.
+       *
+       * ★ 바닥 구역은 뒤에서 재야 한다.
+       *
+       *   그냥 더하면 행정을 넘어가고, 넘어간 값은 바닥에서 잘린다. 그러면 문턱이
+       *   커지기는커녕 **작아져서** (실측 481 -> 160) 바닥에서 재입력이 제일 쉽게
+       *   걸린다 — 고치려던 것과 정반대다.
+       *
+       *   넘어가면 바닥 바로 앞 구간의 기울기로 잰다. "여기서 0.30mm 는 몇 카운트인가"
+       *   라는 물음의 답은 그것이고, 실제로 그만큼 더 내려갈 수 없으니 바닥에 붙은
+       *   채로는 재입력이 안 걸린다. 그게 옳은 동작이다.
+       */
+      dn = m0 + k->rt_press_um;
+      if (dn > travel)
+      {
+        uint32_t lo = (travel > k->rt_press_um) ? (travel - k->rt_press_um) : 0;
+
+        t->rt_press[z] = (uint16_t)(((KEYS_CURVE_ONE - Z_U(lo)) * stroke)
+                                    / KEYS_CURVE_ONE);
+      }
+      else
+      {
+        t->rt_press[z] = (uint16_t)(((Z_U(dn) - u0) * stroke) / KEYS_CURVE_ONE);
+      }
+
+      #undef Z_U
+
+      /*
+       * 반응 행정이 잡음보다 작으면 RT 가 잡음을 방향 반전으로 읽는다. 실측 잡음
+       * p-p 가 40 이므로 그 위로 올린다. 사용자가 0 으로 내려도 여기서 막힌다.
+       *
+       * ★ 구역마다 걸린다. 바닥 근처는 같은 mm 라도 카운트가 커서 안 걸리지만,
+       *   맨 위 구역은 걸리는 일이 잦다 — 거기가 원래 신호가 약한 자리다.
+       */
+      if (t->rt_release[z] < KEYS_RT_MIN_CNT) t->rt_release[z] = KEYS_RT_MIN_CNT;
+      if (t->rt_press[z]   < KEYS_RT_MIN_CNT) t->rt_press[z]   = KEYS_RT_MIN_CNT;
+    }
+
+    /*
+     * 바닥 보호는 "바닥에서 이만큼 안쪽" 이다.
+     *
+     * ★ 뒤집는 자리가 카운트가 아니라 **거리**여야 한다.
+     *
+     *   예전에는 카운트로 바꾼 뒤 stroke 에서 뺐다. 직선일 때는 같은 값이지만
+     *   곡선에서는 다르다 — 위쪽 0.2mm 와 바닥쪽 0.2mm 는 카운트가 딴판이다.
+     *   거리에서 먼저 뒤집어 절대 위치로 만든 다음 곡선을 태운다.
+     */
+    {
+      uint32_t b_um = (travel > k->bottom_um) ? (travel - k->bottom_um) : 0;
+
+      t->bottom_lo = UM2CNT(b_um);
+    }
+    #undef UM2CNT
+    #undef UM2CNT_LIN
+
+    /*  RT 반응 행정의 하한은 구역마다 이미 걸었다 (위 반복문)  */
+
+    /*
+     * 입력지점의 하한 — **문턱이 잡음보다 낮으면 안 된다.**
+     *
+     * ★ 노이즈가 나빠진 것이 아니라 이름표가 정직해진 것이다.
+     *
+     *   예전 "0.30mm" 는 실제로 0.72mm 였고 문턱이 222 카운트였다. 곡선을 넣으니
+     *   0.30mm 가 진짜 0.30mm 가 되면서 문턱이 82 카운트다. 같은 물리 지점의 여유는
+     *   하나도 안 변했다 — 0.72mm 는 지금도 222 다.
+     *
+     *   바뀐 것은 사용자가 적은 숫자를 그대로 받게 됐다는 점이다. 그리고 행정의
+     *   맨 위는 자석이 멀어 원래 신호가 약하다. 직선 환산이 그 사실을 가려 주고
+     *   있었을 뿐이다.
+     *
+     *   잡음 p-p 40 기준 여유 —
+     *
+     *     0.10mm ->  26 카운트  0.7x   문턱이 잡음보다 낮다
+     *     0.20mm ->  54         1.3x
+     *     0.30mm ->  82         2.1x
+     *     0.50mm -> 144         3.6x
+     *
+     * ★ 참고 보드도 같은 벽에서 막는 것으로 답했다. 그쪽 웹 도구는 입력지점을
+     *   전 행정의 1/10 밑으로 못 내리게 한다. **그 숫자를 그대로 가져오면 안 된다** —
+     *   저쪽은 전 행정을 254칸으로 쓰고 우리는 2514칸이라, 같은 "1/10" 이 우리에게는
+     *   251카운트(0.80mm)가 되어 쓸 만한 구간을 통째로 막는다.
+     *
+     *   근거를 우리 잡음으로 다시 잡는다. RT 하한과 같은 수다 — 잡음 p-p 의 1.5배면
+     *   가만히 둔 키가 문턱을 못 넘는다. 60카운트는 0.22mm 쯤이라, 얕게 쓰고 싶은
+     *   사람을 막지 않으면서 0.10mm 같은 무리한 값만 걸러 낸다.
+     *
+     * ★ 화면이 아니라 여기서 막는다. 값을 바꾸는 길이 여럿이라(VIA 채널·키별 명령·
+     *   CLI) 화면에서 막으면 반드시 하나가 샌다.
+     *
+     *   설정값 자체는 안 건드린다. 사용자가 적어 둔 것을 조용히 고쳐 쓰면 화면과
+     *   실제가 어긋난다. 여기서 문턱만 올린다.
+     */
+    if (t->press < KEYS_RT_MIN_CNT) t->press = KEYS_RT_MIN_CNT;
+
+    /*
+     * 입력과 해제 사이에 잡음보다 넓은 틈을 남긴다.
+     *
+     * ★ 곡선으로 바꾸면서 이게 필요해졌다.
+     *
+     *   예전에는 "해제가 입력보다 깊으면 한 칸 아래로" 만 했다. 카운트 문턱이
+     *   넉넉해서 한 칸 차이가 현실적으로 안 나왔기 때문이다. 그런데 곡선을 태우면
+     *   같은 mm 설정이 카운트로 2.7배 작아진다 — 0.30mm 가 221 에서 82 카운트다.
+     *   틈이 잡음 p-p 40 보다 좁아지면 키가 제멋대로 눌렸다 떼진다.
+     *
+     *   RT 하한과 같은 근거를 쓴다.
+     */
+    if (t->press > KEYS_RT_MIN_CNT)
+    {
+      uint16_t lo = (uint16_t)(t->press - KEYS_RT_MIN_CNT);
+
+      if (t->release > lo) t->release = lo;
+    }
+    else if (t->release >= t->press && t->press > 0)
+    {
+      t->release = (uint16_t)(t->press - 1);
+    }
+
+    /*
+     * 데드존은 해제지점을 못 넘는다.
+     *
+     * ★ 순서가 무너지면 **앞의 값이 거짓이 된다.**
+     *
+     *   데드존은 "이보다 얕으면 안 본 걸로 친다" 라, 해제지점보다 깊어지면 해제가
+     *   할 일이 없어지고(깊이가 이미 0 이라 그 전에 떼진다), 입력지점까지 넘기면
+     *   입력지점을 덮어쓴다 — 화면에는 여전히 옛 숫자가 적혀 있는 채로.
+     *
+     *   0 <= 데드존 <= 해제지점 < 입력지점 을 여기서 지킨다.
+     *
+     * ★ 화면에서도 슬라이더 최대를 해제지점으로 막아 뒀다. 여기 것은 그 화면을 안
+     *   거치는 길(키별 명령·CLI·백업 복원)을 위한 안전망이라 평상시엔 안 걸린다.
+     */
+    if (t->dead > t->release) t->dead = t->release;
+  }
+}
+
+/*
+ * 그 기준점이 어느 깊이 구역인가 (0 ~ 7).
+ *
+ * 정규화 값 u 의 상위 3비트다. u = (cnt * 역수) >> 12 이고 u 가 15비트이므로,
+ * 한 번에 >> 24 하면 구역이 나온다 — 곱셈 하나와 시프트 하나다.
+ *
+ * ★ 스캔 루프 안이라 나눗셈을 쓸 수 없다. 역수는 keysThrRebuild 가 미리 잡아 둔다.
+ */
+ATTR_RAMFUNC static inline uint32_t keysRtZone(uint32_t idx, uint16_t cnt)
+{
+  uint32_t z = ((uint32_t)cnt * stroke_recip[idx])
+               >> (KEYS_STROKE_RECIP_SH + 15 - KEYS_RT_ZONE_BITS);
+
+  return (z >= KEYS_RT_ZONE_CNT) ? (KEYS_RT_ZONE_CNT - 1) : z;
+}
+
+ATTR_RAMFUNC static void keysTrack(uint32_t step)
+{
+  bool do_drift = drift_due;
+
+  for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+  {
+    /* 스위치가 없는 자리는 판정하지 않는다. 기준값 추적은 그대로 둬도 무해하다. */
+    if ((keys_present[step] & (1U << c)) == 0) continue;
+
+    const uint32_t    idx = step * KEYS_CH_MAX + c;
+    const keys_thr_t *t = &thr[idx];
+    bool     rt_on   = (t->rt_flags & KEYS_RT_ON)     != 0;
+    bool     rt_cont = (t->rt_flags & KEYS_RT_CONT)   != 0;
+    bool     bot_on  = (t->rt_flags & KEYS_RT_BOTTOM) != 0;
+    uint16_t v = raw[step][c];
+    uint16_t bit = (uint16_t)(1U << c);
+    int32_t  d;
+
+    /*
+     * 해제 방향 갱신 — 크기에 따라 갈라야 한다.
+     *
+     * ★ 무조건 즉시 갱신하면 기준값이 노이즈 꼭대기를 붙잡는다. 그런데 그 기회는
+     *   스캔 속도에 비례하는 반면 드리프트 보정은 시간 기준이라, 스캔이 빨라질수록
+     *   균형점이 위로 밀려 편차가 커진다.
+     *
+     *   그래서 큰 변화(진짜 해제)만 즉시 반영하고, 노이즈 수준의 잔파도는 드리프트와
+     *   같은 시간 기준으로 올린다. 위아래가 대칭이 되어 스캔 속도와 무관해진다.
+     */
+    if (v > base[step][c])
+    {
+      if ((uint32_t)(v - base[step][c]) > KEYS_LATCH_JUMP) base[step][c] = v;
+      else if (do_drift)                                   base[step][c] += KEYS_DRIFT_STEP;
+    }
+
+    d = (int32_t)base[step][c] - (int32_t)v;    /* 깊이 — 누를수록 커진다 */
+
+    /*
+     * 노이즈 범위 안에 머무는 셀만 기준값을 한 걸음 내린다.
+     * 눌려 있는 셀은 d 가 밴드를 넘어서 영향받지 않는다.
+     */
+    if (do_drift && d > KEYS_DRIFT_STEP && d < KEYS_DRIFT_BAND)
+      base[step][c] -= KEYS_DRIFT_STEP;
+
+    /*
+     * ★ 여기서 음수를 잘라낸다.
+     *
+     *   기준값은 러닝 최대라 보통 d >= 0 이지만, 드리프트로 기준값이 한 걸음 내려간
+     *   직후에 잡음이 겹치면 잠깐 음수가 된다. 아래 판정은 peak 을 uint16 으로 들고
+     *   있어서, 음수를 그대로 넘기면 (uint16_t)(-1) = 65535 가 되어 peak 이 튀고
+     *   다음 스캔에 즉시 해제가 난다. 부팅 직후처럼 기준값이 자리를 잡는 구간에서
+     *   나기 쉽다.
+     *
+     * 데드존 — 쉬는 위치 근처는 아예 안 본다.
+     *
+     *   여기 있는 동안은 완전히 뗀 것으로 보고 RT 도 푼다. 그래야 진동으로 값이
+     *   흔들려도 RT 가 "방향이 바뀌었다"고 읽지 않는다.
+     */
+    /*
+     * 표시용 스퀄치 — 깨어 있나 자고 있나. **자르기 전에 정해야 한다.**
+     *
+     * ★ 데드존과 **묶으면 안 된다.** 한 번 묶었다가 풀었다.
+     *
+     *   둘은 다른 일이다. 데드존은 "눌림을 정할 때 무시할 구간" 이라 사용자 취향이고
+     *   0 도 정답이다. 스퀄치는 "화면 숫자가 안 떨게" 하는 것이라 잡음 바닥에서
+     *   나오는 값이다.
+     *
+     *   묶어 뒀더니 데드존을 0 으로 내리면 화면이 다시 떨렸다. 그러면 0 이 못 쓰는
+     *   값처럼 되고, 그러니 기본값을 올리고 싶어진다 — 순서가 거꾸로다. 설정값이
+     *   화면 사정에 끌려다니면 안 된다.
+     *
+     * ★ 판정과 달리 되돌아올 때는 늦게 잠근다.
+     *
+     *   문턱을 넘으면 깨우고, 쉬는 자리에 거의 다 와야(1/4) 다시 재운다. 그래야
+     *   누르는 내내 진짜 값이 나가고 손을 떼면 조용해진다. 문턱 하나로 여닫으면
+     *   경계에서 값이 켜졌다 꺼졌다 한다.
+     *
+     *   ★ 아래 데드존 처리가 d 를 0 으로 만들어 버리므로 **그 전에** 봐야 한다.
+     *     0 이 된 값을 보면 매번 "쉬는 중" 이 되어 히스테리시스가 없는 것과 같다.
+     *     처음에 그렇게 썼다가 잡았다.
+     */
+    {
+      uint16_t sq = squelch_cnt[idx];
+
+      if (d >= (int32_t)sq)          squelch[step] &= (uint16_t)~bit;
+      else if (d <= (int32_t)(sq / 4)) squelch[step] |= bit;
+    }
+
+    if (d < (int32_t)t->dead || d < 0)
+    {
+      d = 0;
+      rt_arm[step] &= (uint16_t)~bit;
+    }
+
+    if (pressed[step] & bit)
+    {
+      /* 눌린 동안에는 가장 깊었던 지점을 좇는다 */
+      if ((uint16_t)d > peak[step][c]) peak[step][c] = (uint16_t)d;
+
+      /*
+       * RT 입력 해제 — 가장 깊었던 지점에서 이만큼 올라오면 뗀 것으로 본다.
+       *
+       * ★ 바닥 근처에서는 끈다.
+       *   바닥까지 눌러 붙잡으면 기준점이 바닥에 고정되는데 손가락은 누르는 동안에도
+       *   미세하게 풀린다. 그 이완만으로 해제가 나가 키가 툭툭 끊긴다.
+       */
+      bool in_bottom  = bot_on && ((uint16_t)d >= t->bottom_lo);
+      bool rt_active  = rt_on && (rt_cont || (rt_arm[step] & bit));
+
+      if (rt_active && !in_bottom &&
+          (int32_t)peak[step][c] - d >=
+            (int32_t)t->rt_release[keysRtZone(idx, peak[step][c])])
+      {
+        pressed[step] &= (uint16_t)~bit;
+        peak[step][c]  = (uint16_t)d;
+      }
+      else if (d < (int32_t)t->release)         /* 절대 해제 — 항상 유효하다 */
+      {
+        pressed[step] &= (uint16_t)~bit;
+        peak[step][c]  = (uint16_t)d;
+      }
+    }
+    else
+    {
+      /* 떼진 동안에는 가장 얕았던 지점을 좇는다 */
+      if ((uint16_t)d < peak[step][c]) peak[step][c] = (uint16_t)d;
+
+      /*
+       * RT 재입력 — 가장 얕았던 지점에서 이만큼 내려가면 다시 누른 것으로 본다.
+       *
+       * ★ RT 가 걸려 있는 동안 절대 입력지점은 보지 않는다.
+       *
+       *   처음에는 둘을 or 로 묶었다가 크게 당했다. RT 가 깊은 곳(예: 2187 카운트)
+       *   에서 해제를 내면 키는 떼진 상태인데 깊이는 아직 입력지점(627)보다 훨씬
+       *   깊다. 그래서 바로 다음 스캔에 절대 입력이 걸려 즉시 재입력되고,
+       *   RT 해제 -> 절대 입력 -> RT 해제 가 손가락이 올라오는 내내 반복됐다.
+       *
+       *     ffffffffffffffffffffffff
+       *
+       *   바닥까지 누르면 peak 이 최대라 그 반복 구간이 가장 길어진다.
+       *
+       *   RT 가 걸린 동안에는 RT 만 판정하고, 절대 입력지점은 RT 를 처음 거는
+       *   용도로만 쓴다.
+       */
+      bool rt_active = rt_on && (rt_cont || (rt_arm[step] & bit));
+
+      if (rt_active)
+      {
+        if (d - (int32_t)peak[step][c] >=
+              (int32_t)t->rt_press[keysRtZone(idx, peak[step][c])])
+        {
+          pressed[step] |= bit;
+          peak[step][c]  = (uint16_t)d;
+        }
+      }
+      else if (d > (int32_t)t->press)           /* 절대 입력지점 — RT 를 여기서 건다 */
+      {
+        pressed[step] |= bit;
+        peak[step][c]  = (uint16_t)d;
+        rt_arm[step]  |= bit;
+      }
+
+      /*
+       * 입력지점 아래로 완전히 돌아왔으면 RT 를 푼다.
+       *
+       * 연속 RT 면 풀지 않는다 — 전 구간에서 살아 있는 게 그 기능이다.
+       */
+      if (!rt_cont && d < (int32_t)t->release) rt_arm[step] &= (uint16_t)~bit;
+    }
+  }
+}
+
+/*
+ * ★ 스캔 경로는 ILM 에 둔다 (ATTR_RAMFUNC -> .fast 섹션 -> 리셋 때 복사).
+ *
+ *   같은 코드가 문맥에 따라 두 배 느렸다. 측정 루프에서 keysUpdate() 만 반복하면
+ *   29us 인데, 메인 루프에서는 63us 였다. 사이에 qmkUpdate() 와 usbUpdate() 가
+ *   끼면서 XIP 플래시 명령어 캐시에서 스캔 코드가 밀려났기 때문이다 — 매 스캔이
+ *   플래시에서 다시 읽혔다.
+ *
+ *   ILM 은 코어에 붙어 있어 캐시를 타지 않는다. 128KB 중 1KB 도 안 쓰고 있었다.
+ */
+ATTR_RAMFUNC bool keysUpdate(void)
+{
+#if _USE_HW_PERF_STAT
+  uint32_t t_begin;
+#endif
+  bool     ret = true;
+
+
+  if (is_init == false) return false;
+
+#if _USE_HW_PERF_STAT
+  t_begin = micros();
+#endif
+
+  /* 시간 기준 드리프트 — 스캔 속도와 무관하게 같은 속도로 보정된다 */
+  drift_due = false;
+  if (millis() - drift_ms >= KEYS_DRIFT_MS)
+  {
+    drift_ms  = millis();
+    drift_due = true;
+  }
+
+  /*
+   * ★ 처리를 변환 대기 안으로 숨긴다.
+   *
+   *   변환은 스텝당 2.96us 인데 그동안 CPU 는 회전만 했고, 다 기다린 뒤에야 0.93us 를
+   *   처리했다. 스텝 N 을 트리거해 놓고 그 대기 시간에 스텝 N-1 을 처리하면 처리
+   *   시간이 통째로 숨는다.
+   *
+   *     전    [설정][변환 대기 2.96us      ][처리 0.93us]  x 8
+   *     후    [설정][변환 2.96us | N-1 처리 ]              x 8
+   *
+   *   DMA 버퍼는 다음 트리거가 덮어쓰므로 결과를 한 번 떠 놓아야 한다 (8워드).
+   *   그 복사 비용이 숨기는 시간보다 훨씬 싸다.
+   *
+   *   ADC 설정도 잡음도 건드리지 않는다 — 순서만 바꾼다.
+   */
+  uint32_t snap[KEYS_CH_MAX];
+  uint32_t hold     = 0;        /* 처리 대기 중인 스텝 */
+  bool     has_hold = false;
+
+  for (uint32_t step = 0; step < KEYS_STEP_MAX; step++)
+  {
+    /*
+     * 주소는 직전 반복 끝에서 이미 걸어 뒀다. 같은 값을 다시 쓰는 셈이지만 80ns 고,
+     * 타임아웃으로 루프를 중간에 빠져나갔을 때 다음 스캔이 제자리를 찾는다.
+     */
+    gpio_write_port(HPM_GPIO0, KEYS_MUX_GPIO_PORT, mux_addr[step]);
+    keysSettle();
+
+    /* 마지막 칸을 비워 둔다 — 여기가 채워지면 이번 스텝의 값이 다 온 것이다 */
+    keysDmaArm();
+
+    adc16_trigger_seq_by_sw(HPM_ADC0);
+    adc16_trigger_seq_by_sw(HPM_ADC1);
+
+    /* ── 여기부터 변환이 끝날 때까지가 공짜 시간이다 ── */
+    if (has_hold)
+    {
+      for (uint32_t i = 0; i < KEYS_CH_MAX; i++) keysFilter(hold, i, snap[i]);
+      if (is_calibrated) keysTrack(hold);
+    }
+
+    /* DMA 기록이 곧 변환 완료다 — 한 번만 기다린다 */
+    if (keysWaitDma() == false)
+    {
+      ret      = false;
+      has_hold = false;      /* 이번 값은 못 믿는다 */
+      break;
+    }
+
+    /* ★ 다음 주소를 결과 뜨기 전에 — 세틀링이 복사와 겹친다 */
+    gpio_write_port(HPM_GPIO0, KEYS_MUX_GPIO_PORT, mux_addr[step + 1]);
+
+    for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++)
+    {
+      snap[i]               = adc0_buf[i];
+      snap[KEYS_SEQ_LEN + i] = adc1_buf[i];
+    }
+    hold     = step;
+    has_hold = true;
+  }
+
+  /* 마지막 스텝은 숨길 대기 시간이 없다 */
+  if (has_hold)
+  {
+    for (uint32_t i = 0; i < KEYS_CH_MAX; i++) keysFilter(hold, i, snap[i]);
+    if (is_calibrated) keysTrack(hold);
+  }
+
+  /* 링 칸은 스캔 단위로 돈다 — 한 스캔 안에서는 64셀이 같은 칸을 덮는다 */
+  if (++acc_idx >= KEYS_ACC_CNT) acc_idx = 0;
+
+  keysCalCollect();   /* 보정 중일 때만 돈다. 평상시 분기 하나 */
+
+#if _USE_HW_PERF_STAT
+  scan_time_us = micros() - t_begin;
+  scan_cnt++;
+  if (scan_time_us > scan_us_max)      scan_us_max = scan_time_us;
+  if (scan_time_us > KEYS_SCAN_OVER_US) scan_over_cnt++;
+#endif
+
+  return ret;
+}
+
+/* 데드밴드 이전의 누적합. 필터가 얼마나 덮고 있는지 가르려면 이게 필요하다. */
+uint16_t keysGetAcc(uint8_t step, uint8_t ch)
+{
+  if (step >= KEYS_STEP_MAX || ch >= KEYS_CH_MAX) return 0;
+  return acc_sum[step][ch];
+}
+
+uint16_t keysGetRaw(uint8_t step, uint8_t ch)
+{
+  if (step >= KEYS_STEP_MAX || ch >= KEYS_CH_MAX) return 0;
+  return raw[step][ch];
+}
+
+/*
+ * 진단용 통계를 한 덩어리로 내준다.
+ *
+ * ★ 값마다 함수를 하나씩 두지 않는다.
+ *
+ *   화면은 이것들을 늘 함께 본다 — 지금 얼마나 걸리나, 최악이 언제였나, 넘긴 적이
+ *   있나. 따로 읽으면 서로 다른 순간의 값이 섞여, "최대 650us 인데 넘긴 적은 0" 같은
+ *   앞뒤 안 맞는 화면이 나온다.
+ */
+void keysGetStat(keys_stat_t *p_stat)
+{
+  if (p_stat == NULL) return;
+
+  p_stat->scan_us     = scan_time_us;
+  p_stat->scan_us_max = scan_us_max;
+  p_stat->scan_over   = scan_over_cnt;
+  p_stat->scan_cnt    = scan_cnt;
+  p_stat->timeout     = timeout_cnt;
+  p_stat->cal_ms      = cal_time_ms;
+  p_stat->calibrated  = is_calibrated ? 1 : 0;
+}
+
+/*
+ * 누적값을 0 부터 다시 센다.
+ *
+ * ★ 지금 값(scan_time_us)은 안 지운다.
+ *
+ *   그건 누적이 아니라 "마지막 한 바퀴" 다. 지워 봐야 다음 스캔에 바로 채워지고,
+ *   0 으로 잠깐 보이는 것이 오히려 거짓말이다.
+ *
+ * ★ 최대치는 지운다.
+ *
+ *   지우는 이유가 대개 "방금 뭔가 고쳤는데 나아졌나" 이고, 그때 최대치가 옛날
+ *   기록으로 남아 있으면 판단을 막는다.
+ */
+uint32_t keysGetKeyCount(void)
+{
+  return KEYS_LAYOUT_KEY_CNT;
+}
+
+void keysClearStat(void)
+{
+  scan_us_max   = 0;
+  scan_over_cnt = 0;
+  scan_cnt      = 0;
+  timeout_cnt   = 0;
+}
+
+uint32_t keysGetScanTime(void)
+{
+  return scan_time_us;
+}
+
+/* 리포트를 내보내도 되는가. keys 명령 중에는 false 다. */
+bool keysIsReportEnabled(void)
+{
+  return (report_off == false);
+}
+
+/*
+ * 무압 기준값을 잡는다.
+ *
+ * 채널마다 기준값이 다르다 (자석·센서·기구 공차). 절대값이 아니라 "제 기준값에서
+ * 얼마나 벗어났는가"로 판정해야 하므로 부팅 때 한 번 재둔다.
+ * 여러 번 평균내서 노이즈를 줄인다.
+ */
+bool keysCalibrate(void)
+{
+  uint32_t acc[KEYS_STEP_MAX][KEYS_CH_MAX];
+  uint32_t t_begin;
+
+
+  if (is_init == false) return false;
+
+  t_begin = millis();
+
+  memset(acc, 0, sizeof(acc));
+
+  /* 안정화 — 결과는 버린다 */
+  for (uint32_t n = 0; n < KEYS_CAL_DISCARD; n++)
+  {
+    if (keysUpdate() == false) return false;
+  }
+
+  for (uint32_t n = 0; n < KEYS_CAL_SAMPLES; n++)
+  {
+    if (keysUpdate() == false) return false;
+
+    for (uint32_t s = 0; s < KEYS_STEP_MAX; s++)
+    {
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+      {
+        acc[s][c] += raw[s][c];
+      }
+    }
+  }
+
+  for (uint32_t s = 0; s < KEYS_STEP_MAX; s++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      base[s][c] = (uint16_t)(acc[s][c] / KEYS_CAL_SAMPLES);
+    }
+  }
+
+  keysCalRejectOutlier();
+
+  cal_time_ms = millis() - t_begin;
+
+  memset(pressed,   0, sizeof(pressed));
+  is_calibrated = true;
+  keysThrRebuild();          /* 키별 스트로크가 바뀌었다 */
+
+  return true;
+}
+
+/*
+ * 부팅 때 눌려 있던 키를 걸러낸다.
+ *
+ * 누르면 값이 내려가므로, 기준값이 전체 중앙값보다 크게 낮은 셀은 "눌린 채 측정됐다".
+ * 그 셀만 중앙값으로 밀어두면 지금은 눌림으로 판정되고(맞다), 손을 떼는 순간
+ * 러닝 최대값 추적이 제 값을 찾아준다.
+ *
+ * 스트로크(약 13400)가 셀 간 정상 편차(약 5800)의 2배가 넘어서 이 판별이 성립한다.
+ */
+static void keysCalRejectOutlier(void)
+{
+  uint16_t sorted[KEYS_MAX];
+  uint32_t n = 0;
+  uint16_t median;
+
+
+  /* ★ 없는 셀은 중앙값을 왜곡한다. 자석이 없어 늘 높은 값이라 기준을 위로 끌어올린다. */
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      if (keys_present[st] & (1U << c)) sorted[n++] = base[st][c];
+    }
+  }
+  if (n == 0) return;
+
+  /* 64개뿐이라 삽입정렬로 충분하다 */
+  for (uint32_t i = 1; i < n; i++)
+  {
+    uint16_t v = sorted[i];
+    uint32_t j = i;
+    while (j > 0 && sorted[j - 1] > v) { sorted[j] = sorted[j - 1]; j--; }
+    sorted[j] = v;
+  }
+  median = sorted[n / 2];
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      if ((keys_present[st] & (1U << c)) == 0) continue;
+      if ((int32_t)median - (int32_t)base[st][c] > KEYS_CAL_OUTLIER)
+      {
+        logPrintf("[  ] s%d/ch%d 눌린 채 캘리 (%d -> 중앙값 %d)\n",
+                  (int)st, (int)c, (int)base[st][c], (int)median);
+        base[st][c] = median;
+      }
+    }
+  }
+}
+
+/* 기준값 대비 편차. 부호가 어느 쪽으로 움직이는지는 실측으로 정한다. */
+int32_t keysGetDelta(uint8_t step, uint8_t ch)
+{
+  if (step >= KEYS_STEP_MAX || ch >= KEYS_CH_MAX) return 0;
+  if (is_calibrated == false)                     return 0;
+
+  return (int32_t)raw[step][ch] - (int32_t)base[step][ch];
+}
+
+uint16_t keysGetBase(uint8_t step, uint8_t ch)
+{
+  if (step >= KEYS_STEP_MAX || ch >= KEYS_CH_MAX) return 0;
+  return base[step][ch];
+}
+
+bool keysGetPressed(uint16_t row, uint16_t col)
+{
+  if (row >= KEYS_STEP_MAX || col >= KEYS_CH_MAX) return false;
+  return (pressed[row] & (1U << col)) != 0;
+}
+
+/*---------------------------------------------------------------------------
+ *  설정 저장 — 핑퐁 2섹터
+ *---------------------------------------------------------------------------*/
+
+/*
+ * 저장소가 둘이라 검사·저장도 둘이다.
+ *
+ * 같은 일을 두 번 적는 대신 크기와 주소만 다른 공통 핵을 쓴다 — 핑퐁 규칙(오래된
+ * 쪽에 쓴다)이 갈라지면 반드시 한쪽이 상한다.
+ */
+static uint32_t keysBlobCrc(const void *p, uint32_t len)
+{
+  return crc32((const uint8_t *)p, len - (uint32_t)sizeof(uint32_t));
+}
+
+typedef struct
+{
+  uint32_t magic;
+  uint16_t version;
+  uint16_t length;
+  uint32_t seq;
+} keys_hdr_t;
+
+/*
+ * ★ 버전을 인자로 받는다. 상수를 직접 보면 안 된다.
+ *
+ *   예전에는 KEYS_CFG_VERSION 하나를 세 기록이 같이 봤다. 그러면 보정 구조를 한 번
+ *   고치려고 버전을 올릴 때 설정과 스위치 정의까지 통째로 무효가 된다 — 고칠 이유가
+ *   없는 것까지 버리는 셈이다.
+ *
+ *   기록마다 제 버전을 갖게 하면 고친 것만 날아간다.
+ */
+static bool keysBlobValid(const void *p, uint32_t len, uint32_t magic, uint16_t ver)
+{
+  const keys_hdr_t *h = (const keys_hdr_t *)p;
+  uint32_t          crc;
+
+  if (h->magic   != magic)   return false;
+  if (h->version != ver)     return false;
+  if (h->length  != len)     return false;
+
+  memcpy(&crc, (const uint8_t *)p + len - sizeof(uint32_t), sizeof(crc));
+  return (crc == keysBlobCrc(p, len));
+}
+
+/*
+ * 두 슬롯을 읽어 유효하면서 seq 가 큰 쪽을 쓴다.
+ * 둘 다 못 쓰면 부른 쪽이 기본값으로 간다 — 여기서 멈추면 안 된다.
+ */
+/*
+ * 슬롯을 읽어 볼 임시 자리.
+ *
+ * ★ 한 벌만 둔다. 둘 중 큰 쪽에 맞춘다.
+ *
+ *   읽기·쓰기가 각자 들면 4KB 를 두 번 잡아 DLM 이 그만큼 준다. 둘은 같은 순간에
+ *   돌지 않으므로(저장은 메인 루프, 적재는 부팅) 나눠 쓰면 된다.
+ *
+ * ★ AHB SRAM 에 둔다. **DLM 이 아깝다.**
+ *
+ *   32KB 짜리 AHB SRAM 이 통째로 놀고 있는데 DLM 은 87% 였다. 이 자리는 저장·적재
+ *   때만 쓰는 **차가운 6KB** 라 조금 느린 메모리로 보내기에 딱 맞다.
+ *   (스캔·판정이 쓰는 것은 하나도 안 옮긴다 — 거기는 TCM 이어야 한다.)
+ */
+ATTR_PLACE_AT(".ahb_sram")
+static uint8_t keys_blob_tmp[sizeof(keys_set_t)];
+
+static bool keysBlobLoad(void *dst, uint32_t len, uint32_t magic, uint16_t ver,
+                         uint32_t addr_a, uint32_t addr_b)
+{
+  uint8_t *tmp   = keys_blob_tmp;
+  bool     found = false;
+  uint32_t       best  = 0;
+
+  for (uint32_t i = 0; i < 2; i++)
+  {
+    uint32_t addr = (i == 0) ? addr_a : addr_b;
+    uint32_t seq;
+
+    if (flashRead(addr, tmp, len) == false)   continue;
+    if (keysBlobValid(tmp, len, magic, ver) == false) continue;
+
+    seq = ((const keys_hdr_t *)tmp)->seq;
+    if (found == false || seq > best)
+    {
+      memcpy(dst, tmp, len);
+      best  = seq;
+      found = true;
+    }
+  }
+  return found;
+}
+
+/*
+ * 오래된 쪽 슬롯에 쓴다. 쓰다 죽어도 다른 쪽이 남아 있어 이전 설정으로 돌아간다.
+ * 소거 1ms + 기록이라 USB 가 느끼지 못한다.
+ */
+static bool keysBlobSave(void *src, uint32_t len, uint32_t magic, uint16_t ver,
+                         uint32_t addr_a, uint32_t addr_b, uint32_t sectors)
+{
+  uint8_t       *tmp   = keys_blob_tmp;
+  keys_hdr_t    *h     = (keys_hdr_t *)src;
+  uint32_t       addr  = addr_a;
+  uint32_t       seq_a = 0;
+  uint32_t       crc;
+
+  if (flashRead(addr_a, tmp, len) && keysBlobValid(tmp, len, magic, ver))
+  {
+    seq_a = ((const keys_hdr_t *)tmp)->seq;
+    addr  = addr_b;                 /* A 가 유효하면 B 에 쓴다 */
+  }
+  if (flashRead(addr_b, tmp, len) && keysBlobValid(tmp, len, magic, ver))
+  {
+    if (((const keys_hdr_t *)tmp)->seq >= seq_a) addr = addr_a;
+  }
+
+  h->seq++;
+  crc = keysBlobCrc(src, len);
+  memcpy((uint8_t *)src + len - sizeof(uint32_t), &crc, sizeof(crc));
+
+  for (uint32_t i = 0; i < sectors; i++)
+  {
+    if (flashErase(addr + i * HW_FLASH_SECTOR_SIZE, HW_FLASH_SECTOR_SIZE) == false)
+      return false;
+  }
+  return flashWrite(addr, (const uint8_t *)src, len);
+}
+
+#define KEYS_CAL_SECTORS   ((sizeof(keys_cal_t) + HW_FLASH_SECTOR_SIZE - 1) / HW_FLASH_SECTOR_SIZE)
+#define KEYS_SET_SECTORS   ((sizeof(keys_set_t) + HW_FLASH_SECTOR_SIZE - 1) / HW_FLASH_SECTOR_SIZE)
+#define KEYS_SW_SECTORS    ((sizeof(keys_sw_t)  + HW_FLASH_SECTOR_SIZE - 1) / HW_FLASH_SECTOR_SIZE)
+
+static bool keysCalSaveBlob(void)
+{
+  return keysBlobSave(&cal_st, sizeof(cal_st), KEYS_CAL_MAGIC, KEYS_CAL_VERSION,
+                      HW_FLASH_CAL_A, HW_FLASH_CAL_B, KEYS_CAL_SECTORS);
+}
+
+static bool keysCfgSave(void)
+{
+  return keysBlobSave(&set_st, sizeof(set_st), KEYS_SET_MAGIC, KEYS_SET_VERSION,
+                      HW_FLASH_SET_A, HW_FLASH_SET_B, KEYS_SET_SECTORS);
+}
+
+static bool keysSwSave(void)
+{
+  return keysBlobSave(&sw_st, sizeof(sw_st), KEYS_SW_MAGIC, KEYS_SW_VERSION,
+                      HW_FLASH_SW_A, HW_FLASH_SW_B, KEYS_SW_SECTORS);
+}
+
+static void keysCalDefault(void)
+{
+  memset(&cal_st, 0, sizeof(cal_st));
+  cal_st.magic   = KEYS_CAL_MAGIC;
+  cal_st.version = KEYS_CAL_VERSION;
+  cal_st.length  = sizeof(keys_cal_t);
+}
+
+/*
+ * 커스텀 슬롯의 기본값은 **이 보드에 실제로 꽂힌 스위치**다.
+ *
+ * ★ 0 으로 두지 않는다.
+ *
+ *   0 이면 곡선이 안 나오고 행정도 없어 화면이 빈칸으로 시작한다. 쓸 만한 값이
+ *   들어 있으면 사용자는 고칠 자리를 보고 고치면 된다.
+ *
+ *   덤으로 "정의 없는 슬롯" 이라는 상태가 아예 없어진다 — 어느 칸을 가리켜도 늘
+ *   유효한 정의가 있으니 붕 뜨는 배정이 안 생긴다.
+ *
+ * 이름은 비워 둔다. 그게 "아직 안 고쳤다" 의 표시다.
+ */
+static void keysSwDefault(void)
+{
+  memset(&sw_st, 0, sizeof(sw_st));
+  sw_st.magic   = KEYS_SW_MAGIC;
+  sw_st.version = KEYS_SW_VERSION;
+  sw_st.length  = sizeof(keys_sw_t);
+
+  for (uint32_t i = 0; i < KEYS_SW_SLOT_MAX; i++)
+  {
+    sw_st.sw[i].travel_um      = keys_switch[KEYS_SWITCH_DEFAULT].travel_um;
+    sw_st.sw[i].flux_rest_gs   = keys_switch[KEYS_SWITCH_DEFAULT].flux_rest_gs;
+    sw_st.sw[i].flux_bottom_gs = keys_switch[KEYS_SWITCH_DEFAULT].flux_bottom_gs;
+  }
+}
+
+static void keysCfgDefault(void)
+{
+  memset(&set_st, 0, sizeof(set_st));
+
+  set_st.magic   = KEYS_SET_MAGIC;
+  set_st.version = KEYS_SET_VERSION;
+  set_st.length  = sizeof(keys_set_t);
+  set_st.active  = 0;
+
+  /*
+   * 네 벌을 **모두** 같은 기본값으로 채운다.
+   *
+   * 빈 프로파일로 두면 2번으로 옮긴 사용자가 입력지점 0mm 짜리 키보드를 만난다.
+   * 프로파일은 "다른 취향" 이지 "빈 칸" 이 아니다.
+   */
+  for (uint32_t pi = 0; pi < KEYS_PROF_CNT; pi++)
+  {
+    keys_prof_t *pf = &set_st.prof[pi];
+
+    /* 입문용 기본값 */
+    pf->press_um      = 100;   /* 1.00mm */
+    pf->release_um    = 50;    /* 0.50mm */
+
+    /*
+     * 래피드 트리거는 **꺼진 채로** 시작한다.
+     *
+     *   보통 키보드로 먼저 완성한다는 게 이 펌웨어의 순서다. RT 는 켜는 순간 타이핑
+     *   느낌이 크게 달라지므로 사용자가 고르게 둔다. 값만 미리 채워 두어 켜자마자
+     *   쓸 만하게 한다.
+     */
+    pf->rt_press_um   = 50;    /* 0.50mm */
+    pf->rt_release_um = 50;    /* 0.50mm */
+    pf->bottom_um     = 10;    /* 0.10mm */
+    /*
+     * 데드존 기본값 — 0 이다.
+     *
+     * ★ 한 번 0.12mm 로 올렸다가 되돌렸다.
+     *
+     *   화면이 가만히 뒀는데 0.1mm 를 보여주길래 데드존으로 막았다. 그런데 그건
+     *   데드존이 할 일이 아니었다 — 화면이 떠는 것은 잡음 바닥의 문제고, 데드존은
+     *   **눌림을 정할 때 무시할 구간**이라 사용자 취향이다. 0 도 정답이다.
+     *
+     *   묶어 뒀더니 데드존을 0 으로 내리면 화면이 다시 떨었다. 그러면 0 이 못 쓰는
+     *   값처럼 되고, 그러니 기본값을 올리고 싶어진다. 순서가 거꾸로다 —
+     *   **설정값이 화면 사정에 끌려다니면 안 된다.**
+     *
+     *   화면 떨림은 KEYS_SQUELCH_UM 이 따로 맡는다. 참고 보드도 데드존만은 하한
+     *   없이 사용자 값 그대로 쓴다 (입력지점·RT 는 강제로 올리면서).
+     */
+    pf->dead_um       = 0;
+    pf->rt_flags      = KEYS_RT_BOTTOM;   /* 바닥 보호만 켜 둔다 (RT 는 꺼짐) */
+    pf->sw_type_def   = KEYS_SWITCH_DEFAULT;
+
+    for (uint32_t i = 0; i < KEYS_MAX; i++)
+    {
+      pf->key[i].sw_type       = pf->sw_type_def;
+      pf->key[i].press_um     = pf->press_um;
+      pf->key[i].release_um   = pf->release_um;
+      pf->key[i].rt_press_um  = pf->rt_press_um;
+      pf->key[i].rt_release_um= pf->rt_release_um;
+      pf->key[i].bottom_um    = pf->bottom_um;
+      pf->key[i].dead_um      = pf->dead_um;
+      pf->key[i].rt_flags     = pf->rt_flags;
+    }
+  }
+}
+
+/*
+ * 전역 값을 64키 전부에 뿌린다 — "모두 선택"에 해당한다.
+ *
+ * 판정은 언제나 키별 값을 보므로, 전역 설정을 바꾼다는 건 곧 전 키를 바꾼다는 뜻이다.
+ * 키별로 다르게 두는 것은 VIA 에서 키를 골라 설정할 때 생긴다.
+ */
+static void keysCfgFanout(void)
+{
+  for (uint32_t i = 0; i < KEYS_MAX; i++)
+  {
+    keys_key_set_t *k = KS(i);
+
+    k->press_um      = P()->press_um;
+    k->release_um    = P()->release_um;
+    k->rt_press_um   = P()->rt_press_um;
+    k->rt_release_um = P()->rt_release_um;
+    k->bottom_um     = P()->bottom_um;
+    k->dead_um       = P()->dead_um;
+    k->rt_flags      = P()->rt_flags;
+  }
+}
+
+/*
+ * 둘 다 읽는다. 하나만 없어도 나머지는 살린다.
+ *
+ * ★ 옛 판을 옮겨 심지 않는다.
+ *
+ *   v4·v5 마이그레이터가 여기 있었다. 7 로 올리면서 걷어냈다 — 사용자가 "기존
+ *   데이터는 지워져도 된다, 호환 때문에 지저분한 것보다 낫다" 고 정했다.
+ *
+ *   대신 다음부터는 덜 버린다. keysBlobValid 가 기록마다 제 버전을 받으므로, 앞으로
+ *   한 기록을 고쳐도 나머지 둘은 살아남는다.
+ */
+static bool keysCfgLoad(void)
+{
+  bool cal_ok;
+  bool set_ok;
+
+  cal_ok = keysBlobLoad(&cal_st, sizeof(cal_st), KEYS_CAL_MAGIC, KEYS_CAL_VERSION,
+                        HW_FLASH_CAL_A, HW_FLASH_CAL_B);
+  if (cal_ok == false) keysCalDefault();
+
+  set_ok = keysBlobLoad(&set_st, sizeof(set_st), KEYS_SET_MAGIC, KEYS_SET_VERSION,
+                        HW_FLASH_SET_A, HW_FLASH_SET_B);
+  if (set_ok == false) keysCfgDefault();
+
+  /*
+   * 스위치 정의는 실패해도 기본값이 곧 쓸 만한 값이라(GEON RAW HE) 따로 알릴 것이
+   * 없다. 이 기록이 없다고 키보드가 안 사는 일은 없어야 한다.
+   */
+  if (keysBlobLoad(&sw_st, sizeof(sw_st), KEYS_SW_MAGIC, KEYS_SW_VERSION,
+                   HW_FLASH_SW_A, HW_FLASH_SW_B) == false)
+  {
+    keysSwDefault();
+  }
+
+  /* 프로파일 번호가 깨져 있으면 0 으로 — 여기서 멈추면 키보드가 안 산다 */
+  if (set_st.active >= KEYS_PROF_CNT) set_st.active = 0;
+
+  return cal_ok || set_ok;
+}
+
+
+/*---------------------------------------------------------------------------
+ *  프로파일
+ *---------------------------------------------------------------------------*/
+
+uint8_t keysProfGet(void)  { return set_st.active; }
+uint8_t keysProfCount(void){ return KEYS_PROF_CNT; }
+
+/*
+ * 프로파일을 바꾼다.
+ *
+ * ★ 바꾸면 곧바로 저장한다.
+ *
+ *   프로파일은 "지금 어느 것을 쓰나" 라는 상태다. 껐다 켰을 때 원래대로 돌아가면
+ *   바꾼 뜻이 없다 — 게임하려고 2번으로 옮겼는데 재부팅하면 1번이면 매번 다시
+ *   골라야 한다.
+ *
+ * ★ 임계값을 다시 푼다.
+ *
+ *   판정은 카운트로 하고 그 카운트는 설정에서 나온다. 프로파일이 바뀌면 설정이
+ *   통째로 바뀌므로 여기서 다시 만들지 않으면 옛 프로파일의 임계값으로 계속 돈다.
+ */
+/*
+ * 프로파일이 바뀌었다고 키보드 코드에 알린다.
+ *
+ * ★ keys.c 는 QMK 를 몰라야 한다.
+ *
+ *   조명이나 키맵처럼 프로파일을 따라가야 하는 것들이 QMK 쪽에 있는데, 여기서
+ *   그것들을 직접 부르면 스캔 코드가 QMK 에 묶인다. 알리기만 하고 무엇을 할지는
+ *   그쪽이 정한다 (keyboards/<모델>/via_port.c).
+ */
+__attribute__((weak)) void keysProfChanged_kb(uint8_t idx)
+{
+  (void)idx;
+}
+
+bool keysProfSelect(uint8_t idx)
+{
+  if (idx >= KEYS_PROF_CNT) return false;
+  if (idx == set_st.active) return false;      /* 바뀐 게 없으면 남길 것도 없다 */
+
+  /*
+   * ★ 바뀌기 **전에** 한 번, 바뀐 **뒤에** 한 번 알린다.
+   *
+   *   조명 설정처럼 RAM 에 들고 쓰는 값은 옮기기 전에 지금 프로파일 자리에
+   *   내려놓아야 한다. 바꾼 뒤에 내려놓으면 새 프로파일 자리에 옛 값을 덮어쓴다.
+   */
+  keysProfChanged_kb(0xFF);          /* 0xFF = "곧 바뀐다, 지금 것을 내려놓아라" */
+  set_st.active = idx;
+  keysThrRebuild();
+  keysProfChanged_kb(idx);
+
+  return true;
+}
+
+/*
+ * 플래시에 남긴다. **부르는 쪽이 ISR 밖인지 책임진다.**
+ *
+ * 고르기(keysProfSelect)와 나눠 둔 이유다. 갈아 끼우는 것은 메모리 한 줄이라 싸고,
+ * 느린 것은 남기기뿐이다. 붙여 두면 USB 명령 처리 안에서 플래시를 쓰게 된다.
+ */
+bool keysProfSave(void)
+{
+  return keysCfgSave();
+}
+
+/*
+ * 전환을 나중에 남기라고 표시만 한다.
+ *
+ * 키로 바꿀 때 쓴다 — 누른 자리에서 플래시를 쓰면 그동안 스캔이 멎는다. 게임 중에
+ * 쓰라고 만든 키에서 그러면 안 된다.
+ */
+void keysProfTouch(void)
+{
+  keysCfgTouch();
+}
+
+bool keysProfSet(uint8_t idx)
+{
+  if (keysProfSelect(idx) == false) return (idx < KEYS_PROF_CNT);
+  return keysCfgSave();
+}
+
+/*
+ * 지금 프로파일을 다른 프로파일에 통째로 붓는다.
+ *
+ * 네 벌을 처음부터 손으로 채우면 지겨워서 안 쓴다. 잘 맞춰 둔 한 벌을 복사해 놓고
+ * 한두 값만 바꾸는 것이 실제로 쓰는 방식이다.
+ */
+bool keysProfCopy(uint8_t dst)
+{
+  if (dst >= KEYS_PROF_CNT) return false;
+  if (dst == set_st.active) return true;
+
+  memcpy(&set_st.prof[dst], P(), sizeof(keys_prof_t));
+  return true;      /* 남기기는 부르는 쪽이 ISR 밖에서 한다 */
+}
+
+/* 그 키에 배정된 스위치 종류 인덱스 (범위를 벗어나면 0) */
+static inline uint8_t keysSwType(uint32_t i)
+{
+  uint8_t t = KS(i)->sw_type;
+  return t;
+}
+
+/*
+ * 그 키의 물리 행정 (0.01mm).
+ *
+ * 보정 여부와 무관하다 — 보정은 "몇 카운트가 그 행정인가"를 정할 뿐, 스위치가
+ * 몇 mm 짜리인지를 바꾸지 않는다.
+ */
+uint16_t keysGetTravelUm(uint16_t row, uint16_t col)
+{
+  uint32_t i = row * KEYS_CH_MAX + col;
+
+  if (i >= KEYS_MAX) return 0;
+
+  return keysTravelUmOf(i);
+}
+
+/*
+ * 그 키의 전 행정 (0.01mm)과 전 행정 카운트.
+ *
+ * 둘 다 서술자 하나에서 나온다. 이 하나를 거치게 해야 문턱 계산·깊이 환산·화면
+ * 표시가 같은 값을 본다 — 예전에 종류표를 직접 읽는 자리가 여덟 군데였고, 하나만
+ * 고치면 반드시 어긋났다.
+ */
+static uint16_t keysTravelUmOf(uint32_t i)
+{
+  return keysSwRefOf(i)->travel_um;
+}
+
+/*
+ * 보정했으면 실측(cal_max - cal_min), 아니면 종류의 공칭값이다. 보정값이 있어도
+ * 너무 작으면 (스위치가 덜 눌린 채 저장된 경우) 공칭값으로 돌아간다.
+ */
+static uint16_t keysStrokeCnt(uint32_t i)
+{
+  if (KC(i)->flags & 0x01)
+  {
+    int32_t s = (int32_t)KC(i)->cal_max - (int32_t)KC(i)->cal_min;
+
+    if (s >= KEYS_CAL_STROKE_MIN) return (uint16_t)s;
+  }
+  return keysSwRefOf(i)->stroke_cnt;
+}
+
+/*
+ * 지금 눌려 있는 깊이 (0.01mm). 0 = 안 눌림.
+ *
+ * ★ 영점은 저장된 cal_max 가 아니라 살아 있는 기준값(base)을 쓴다.
+ *
+ *   base 는 러닝 최대값이라 온도·자세로 생기는 드리프트를 계속 따라간다. 보정
+ *   당시의 cal_max 를 영점으로 쓰면 몇 시간 뒤에는 안 눌러도 0 이 아니게 된다.
+ *   보정에서 가져오는 것은 "몇 카운트가 전 행정인가"(기울기)뿐이다.
+ */
+/*
+ * 카운트 편차를 그 키의 거리(0.01mm)로. 깊이 환산의 알맹이다.
+ *
+ * ★ 따로 뺀 이유 — **잡음도 mm 로 봐야 한다.**
+ *
+ *   화면이 보여주는 것은 계산된 거리다. 그런데 곡선은 맨 위가 평평해서 같은 카운트
+ *   편차라도 거기서는 거리로 크게 부풀려진다 — 바닥의 여섯 배쯤 된다. 카운트로만
+ *   재면 "잡음 22" 라 작아 보이지만 화면에는 0.10mm 로 뜬다.
+ *
+ *   진단(keys noise)도 같은 식을 타야 화면과 말이 맞는다.
+ */
+static uint16_t keysCntToUm(uint32_t i, int32_t d)
+{
+  const keys_sw_ref_t *r = keysSwRefOf(i);
+  uint32_t travel = r->travel_um;
+  uint32_t stroke = keysStrokeCnt(i);
+
+  if (d <= 0 || stroke == 0) return 0;
+
+  if (r->curve)
+  {
+    uint32_t u = ((uint32_t)d * stroke_recip[i]) >> KEYS_STROKE_RECIP_SH;
+
+    d = (int32_t)keysCurveToUm(r, u, travel);
+  }
+  else
+  {
+    d = (int32_t)(((uint32_t)d * travel) / stroke);
+  }
+
+  return (d > 0xFFFF) ? 0xFFFF : (uint16_t)d;
+}
+
+uint16_t keysGetDepthUm(uint16_t row, uint16_t col)
+{
+  uint32_t i = row * KEYS_CH_MAX + col;
+  int32_t  d;
+  uint32_t travel;
+  uint32_t stroke;
+
+  if (i >= KEYS_MAX)          return 0;
+  if (is_calibrated == false) return 0;
+
+  d = (int32_t)base[row][col] - (int32_t)raw[row][col];   /* 누를수록 양수 */
+  if (d <= 0) return 0;
+
+  /*
+   * ★ 가만히 있을 때만 죽인다 (스퀄치). **데드존으로 그냥 자르면 안 된다.**
+   *
+   *   처음에는 `d < dead` 면 0 을 돌려줬다. 잡음은 사라졌는데 **처음 0.12mm 가
+   *   통째로 없어졌다** — 손가락은 움직이는데 화면도 LED 도 반응이 없어서 키가
+   *   둔해진 것처럼 느껴진다. 실제로 그렇게 느껴진다는 말을 들었다.
+   *
+   *   판정 문턱은 그대로였다 (입력 83, 해제 23 카운트로 변화 없음). 둔해진 것은
+   *   보이는 쪽뿐이었지만, 그것도 사람이 느끼는 것이라 고쳐야 한다.
+   *
+   *   그래서 자르지 않고 **깨운다.** 한 번 데드존을 넘어서면 그 뒤로는 진짜 값을
+   *   준다 — 돌아오는 길의 얕은 값까지 그대로다. 쉬는 자리로 완전히 돌아오면 다시
+   *   잠든다. 잡음은 데드존을 못 넘으므로 가만히 둔 키는 계속 0 이다.
+   */
+  if ((squelch[row] & (1U << col)) != 0) return 0;
+
+  travel = keysTravelUmOf(i);
+  stroke = keysStrokeCnt(i);
+  if (stroke == 0) return 0;
+
+  {
+    const keys_sw_ref_t *r = keysSwRefOf(i);
+
+    if (r->curve)
+    {
+      /*
+       * 정규화하고 곡선을 거꾸로 읽는다.
+       *
+       * ★ u 를 만들 때 개체차가 사라진다. 자석 세기도 센서 오프셋도 분자·분모에서
+       *   소거되므로, 종류당 표 하나로 63키가 다 맞는다. 키별로 필요한 두 점은
+       *   이미 base(살아 있는 무압)와 stroke(보정)로 갖고 있다.
+       *
+       * ★ 여기도 나눗셈이 없다. 스트로크는 키마다 고정이라 역수를 미리 잡아 둔다
+       *   (keysThrRebuild). 곡선 역수와 합쳐 이 경로에 나눗셈이 하나도 안 남는다.
+       */
+      uint32_t u = ((uint32_t)d * stroke_recip[i]) >> KEYS_STROKE_RECIP_SH;
+
+      d = (int32_t)keysCurveToUm(r, u, travel);
+    }
+    else
+    {
+      d = (int32_t)(((uint32_t)d * travel) / stroke);
+    }
+  }
+
+  /*
+   * ★ 전 행정을 넘어도 자르지 않는다.
+   *
+   *   예전에는 travel 에서 잘랐다. 평상시 표시에는 문제가 없지만 **보정할 때
+   *   해롭다** — 보정은 공칭 행정이 맞는지를 재는 일인데, 실제로 더 깊이 들어가는
+   *   키가 있어도 잘려서 그 사실이 안 보인다. 자르는 것은 화면이 할 일이지
+   *   재는 쪽이 할 일이 아니다.
+   *
+   *   uint16 을 넘길 일은 없다. 공칭의 몇 배가 되어도 수백 단위다.
+   */
+  if (d > 0xFFFF) d = 0xFFFF;
+  return (uint16_t)d;
+}
+
+/*
+ * 얼마나 눌려 있는가 (0~255). **거리가 아니다.**
+ *
+ * ★ 왜 따로 두나 — RGB 는 정확한 거리가 필요 없다.
+ *
+ *   효과가 원하는 것은 "반쯤 눌렸다" 뿐이라, 곡선을 태워 mm 로 바꾼 다음 다시
+ *   행정으로 나눠 0~255 로 되돌릴 이유가 없다. 그런데 그게 프레임마다 65번 도는
+ *   유일한 자리였다 — RGB 태스크 평균이 21 -> 26us 로 오른 것이 전부 여기였다.
+ *
+ *   센서가 준 비율을 그대로 옮긴다. 곱셈 둘과 시프트 둘, 이진 탐색도 없다.
+ *
+ * ★ 눈에 보이는 차이도 없다. 곡선은 **눈금의 모양**을 바꾸는 것이라, 손가락을
+ *   따라 밝아지는 효과에서는 어차피 사람이 그 차이를 못 읽는다. 거리가 중요한
+ *   자리(판정·표시)는 keysGetDepthUm 이 맡는다.
+ */
+uint8_t keysGetLevel8(uint16_t row, uint16_t col)
+{
+  uint32_t i = row * KEYS_CH_MAX + col;
+  int32_t  d;
+  uint32_t v;
+
+  if (i >= KEYS_MAX)          return 0;
+  if (is_calibrated == false) return 0;
+
+  d = (int32_t)base[row][col] - (int32_t)raw[row][col];
+  if (d <= 0) return 0;
+  if ((squelch[row] & (1U << col)) != 0) return 0;   /* 쉬는 중 — 위 주석 참고 */
+
+  v = ((uint32_t)d * stroke_recip[i]) >> KEYS_STROKE_RECIP_SH;   /* 0 ~ 32767 */
+  v = (v * 255U) >> 15;
+
+  return (v > 255) ? 255 : (uint8_t)v;
+}
+
+/*---------------------------------------------------------------------------
+ *  설정 접근자 — VIA 커스텀 메뉴가 쓴다
+ *
+ *  값만 바꾸고 플래시에는 쓰지 않는다. 저장은 `keys save` 나 보정 완료처럼 사용자가
+ *  명시할 때만 한다 — VIA 슬라이더를 움직일 때마다 섹터를 지우면 수명이 남지 않는다.
+ *---------------------------------------------------------------------------*/
+/*
+ * 설정을 플래시에 남긴다.
+ *
+ * 값을 바꾸는 것과 저장은 따로다 — 바꾸면 즉시 반영되지만 전원을 끄면 사라진다.
+ * 플래시 쓰기는 XIP 를 멈추므로 사용자가 명시할 때만 한다.
+ */
+static uint16_t keysClampUm(uint16_t um)
+{
+  uint16_t travel = keysTravelUmOf(0);
+
+  return (um > travel) ? travel : um;
+}
+
+/*
+ * 키 하나의 설정을 바이트로 싣고 내린다.
+ *
+ * ★ 왜 VIA 커스텀 채널이 아니라 따로 만드나.
+ *
+ *   VIA 는 [채널, 값 ID] 두 바이트뿐이라 키 인덱스를 실을 자리가 없다. 그래서 그쪽은
+ *   전역(= 모두 선택)만 다루고, 키를 골라 설정하는 것은 이 통로로 한다.
+ *
+ * 배치 (리틀엔디안, 0.01mm)
+ *
+ *   [0..1]   입력지점        [2..3]   해제지점
+ *   [4..5]   RT 재입력       [6..7]   RT 입력 해제
+ *   [8..9]   바닥 보호       [10..11] 데드존
+ *   [12]     rt_flags        [13]     스위치 종류
+ *   [14..15] 스트로크 카운트  [16..17] 전 행정      [18] flags(bit0 보정됨)
+ *
+ *   뒤 다섯 바이트는 읽기 전용이다 — 쓰기에서는 무시한다. 호스트가 키마다 mm 를
+ *   그리려면 그 키의 스트로크와 행정을 알아야 하는데, 보정 여부에 따라 값이 달라서
+ *   호스트가 계산할 수 없다.
+ */
+#define KEYS_KEYCFG_WR_LEN   14      /* 쓰기에서 읽는 바이트 수 */
+#define KEYS_KEYCFG_RD_LEN   19      /* 읽기가 채우는 바이트 수 */
+
+/*
+ * ★ 자리를 뒤에만 더한다.
+ *
+ *   앞 배치를 건드리면 옛 도구가 엉뚱한 바이트를 읽는다. 새 값은 늘 끝에 붙이고,
+ *   짧게 온 요청은 있는 만큼만 처리한다 — 그래야 옛 앱이 새 펌웨어에서도 돈다.
+ */
+
+static void keysPut16(uint8_t *p, uint16_t v)
+{
+  p[0] = (uint8_t)(v & 0xFF);
+  p[1] = (uint8_t)(v >> 8);
+}
+
+static uint16_t keysGet16(const uint8_t *p)
+{
+  return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+}
+
+uint32_t keysGetKeyCfg(uint32_t idx, uint8_t *p_buf, uint32_t len)
+{
+  const keys_key_set_t *k;
+
+  if (idx >= KEYS_MAX || len < KEYS_KEYCFG_RD_LEN) return 0;
+  k = KS(idx);
+
+  keysPut16(&p_buf[0],  k->press_um);
+  keysPut16(&p_buf[2],  k->release_um);
+  keysPut16(&p_buf[4],  k->rt_press_um);
+  keysPut16(&p_buf[6],  k->rt_release_um);
+  keysPut16(&p_buf[8],  k->bottom_um);
+  keysPut16(&p_buf[10], k->dead_um);
+  p_buf[12] = k->rt_flags;
+  /*
+   * ★ 저장값을 그대로 돌려준다. 해결된 값이 아니다.
+   *
+   *   앱의 모든 쓰기는 읽고-고쳐-쓰기다. 여기서 해결된 번호를 주면, 아직 못 푸는
+   *   슬롯을 가리키는 키를 한 번만 건드려도 그 배정이 영구히 덮인다.
+   */
+  p_buf[13] = KS(idx)->sw_type;
+  keysPut16(&p_buf[14], keysStrokeCnt(idx));
+  keysPut16(&p_buf[16], keysTravelUmOf(idx));
+  p_buf[18] = KC(idx)->flags;
+
+  return KEYS_KEYCFG_RD_LEN;
+}
+
+/* idx 가 KEYS_MAX 이상이면 전 키에 적용한다 — "모두 선택"을 한 번에 보낸다 */
+bool keysSetKeyCfg(uint32_t idx, const uint8_t *p_buf, uint32_t len)
+{
+  uint32_t first = (idx < KEYS_MAX) ? idx : 0;
+  uint32_t last  = (idx < KEYS_MAX) ? idx : (KEYS_MAX - 1);
+
+  if (len < KEYS_KEYCFG_WR_LEN) return false;
+
+  for (uint32_t i = first; i <= last; i++)
+  {
+    keys_key_set_t *k = KS(i);
+
+    k->press_um      = keysClampUm(keysGet16(&p_buf[0]));
+    k->release_um    = keysClampUm(keysGet16(&p_buf[2]));
+    k->rt_press_um   = keysClampUm(keysGet16(&p_buf[4]));
+    k->rt_release_um = keysClampUm(keysGet16(&p_buf[6]));
+    k->bottom_um     = keysClampUm(keysGet16(&p_buf[8]));
+    k->dead_um       = keysClampUm(keysGet16(&p_buf[10]));
+    k->rt_flags      = p_buf[12] & (KEYS_RT_ON | KEYS_RT_BOTTOM | KEYS_RT_CONT);
+
+    if (keysSwTypeValid(p_buf[13])) k->sw_type = p_buf[13];
+
+    /* 뒤에 붙인 값이라 짧게 온 요청은 건너뛴다 — 옛 도구를 위한 자리다 */
+
+    /* 눌린 채로 굳지 않게 — 표를 만들 때도 막지만 저장값 자체를 바로잡는다 */
+    if (k->release_um >= k->press_um && k->press_um > 0)
+      k->release_um = (uint16_t)(k->press_um - 1);
+  }
+
+  /*
+   * ★ 전 키에 쓸 때는 **전역 값도 같이 맞춘다.**
+   *
+   *   쓰기와 읽기가 서로 다른 곳을 보고 있었다.
+   *
+   *     쓰기   키별 명령(0xC5) -> KS(i)->*      키마다
+   *     읽기   VIA 채널        -> P()->*        프로파일 전역
+   *
+   *   전역은 아무도 안 고치므로, 화면에서 래피드 트리거를 켜고 다시 연결하면 옛
+   *   값이 나온다. 저장이 안 된 것처럼 보이지만 실제로는 키별 값이 잘 저장돼 있고
+   *   RT 도 켜져 있다 — 체크박스만 거짓말을 한다.
+   *
+   *   전 키에 쓴다는 것은 곧 "전역을 이 값으로 한다" 는 뜻이므로 여기서 맞춘다.
+   *   일부 키만 쓸 때는 안 건드린다 — 그건 전역이 아니라 그 키들 이야기다.
+   */
+  if (idx >= KEYS_MAX)
+  {
+    P()->press_um      = keysGet16(&p_buf[0]);
+    P()->release_um    = keysGet16(&p_buf[2]);
+    P()->rt_press_um   = keysGet16(&p_buf[4]);
+    P()->rt_release_um = keysGet16(&p_buf[6]);
+    P()->bottom_um     = keysGet16(&p_buf[8]);
+    P()->dead_um       = keysGet16(&p_buf[10]);
+    P()->rt_flags      = p_buf[12] & (KEYS_RT_ON | KEYS_RT_BOTTOM | KEYS_RT_CONT);
+    if (keysSwTypeValid(p_buf[13])) P()->sw_type_def = p_buf[13];
+
+    if (P()->release_um >= P()->press_um && P()->press_um > 0)
+      P()->release_um = (uint16_t)(P()->press_um - 1);
+  }
+
+  keysThrRebuild();
+
+  /*
+   * ★ 웹 도구는 **전부 이 길로 온다.**
+   *
+   *   키별 명령(0xC5)이 입력지점·RT·데드존을 다 실어 나른다. 전역 setter 에만
+   *   표시를 붙였더니 화면에서 바꾼 값이 그대로 안 남았다 — 고쳤다고 하고서 같은
+   *   증상이 났다.
+   */
+  keysCfgTouch();
+  return true;
+}
+
+/*
+ * ── 설정이 바뀌었다고 표시만 해 둔다 ────────────────────────────────────
+ *
+ * ★ 쓰는 자리에서 바로 저장하지 않는다.
+ *
+ *   설정을 바꾸는 길이 여럿이다 — VIA 커스텀 채널, 키별 명령(0xC5), CLI. 저장을
+ *   그 자리마다 붙이면 하나를 반드시 빠뜨린다. 실제로 웹 도구로 바꾼 값이 전원을
+ *   끄면 전부 사라졌다 — VIA 가 보내는 저장 명령에만 기대고 있었는데, 우리 HE
+ *   화면은 그 명령을 안 보낸다.
+ *
+ *   그리고 슬라이더를 끄는 동안에는 값이 초당 수십 번 바뀐다. 그때마다 플래시를
+ *   지우고 쓰면 수명이 순식간에 닳고 2~3ms 씩 스캔이 멎는다.
+ *
+ *   그래서 바뀌면 표시만 하고, **조용해지면** 메인 루프가 한 번 쓴다. 누가 어느
+ *   길로 바꾸든 저장되고, 한 번의 조작은 한 번의 쓰기가 된다.
+ */
+#define KEYS_CFG_SAVE_QUIET_MS   1000
+
+static volatile bool     cfg_dirty    = false;
+static          uint32_t cfg_dirty_ms = 0;
+
+void keysCfgTouch(void)
+{
+  cfg_dirty    = true;
+  cfg_dirty_ms = millis();
+}
+
+/*
+ * 메인 루프에서 부른다. **ISR 에서 부르면 안 된다** — 플래시를 쓴다.
+ *
+ * 보정 중에는 미룬다. 보정은 63키를 도는 동안 스캔이 한 번도 끊기면 안 되는
+ * 작업이고, 어차피 끝날 때 자기 저장소에 따로 쓴다.
+ */
+__attribute__((weak)) void keysProfUpdate_kb(void) {}
+
+void keysCfgUpdate(void)
+{
+  /*
+   * 프로파일이 바뀐 뒤 미뤄 둔 일 — 조명 다시 켜기 같은 것.
+   * ISR 에서 하면 USB 가 멈춘다 (실제로 그렇게 굳었다).
+   */
+  keysProfUpdate_kb();
+
+  if (cfg_dirty == false)                                return;
+  if (cal_active)                                        return;
+  if (millis() - cfg_dirty_ms < KEYS_CFG_SAVE_QUIET_MS)  return;
+
+  cfg_dirty = false;
+  keysCfgSave();
+}
+
+bool keysSave(void)
+{
+  cfg_dirty = false;
+  return keysCfgSave();
+}
+
+uint16_t keysGetPressUm(void)     { return P()->press_um; }
+uint16_t keysGetReleaseUm(void)   { return P()->release_um; }
+uint8_t  keysGetSwitchType(void)  { return P()->sw_type_def; }
+
+/* 스위치 종류표를 호스트가 읽을 수 있게 연다 — 웹앱이 목록을 따로 들지 않게 한다 */
+uint32_t keysGetSwitchCount(void)        { return KEYS_SWITCH_CNT; }
+uint32_t keysGetSwitchGenericCount(void) { return KEYS_SWITCH_GENERIC_CNT; }
+
+const char *keysGetSwitchName(uint32_t i)
+{
+  return (i < KEYS_SWITCH_CNT) ? keys_switch[i].name : "";
+}
+
+/*
+ * 데이터시트 두 점 (Gs). 0 이면 모르는 스위치다.
+ *
+ * ★ 이 둘이면 곡선이 결정된다.
+ *
+ *   축상 자기장 식의 미지수가 둘(유효 갭, 잔류자속)인데 두 점이면 둘 다 풀린다.
+ *   그래서 곡선을 재려고 심을 끼울 필요가 없다 (docs/ref/he-magnet-model.md).
+ *
+ *   모르는 스위치는 0 으로 둔다 — 짐작한 값을 넣으면 그게 실측인 척한다.
+ */
+uint16_t keysGetSwitchFluxRest(uint32_t i)
+{
+  return (i < KEYS_SWITCH_CNT) ? keys_switch[i].flux_rest_gs : 0;
+}
+
+uint16_t keysGetSwitchFluxBottom(uint32_t i)
+{
+  return (i < KEYS_SWITCH_CNT) ? keys_switch[i].flux_bottom_gs : 0;
+}
+
+uint16_t keysGetSwitchTravelUm(uint32_t i)
+{
+  return (i < KEYS_SWITCH_CNT) ? keys_switch[i].travel_um : 0;
+}
+
+
+/*---------------------------------------------------------------------------
+ *  커스텀 스위치 슬롯
+ *
+ *  ★ 여기는 **정의**를 다루고, 키에 어느 정의를 얹을지는 sw_type 이 다룬다.
+ *    둘을 섞으면 "슬롯을 고쳤는데 어떤 키가 딸려 바뀌나" 를 매번 따져야 한다.
+ *---------------------------------------------------------------------------*/
+uint32_t keysSwCustomCount(void) { return KEYS_SW_CUSTOM_CNT; }
+
+bool keysSwCustomGet(uint32_t slot, keys_sw_info_t *p_info)
+{
+  const keys_sw_one_t *d;
+
+  if (slot >= KEYS_SW_CUSTOM_CNT || p_info == NULL) return false;
+
+  d = &sw_st.sw[slot];
+  memcpy(p_info->name, d->name, sizeof(p_info->name));
+  p_info->name[sizeof(p_info->name) - 1] = 0;
+  p_info->travel_um      = d->travel_um;
+  p_info->flux_rest_gs   = d->flux_rest_gs;
+  p_info->flux_bottom_gs = d->flux_bottom_gs;
+  p_info->kind           = d->kind;
+  return true;
+}
+
+/*
+ * 슬롯 하나를 덮어쓴다.
+ *
+ * ★ 여기서 플래시를 만지지 않는다. HID 명령은 USB ISR 에서 오고, 그 자리에서
+ *   플래시를 쓰면 6ms 동안 인터럽트가 막혀 리포트가 빠진다. 저장은 keysCfgUpdate
+ *   와 같은 방식으로 조용해진 뒤에 한 번 한다.
+ *
+ * ★ 곡선과 임계값은 **바로** 다시 만든다. 저장은 미뤄도 되지만 감각은 미루면
+ *   "고쳤는데 안 바뀐다" 가 된다.
+ */
+bool keysSwCustomSet(uint32_t slot, const keys_sw_info_t *p_info)
+{
+  keys_sw_one_t *d;
+
+  if (slot >= KEYS_SW_CUSTOM_CNT || p_info == NULL) return false;
+
+  d = &sw_st.sw[slot];
+  memcpy(d->name, p_info->name, sizeof(d->name));
+  d->name[sizeof(d->name) - 1] = 0;
+  /*
+   * 행정은 2.00~5.00mm 로 자른다 — 키의 전 행정으로 자르는 keysClampUm 을 쓰면 안
+   * 된다. 여기는 "이 스위치가 얼마나 깊나" 지 "이 키에서 얼마까지 되나" 가 아니다.
+   */
+  d->travel_um      = p_info->travel_um;
+  if (d->travel_um < 200) d->travel_um = 200;
+  if (d->travel_um > 500) d->travel_um = 500;
+
+  d->flux_rest_gs   = p_info->flux_rest_gs;
+  d->flux_bottom_gs = p_info->flux_bottom_gs;
+  d->kind           = p_info->kind;
+
+  keysSwRefCustomOne(slot);
+  keysThrRebuild();
+  sw_dirty = true;
+  return true;
+}
+
+/* 메인 루프에서 — ISR 금지 (플래시) */
+void keysSwUpdate(void)
+{
+  if (sw_dirty == false) return;
+  sw_dirty = false;
+  keysSwSave();
+}
+
+void keysSetPressUm(uint16_t um)
+{
+  uint16_t travel = keysTravelUmOf(0);
+
+  if (um == 0)      um = 1;
+  if (um > travel)  um = travel;
+  P()->press_um = um;
+
+  /* 해제지점이 입력지점보다 깊으면 키가 눌린 채로 남는다 */
+  if (P()->release_um >= P()->press_um) P()->release_um = (uint16_t)(P()->press_um - 1);
+
+  keysCfgFanout();
+  keysThrRebuild();
+  keysCfgTouch();
+}
+
+void keysSetReleaseUm(uint16_t um)
+{
+  if (um == 0) um = 1;
+  if (um >= P()->press_um) um = (uint16_t)(P()->press_um - 1);
+  P()->release_um = um;
+
+  keysCfgFanout();
+  keysThrRebuild();
+  keysCfgTouch();
+}
+
+void keysSetSwitchType(uint8_t type)
+{
+  if (keysSwTypeValid(type) == false) return;
+
+  P()->sw_type_def = type;
+  for (uint32_t i = 0; i < KEYS_MAX; i++) KS(i)->sw_type = type;
+
+  keysThrRebuild();
+  keysCfgTouch();
+}
+
+
+/*---------------------------------------------------------------------------
+ *  래피드 트리거 설정
+ *
+ *  전부 0.01mm 단위다. 값을 바꾸면 임계값 표를 즉시 다시 만들어 다음 스캔부터
+ *  반영된다 — 저장(keys save)과는 별개다.
+ *---------------------------------------------------------------------------*/
+uint16_t keysGetRtPressUm(void)   { return P()->rt_press_um; }
+uint16_t keysGetRtReleaseUm(void) { return P()->rt_release_um; }
+uint16_t keysGetBottomUm(void)    { return P()->bottom_um; }
+uint16_t keysGetDeadUm(void)      { return P()->dead_um; }
+
+uint8_t  keysGetRtFlags(void)     { return P()->rt_flags; }
+
+void keysSetRtPressUm(uint16_t um)   { P()->rt_press_um   = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); keysCfgTouch(); }
+void keysSetRtReleaseUm(uint16_t um) { P()->rt_release_um = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); keysCfgTouch(); }
+void keysSetBottomUm(uint16_t um)    { P()->bottom_um     = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); keysCfgTouch(); }
+void keysSetDeadUm(uint16_t um)      { P()->dead_um       = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); keysCfgTouch(); }
+
+void keysSetRtFlags(uint8_t flags)
+{
+  P()->rt_flags = flags & (KEYS_RT_ON | KEYS_RT_BOTTOM | KEYS_RT_CONT);
+  keysCfgFanout();
+  keysThrRebuild();
+  keysCfgTouch();
+
+  /*
+   * RT 를 끄거나 켤 때 상태를 초기화한다. 안 그러면 직전 peak 이 남아
+   * 켜자마자 엉뚱한 판정이 한 번 난다.
+   */
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    rt_arm[st] = 0;
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++) peak[st][c] = 0;
+  }
+}
+
+/* 물리 배치 한 항목 {x, y, w, h, row, col} — 1/4 키유닛. 웹 도구가 이걸로 그린다. */
+uint32_t keysGetLayoutCount(void)
+{
+  return KEYS_LAYOUT_KEY_CNT;
+}
+
+const uint8_t *keysGetLayoutEntry(uint32_t idx)
+{
+  if (idx >= KEYS_LAYOUT_KEY_CNT) return NULL;
+  return keys_geo[idx];
+}
+
+
+/* 키맵은 keyboards/<모델>/layout.h 에 있다. 표를 밖으로 내보내지 않고 조회만 준다. */
+uint8_t keysGetKeycode(uint16_t row, uint16_t col)
+{
+  if (row >= KEYS_STEP_MAX || col >= KEYS_CH_MAX) return 0;
+  return keys_keymap[row][col];
+}
+
+bool keysIsPresent(uint16_t row, uint16_t col)
+{
+  if (row >= KEYS_STEP_MAX || col >= KEYS_CH_MAX) return false;
+  return (keys_present[row] & (1U << col)) != 0;
+}
+
+/*
+ * 행 비트마스크를 그대로 준다. QMK 의 matrix_row_t 와 비트 순서가 같아서
+ * 상위 계층은 이 보드가 HE 인지 일반 매트릭스인지 몰라도 된다.
+ */
+uint16_t keysGetRow(uint16_t row)
+{
+  if (row >= KEYS_STEP_MAX) return 0;
+  return pressed[row];
+}
+
+
+
+
+/*---------------------------------------------------------------------------
+ *  CLI
+ *---------------------------------------------------------------------------*/
+#if CLI_USE(HW_KEYS)
+
+/* 레이아웃이 몇 행인가 */
+static uint32_t keysLayoutRows(void)
+{
+  uint32_t rows = 0;
+
+  for (uint32_t i = 0; i < KEYS_LAYOUT_KEY_CNT; i++)
+  {
+    uint32_t r = keys_geo[i][1] / KEYS_GEO_UNIT + 1;
+    if (r > rows) rows = r;
+  }
+  return rows;
+}
+
+/*
+ * 실제 배치로 그린다. mark() 가 true 인 키만 채워 표시한다.
+ *
+ * 8x8 격자로는 매핑이 맞는지, 어느 키가 남았는지 알 수 없다. ESC 를 눌렀을 때
+ * ESC 자리가 채워져야 비로소 맞는 것이다.
+ */
+static void keysDrawLayout(bool (*mark)(uint16_t row, uint16_t col))
+{
+  uint32_t rows = keysLayoutRows();
+
+  for (uint32_t r = 0; r < rows; r++)
+  {
+    char line[KEYS_VIEW_W + 1];
+
+    memset(line, ' ', KEYS_VIEW_W);
+    line[KEYS_VIEW_W] = 0;
+
+    for (uint32_t i = 0; i < KEYS_LAYOUT_KEY_CNT; i++)
+    {
+      uint32_t x0, x1, w;
+      bool     on;
+
+      if (keys_geo[i][1] / KEYS_GEO_UNIT != r) continue;
+
+      /*
+       * ★ 폭을 따로 환산하면 안 된다. x0 과 w 를 각각 내림하면 오차가 두 번 생겨
+       *   행마다 오른쪽 끝이 한두 칸씩 어긋난다. 오른쪽 모서리를 직접 구해서 뺀다.
+       */
+      x0 = (keys_geo[i][0]) * KEYS_VIEW_UNIT / KEYS_GEO_UNIT;
+      x1 = (keys_geo[i][0] + keys_geo[i][2]) * KEYS_VIEW_UNIT / KEYS_GEO_UNIT;
+      w  = x1 - x0;
+      if (w < 3) w = 3;
+      if (x0 + w > KEYS_VIEW_W) continue;
+
+      on = mark(keys_geo[i][4], keys_geo[i][5]);
+
+      line[x0]         = '[';
+      line[x0 + w - 1] = ']';
+      for (uint32_t k = 1; k + 1 < w; k++) line[x0 + k] = on ? '#' : ' ';
+    }
+    cliPrintf("  %s\n", line);
+  }
+}
+
+static void keysPrintTable(void)
+{
+  cliPrintf("      ");
+  for (uint32_t ch = 0; ch < KEYS_CH_MAX; ch++)
+  {
+    cliPrintf(" ch%-2d", (int)ch);
+  }
+  cliPrintf("\n");
+
+  for (uint32_t step = 0; step < KEYS_STEP_MAX; step++)
+  {
+    cliPrintf("  s%-2d ", (int)step);
+    for (uint32_t ch = 0; ch < KEYS_CH_MAX; ch++)
+    {
+      cliPrintf(" %4d", (int)raw[step][ch]);
+    }
+    cliPrintf("\n");
+  }
+}
+
+void cliKeys(cli_args_t *args)
+{
+  bool ret = false;
+
+
+  /*
+   * 키를 눌러가며 측정하는 명령만 리포트를 막는다.
+   *
+   * 측정용으로 누른 키가 호스트로 입력되면 터미널이 엉켜 측정 자체가 안 된다.
+   * 반대로 info·cfg 처럼 한 번 찍고 끝나는 명령은 막을 이유가 없다 — 사용자가
+   * 키를 누를 일이 없는데 막아두면 그냥 키보드가 멈춘 것으로 보인다.
+   */
+  static const char *interactive[] =
+    { "cal", "map", "learn", "layout", "show", "bar", "watch", "noise", "raw", "led" };
+
+  for (uint32_t i = 0; i < sizeof(interactive) / sizeof(interactive[0]); i++)
+  {
+    if (args->argc == 1 && args->isStr(0, (char *)interactive[i]))
+    {
+      report_off = true;
+      break;
+    }
+  }
+
+
+  /*
+   * 래피드 트리거 조작.
+   *
+   *   keys rt                        상태 보기
+   *   keys rt on|off                 RT 켜고 끄기
+   *   keys rt cont|bottom on|off     연속 RT / 바닥 보호
+   *   keys rt press|release|bottom|dead <0.01mm>
+   */
+  if (args->argc >= 1 && args->isStr(0, "rt"))
+  {
+    uint8_t f = keysGetRtFlags();
+
+    if (args->argc == 2 && (args->isStr(1, "on") || args->isStr(1, "off")))
+    {
+      keysSetRtFlags(args->isStr(1, "on") ? (uint8_t)(f | KEYS_RT_ON)
+                                          : (uint8_t)(f & ~KEYS_RT_ON));
+    }
+    else if (args->argc == 3 && (args->isStr(1, "cont") || args->isStr(1, "bottom"))
+                             && (args->isStr(2, "on") || args->isStr(2, "off")))
+    {
+      uint8_t bit = args->isStr(1, "cont") ? KEYS_RT_CONT : KEYS_RT_BOTTOM;
+
+      keysSetRtFlags(args->isStr(2, "on") ? (uint8_t)(f | bit) : (uint8_t)(f & ~bit));
+    }
+    else if (args->argc == 3)
+    {
+      uint16_t um = (uint16_t)args->getData(2);
+
+      if      (args->isStr(1, "press"))   keysSetRtPressUm(um);
+      else if (args->isStr(1, "release")) keysSetRtReleaseUm(um);
+      else if (args->isStr(1, "bottom"))  keysSetBottomUm(um);
+      else if (args->isStr(1, "dead"))    keysSetDeadUm(um);
+    }
+
+    f = keysGetRtFlags();
+    cliPrintf("RT        : %s   연속 %s   바닥 보호 %s\n",
+              (f & KEYS_RT_ON)     ? "켬" : "끔",
+              (f & KEYS_RT_CONT)   ? "켬" : "끔",
+              (f & KEYS_RT_BOTTOM) ? "켬" : "끔");
+    /*
+     * ★ RT 문턱은 하나가 아니다 — 깊이 구역마다 다르다.
+     *
+     *   같은 mm 라도 바닥 근처는 카운트가 몇 배 크다. 대표값 하나만 찍으면 "왜
+     *   설정대로 안 되지" 를 영영 못 본다. 여덟 개를 다 늘어놓는다.
+     */
+    cliPrintf("재입력    : %d.%02d mm  (구역별 카운트)\n",
+              keysGetRtPressUm() / 100, keysGetRtPressUm() % 100);
+    cliPrintf("            ");
+    for (uint32_t z = 0; z < KEYS_RT_ZONE_CNT; z++) cliPrintf("%5d", thr[0].rt_press[z]);
+    cliPrintf("\n");
+    cliPrintf("입력 해제 : %d.%02d mm  (구역별 카운트)\n",
+              keysGetRtReleaseUm() / 100, keysGetRtReleaseUm() % 100);
+    cliPrintf("            ");
+    for (uint32_t z = 0; z < KEYS_RT_ZONE_CNT; z++) cliPrintf("%5d", thr[0].rt_release[z]);
+    cliPrintf("\n");
+    cliPrintf("바닥 보호 : %d.%02d mm  (깊이 %d 이상이면 RT 해제 끔)\n",
+              keysGetBottomUm() / 100, keysGetBottomUm() % 100, thr[0].bottom_lo);
+    /*
+     * 잘렸으면 잘렸다고 말한다.
+     *
+     * 데드존은 해제지점을 못 넘는다. CLI 는 그 제한을 거는 화면을 안 거치므로 여기서
+     * 큰 값을 넣을 수 있는데, 그러면 설정값과 실제가 갈린다 — 조용히 두면 "0.40 을
+     * 넣었는데 왜 그대로 동작하지" 를 못 푼다.
+     */
+    cliPrintf("데드존    : %d.%02d mm  (%d 카운트)%s\n",
+              keysGetDeadUm() / 100, keysGetDeadUm() % 100, thr[0].dead,
+              (thr[0].dead < thr[0].release ||
+               keysGetDeadUm() == 0) ? "" : "   <- 해제지점에서 잘림");
+    cliPrintf("입력지점  : %d 카운트,  해제지점 %d 카운트  (0번 키)\n",
+              thr[0].press, thr[0].release);
+    ret = true;
+  }
+
+  if (args->argc == 1 && args->isStr(0, "info"))
+  {
+    cliPrintf("keys init   : %d\n", is_init);
+    cliPrintf("step x ch   : %d x %d = %d\n", KEYS_STEP_MAX, KEYS_CH_MAX, KEYS_MAX);
+    cliPrintf("ADC0 seq ch : ");
+    for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++) cliPrintf("%d ", adc0_seq_ch[i]);
+    cliPrintf("\nADC1 seq ch : ");
+    for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++) cliPrintf("%d ", adc1_seq_ch[i]);
+    cliPrintf("\nmux addr    : ");
+    for (uint32_t i = 0; i < KEYS_STEP_MAX; i++) cliPrintf("%d ", mux_addr[i]);
+    cliPrintf("\nlayout      : %s  %d 키\n", KEYS_LAYOUT_NAME, KEYS_LAYOUT_KEY_CNT);
+    cliPrintf("calibrated  : %d  (%d + %d scan, %d ms)\n",
+              is_calibrated, KEYS_CAL_DISCARD, KEYS_CAL_SAMPLES, (int)cal_time_ms);
+    cliPrintf("scan        : %d us  (max %d, %dus 초과 %d / %d 회)\n",
+              (int)scan_time_us, (int)scan_us_max,
+              KEYS_SCAN_OVER_US, (int)scan_over_cnt, (int)scan_cnt);
+    cliPrintf("timeout     : %d\n", (int)timeout_cnt);
+    ret = true;
+  }
+
+  /* 눌린 키를 실시간으로 본다 */
+  if (args->argc == 1 && args->isStr(0, "show"))
+  {
+    while (keysCliKeep())
+    {
+      /* 헤더와 데이터 모두 열 폭 5, 앞 라벨 폭 6 으로 맞춘다 */
+      cliPrintf("      ");
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++) cliPrintf(" ch%d ", (int)c);
+      cliPrintf("   row\n");
+
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        cliPrintf("  s%-2d ", (int)st);
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          cliPrintf(" %s ", keysGetPressed(st, c) ? "[#]" : " . ");
+        }
+        cliPrintf("   0x%02X\n", (int)keysGetRow(st));
+      }
+      keysUpdate();
+      cliMoveUp(KEYS_STEP_MAX + 1);
+      delay(30);
+    }
+    cliMoveDown(KEYS_STEP_MAX + 1);
+    ret = true;
+  }
+
+  /*
+   * 실제 키보드 배치로 그린다.
+   *
+   * 8x8 격자로는 매핑이 맞는지 알 수 없다. ESC 를 눌렀을 때 ESC 자리에 표시돼야
+   * 비로소 맞는 것이다. keyboards/<모델>/layout.h 의 물리 좌표를 그대로 쓴다.
+   */
+  if (args->argc == 1 && args->isStr(0, "layout"))
+  {
+    cliPrintf("%s  —  %d 키\n", KEYS_LAYOUT_NAME, KEYS_LAYOUT_KEY_CNT);
+
+    while (keysCliKeep())
+    {
+      keysDrawLayout(keysGetPressed);
+      keysUpdate();
+      cliMoveUp(keysLayoutRows());
+      delay(30);
+    }
+    cliMoveDown(keysLayoutRows());
+    ret = true;
+  }
+
+  /*
+   * 매핑 측정 — 키를 누를 때마다 한 줄씩 순번을 붙여 기록한다.
+   *
+   * keys map 은 누르는 내내 찍혀 로그가 길어진다. 물리 배치와 (s, ch) 를 짝지을 때는
+   * "몇 번째로 누른 키가 어느 셀인가" 만 있으면 되므로 눌림 에지에서만 한 줄 낸다.
+   * 이 목록을 via.json 의 매트릭스 주소로 그대로 옮긴다.
+   */
+  if (args->argc == 1 && args->isStr(0, "learn"))
+  {
+    static uint16_t prev[KEYS_STEP_MAX];
+    uint32_t n = 0;
+
+    memset(prev, 0, sizeof(prev));
+    cliPrintf("키를 순서대로 누르세요. 누를 때마다 한 줄씩 기록합니다.\n\n");
+
+    while (keysCliKeep())
+    {
+      keysUpdate();
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        uint16_t now  = keysGetRow(st);
+        uint16_t rise = now & (uint16_t)~prev[st];
+
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          if (rise & (1U << c)) cliPrintf("  #%02d  %d,%d\n", (int)++n, (int)st, (int)c);
+        }
+        prev[st] = now;
+      }
+      delay(5);
+    }
+    cliPrintf("\n%d 개 기록\n", (int)n);
+    ret = true;
+  }
+
+  /*
+   * 보정 — 전 키를 끝까지 눌러 바닥값을 모은다.
+   *
+   * 기준값(무압)은 러닝 최대값이 늘 추적하지만, 바닥값은 실제로 끝까지 눌러야만
+   * 알 수 있다. 이 둘이 있어야 눌린 깊이를 mm 로 환산할 수 있다 (13편 래피드 트리거).
+   *
+   * 레이아웃 뷰로 진행 상황을 보여준다 — 어느 키가 남았는지 눈으로 보인다.
+   */
+  /*
+   * keys sw — 커스텀 슬롯과 **만들어진 곡선**을 찍는다.
+   *
+   * ★ 곡선을 눈으로 볼 수 있어야 한다.
+   *
+   *   두 점에서 부팅 때 만드는 값이라, 틀려도 화면에서는 "거리가 좀 이상하다" 로만
+   *   나타난다. 33칸을 그대로 찍어 앱의 heMakeCurve 출력과 대조하면 어느 쪽이
+   *   틀렸는지 한 번에 갈린다.
+   */
+  if (args->argc >= 1 && args->isStr(0, "sw"))
+  {
+    uint32_t n = keysSwCustomCount();
+
+    for (uint32_t i = 0; i < n; i++)
+    {
+      keys_sw_info_t       info;
+      const keys_sw_ref_t *r;
+
+      if (keysSwCustomGet(i, &info) == false) continue;
+      r = keysSwRef((uint8_t)(KEYS_SW_CUSTOM_BIT | i));
+
+      cliPrintf("CUSTOM %d  0x%02X  \"%s\"%s\n",
+                (int)i + 1, (unsigned)(KEYS_SW_CUSTOM_BIT | i),
+                info.name, (info.name[0] == 0) ? "  (기본값)" : "");
+      cliPrintf("  행정 %d.%02d mm   자속 %d / %d Gs   카운트 %d\n",
+                info.travel_um / 100, info.travel_um % 100,
+                info.flux_rest_gs, info.flux_bottom_gs, r->stroke_cnt);
+
+      if (r->curve == NULL)
+      {
+        cliPrintf("  곡선 없음 — 직선으로 읽는다\n\n");
+        continue;
+      }
+
+      /* 33칸을 그대로. 앱과 대조하는 것이 목적이라 가공하지 않는다 */
+      for (uint32_t k = 0; k < KEYS_CURVE_N; k++)
+      {
+        if ((k % 8) == 0) cliPrintf("  [%2d]", (int)k);
+        cliPrintf(" %5d", r->curve[k]);
+        if ((k % 8) == 7 || k == KEYS_CURVE_N - 1) cliPrintf("\n");
+      }
+      cliPrintf("\n");
+    }
+    ret = true;
+  }
+
+  if (args->argc == 1 && args->isStr(0, "cal"))
+  {
+    uint32_t total  = keysCalTotal();
+    uint32_t done   = 0;
+    uint32_t rows;
+    bool     cancel = false;
+
+    keysCalStart();
+
+    cliPrintf("모든 키를 끝까지 한 번씩 눌러주세요.\n");
+    cliPrintf("채워진 자리가 끝난 키입니다.\n");
+    cliPrintf("키보드에서   [Ctrl + Enter] 여기까지 저장하고 끝\n");
+    cliPrintf("             [Ctrl + ESC]   취소 (저장하지 않음)\n\n");
+    rows = keysLayoutRows();
+
+    /*
+     * ★ 여기만 keysCliKeep() 을 쓰지 않는다.
+     *
+     *   cal 은 Ctrl+Esc(취소)와 Ctrl+Enter(저장)를 스스로 구분해서 처리한다.
+     *   공용 탈출로 빠져나가면 cancel 플래그가 서지 않아 "취소인데 저장"이 된다.
+     */
+    while (cliKeepLoop())
+    {
+      keysUpdate();                 /* 표본 수집은 keysUpdate 안에서 한다 */
+
+      done = keysCalDone();
+      keysDrawLayout(keysCalIsDone);
+      cliPrintf("  %d / %d 완료    \n", (int)done, (int)total);
+      cliMoveUp(rows + 1);
+
+      if (done >= total) break;                                  /* 전부 끝남 -> 저장 */
+
+      if (keysComboHeld(KEYS_MOD_KC, KEYS_CANCEL_KC))
+      {
+        cancel = true;
+        break;
+      }
+      if (keysComboHeld(KEYS_MOD_KC, KEYS_SAVE_KC)) break;
+
+      delay(30);
+    }
+    cliMoveDown(rows + 1);
+
+    if (cancel)
+    {
+      keysCalCancel();
+      cliPrintf("\n취소 — 저장하지 않는다 (기존 보정 유지)\n");
+    }
+    else
+    {
+      uint32_t n_done = 0, n_skip = 0;
+      bool     ok     = keysCalSave(&n_done, &n_skip);
+
+      cliPrintf("\n보정 %d / %d 저장", (int)n_done, (int)total);
+      if (n_skip) cliPrintf("  (%d개는 스위치가 없거나 덜 눌림 — 공칭값 유지)", (int)n_skip);
+      cliPrintf("\n");
+      cliPrintf("save : %s  seq %d\n", ok ? "OK" : "E_", (int)cal_st.seq);
+    }
+    ret = true;
+  }
+
+  if (args->argc == 3 && args->isStr(0, "key"))
+  {
+    uint32_t st  = (uint32_t)args->getData(1);
+    uint32_t ch  = (uint32_t)args->getData(2);
+    uint32_t idx = st * KEYS_CH_MAX + ch;
+    bool     in     = false;  /* 움직임 구간 안에 있는가 */
+    int32_t  peak_d = 0;
+    int32_t  ret_d  = 0;      /* 직전 구간 이후 가장 얕았던 깊이 */
+    bool     edge   = false;  /* 그 구간에서 새 눌림 에지가 났는가 */
+    bool     prev_p = false;
+    uint32_t n = 0, miss = 0;
+
+    if (st >= KEYS_STEP_MAX || ch >= KEYS_CH_MAX)
+    {
+      cliPrintf("[E_] step 0~%d, ch 0~%d\n", KEYS_STEP_MAX - 1, KEYS_CH_MAX - 1);
+      return;
+    }
+
+    cliPrintf("s%d/ch%d (키 %d)  입력지점 %d, 해제지점 %d, 데드존 %d\n",
+              (int)st, (int)ch, (int)idx,
+              thr[idx].press, thr[idx].release, thr[idx].dead);
+    cliPrintf("스트로크 %d,  기준값 %d\n\n",
+              (int)(KC(idx)->cal_max - KC(idx)->cal_min), keysGetBase(st, ch));
+    cliPrintf("  #   최대깊이  되올라온곳  임계  해제선  에지\n");
+
+    /*
+     * ★ 구간 경계를 해제지점 위로 잡는다.
+     *
+     *   처음에는 잡음 바로 위(KEYS_BAR_MIN)를 경계로 썼다. 그러면 **완전히 떼진
+     *   경우만 한 구간으로 세어져**, 정작 보려던 "덜 떼고 다시 누른" 경우가 통째로
+     *   한 구간에 묻힌다. 연타에서 입력이 빠지는 이유를 재는 게 목적이므로
+     *   경계는 해제지점보다 아래여야 하고, 되올라온 최고점을 같이 남겨야 한다.
+     */
+    {
+      int32_t edge_lo = thr[idx].release / 2;
+      int32_t valley  = 0;
+
+      if (edge_lo < KEYS_BAR_MIN) edge_lo = KEYS_BAR_MIN;
+
+      while (keysCliKeep())
+      {
+        int32_t d;
+        bool    now_p;
+
+        keysUpdate();
+        d     = -keysGetDelta((uint8_t)st, (uint8_t)ch);   /* 누를수록 양수 */
+        now_p = (keysGetRow(st) & (1U << ch)) != 0;
+
+        if (now_p && prev_p == false) edge = true;         /* 새 눌림 에지 */
+        prev_p = now_p;
+
+        if (d >= edge_lo)
+        {
+          if (in == false) { in = true; peak_d = d; ret_d = valley; edge = false; }
+          else if (d > peak_d) peak_d = d;
+        }
+        else
+        {
+          if (in)
+          {
+            in = false;
+            n++;
+            if (edge == false) miss++;
+            cliPrintf("  %-3d %7d %10d  %5d  %5d  %-4s%s\n",
+                      (int)n, (int)peak_d, (int)ret_d,
+                      thr[idx].press, thr[idx].release,
+                      edge ? "OK" : "안남", edge ? "" : "   <-");
+            valley = d;
+          }
+          else if (d < valley) valley = d;
+        }
+        delay(2);
+      }
+    }
+
+    cliPrintf("\n%d 회 중 %d 회 에지 안 남\n", (int)n, (int)miss);
+    cliPrintf("'되올라온곳' 이 해제선 %d 보다 높으면 그 눌림은 새 입력이 안 된다\n",
+              thr[idx].release);
+    ret = true;
+  }
+
+  /*
+   * LED 매핑 확인 — 누른 키의 LED 를 켠다.
+   *
+   * ★ 매핑은 배치에서 계산된다 (layout.h 의 keys_led[], tools/gen_keymap.py).
+   *   지그재그 순서라는 규칙이 맞는지는 몇 점만 찍어 봐서는 못 믿는다. 여기서
+   *   전 키를 한 번씩 눌러 보면 규칙 전체가 한 번에 검증된다.
+   *
+   *   ESC 를 눌렀는데 다른 자리가 켜지면 그 어긋난 방향이 곧 답이다.
+   */
+  if (args->argc == 1 && args->isStr(0, "led"))
+  {
+    cliPrintf("키를 누르면 그 키의 LED 가 켜진다. 전 키를 한 번씩 눌러 본다.\n");
+    cliPrintf("(Ctrl+ESC 로 종료)\n");
+
+    while (keysCliKeep())
+    {
+      keysUpdate();
+
+      ws2812Clear();
+      for (uint32_t i = 0; i < KEYS_LAYOUT_LED_CNT; i++)
+      {
+        if (keysGetPressed(keys_led[i][0], keys_led[i][1]))
+        {
+          ws2812SetColor((uint16_t)i, 40, 40, 40);
+        }
+      }
+      ws2812Refresh();
+      delay(5);
+    }
+
+    ws2812Clear();
+    ws2812Refresh();
+    ret = true;
+  }
+
+  if (args->argc == 1 && args->isStr(0, "cfg"))
+  {
+    uint32_t n_cal = 0;
+
+    for (uint32_t i = 0; i < KEYS_MAX; i++) if (KC(i)->flags & 1) n_cal++;
+
+    cliPrintf("loaded      : %d  (보정 seq %d / 설정 seq %d)\n",
+              is_cfg_loaded, (int)cal_st.seq, (int)set_st.seq);
+    cliPrintf("profile     : %d / %d\n", (int)set_st.active + 1, KEYS_PROF_CNT);
+    cliPrintf("press       : %d.%02d mm\n", P()->press_um / 100, P()->press_um % 100);
+    cliPrintf("release     : %d.%02d mm\n", P()->release_um / 100, P()->release_um % 100);
+    cliPrintf("rapid       : %s  되눌림 %d.%02d mm / 되뗌 %d.%02d mm\n",
+              (P()->rt_flags & KEYS_RT_ON) ? "켬" : "끔",
+              P()->rt_press_um / 100,   P()->rt_press_um % 100,
+              P()->rt_release_um / 100, P()->rt_release_um % 100);
+    cliPrintf("바닥 보호   : %s  %d.%02d mm\n",
+              (P()->rt_flags & KEYS_RT_BOTTOM) ? "켬" : "끔",
+              P()->bottom_um / 100, P()->bottom_um % 100);
+    cliPrintf("데드존      : %d.%02d mm\n", P()->dead_um / 100, P()->dead_um % 100);
+    cliPrintf("switch      : 0x%02X (%s, %d.%02d mm)\n", P()->sw_type_def,
+              keysSwRef(P()->sw_type_def)->name,
+              keysTravelUmOf(0) / 100, keysTravelUmOf(0) % 100);
+    cliPrintf("calibrated  : %d / %d 키\n", (int)n_cal, KEYS_MAX);
+    cliPrintf("record      : 보정 %d B + 설정 %d B (프로파일 %d벌)\n",
+              (int)sizeof(keys_cal_t), (int)sizeof(keys_set_t), KEYS_PROF_CNT);
+
+    if (n_cal)
+    {
+      uint32_t lo = 0xFFFF, hi = 0, sum = 0;
+
+      cliPrintf("\n키별 스트로크 (보정된 것만, '-' 은 미보정)\n      ");
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++) cliPrintf(" ch%-3d", (int)c);
+      cliPrintf("\n");
+
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        cliPrintf("  s%-2d ", (int)st);
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          uint32_t i = st * KEYS_CH_MAX + c;
+
+          if (KC(i)->flags & 1)
+          {
+            uint32_t st_v = KC(i)->cal_max - KC(i)->cal_min;
+
+            cliPrintf(" %5d", (int)st_v);
+            if (st_v < lo) lo = st_v;
+            if (st_v > hi) hi = st_v;
+            sum += st_v;
+          }
+          else
+          {
+            cliPrintf("     -");
+          }
+        }
+        cliPrintf("\n");
+      }
+      cliPrintf("\n  최소 %d, 최대 %d, 평균 %d  (편차 %d%)\n",
+                (int)lo, (int)hi, (int)(sum / n_cal),
+                (int)((hi - lo) * 100 / (sum / n_cal)));
+    }
+    ret = true;
+  }
+
+  if (args->argc == 1 && args->isStr(0, "save"))
+  {
+    uint32_t t = millis();
+    bool     ok = keysCfgSave();
+
+    cliPrintf("save : %s  seq %d  (%d ms)\n", ok ? "OK" : "E_",
+              (int)set_st.seq, (int)(millis() - t));
+    ret = true;
+  }
+
+  /*
+   * 프로파일 — 번호 없이 부르면 지금 것만 알려준다.
+   *
+   * 화면 없이도 전환을 확인할 수 있어야 한다. 웹 도구가 잘못 만든 것인지 펌웨어가
+   * 잘못 바꾼 것인지 가르는 데 이만한 것이 없다.
+   */
+  if (args->argc >= 1 && args->isStr(0, "prof"))
+  {
+    if (args->argc == 2)
+    {
+      int32_t n = args->getData(1);
+
+      if (n < 1 || n > KEYS_PROF_CNT)
+      {
+        cliPrintf("[E_] 프로파일은 1~%d\n", KEYS_PROF_CNT);
+        return;
+      }
+      cliPrintf("prof %d : %s\n", (int)n, keysProfSet((uint8_t)(n - 1)) ? "OK" : "E_");
+    }
+    else if (args->argc == 3 && args->isStr(1, "copy"))
+    {
+      int32_t n = args->getData(2);
+
+      if (n < 1 || n > KEYS_PROF_CNT)
+      {
+        cliPrintf("[E_] 프로파일은 1~%d\n", KEYS_PROF_CNT);
+        return;
+      }
+      cliPrintf("copy %d -> %d : %s\n", (int)keysProfGet() + 1, (int)n,
+                (keysProfCopy((uint8_t)(n - 1)) && keysProfSave()) ? "OK" : "E_");
+    }
+
+    cliPrintf("지금 프로파일 : %d / %d\n", (int)keysProfGet() + 1, KEYS_PROF_CNT);
+    cliPrintf("  입력지점 %d.%02d mm,  해제 %d.%02d mm,  RT %s\n",
+              P()->press_um / 100, P()->press_um % 100,
+              P()->release_um / 100, P()->release_um % 100,
+              (P()->rt_flags & KEYS_RT_ON) ? "켬" : "끔");
+    ret = true;
+  }
+
+  if (args->argc == 1 && args->isStr(0, "load"))
+  {
+    bool ok = keysCfgLoad();
+
+    cliPrintf("load : %s  보정 seq %d / 설정 seq %d\n",
+              ok ? "OK" : "없음(기본값)", (int)cal_st.seq, (int)set_st.seq);
+    ret = true;
+  }
+
+  if (args->argc == 1 && args->isStr(0, "base"))
+  {
+    cliPrintf("기준값을 다시 잡는다 — 키에서 손을 떼고 있을 것\n");
+    delay(300);
+    if (keysCalibrate())
+    {
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        cliPrintf("  s%-2d ", (int)st);
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++) cliPrintf(" %5d", (int)base[st][c]);
+        cliPrintf("\n");
+      }
+    }
+    else
+    {
+      cliPrintf("[E_] 캘리브레이션 실패\n");
+    }
+    ret = true;
+  }
+
+  /*
+   * 키 하나를 누르면 어느 셀이 얼마나 움직이는지 알려준다.
+   * 64셀 <-> 실제 키 위치 표를 이걸로 만든다.
+   */
+  if (args->argc == 1 && args->isStr(0, "map"))
+  {
+    int32_t  last_d  = 0;
+    uint32_t last_st = 0, last_ch = 0;
+
+    cliPrintf("키를 하나씩 눌러본다. 가장 크게 움직인 셀을 표시한다.\n\n");
+
+    while (keysCliKeep())
+    {
+      int32_t  best   = 0;
+      uint32_t best_s = 0, best_c = 0;
+
+      keysUpdate();
+
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          int32_t d = keysGetDelta(st, c);
+          int32_t a = (d < 0) ? -d : d;
+
+          if (a > ((best < 0) ? -best : best)) { best = d; best_s = st; best_c = c; }
+        }
+      }
+
+      /* 값이 크게 바뀐 순간에만 한 줄 남긴다 — 스크롤이 넘치지 않게 */
+      if (((best < 0) ? -best : best) > KEYS_MAP_REPORT_MIN &&
+          (best_s != last_st || best_c != last_ch ||
+           ((best - last_d) > 200) || ((last_d - best) > 200)))
+      {
+        cliPrintf("  s%d / ch%d   delta %+6d   (raw %5d, base %5d)\n",
+                  (int)best_s, (int)best_c, (int)best,
+                  (int)raw[best_s][best_c], (int)base[best_s][best_c]);
+        last_d = best; last_st = best_s; last_ch = best_c;
+      }
+      delay(20);
+    }
+    ret = true;
+  }
+
+  /*
+   * 셀별 노이즈 측정.
+   *
+   * "값이 흔들린다"와 "값이 치우쳐 있다"는 다른 문제인데 한 장면만 봐서는 구분이 안 된다.
+   * 일정 시간 동안 편차의 최소/최대를 모아 진폭(p-p)과 중심을 같이 보여준다.
+   *
+   *   진폭이 크다        -> 그 셀의 노이즈가 크다
+   *   진폭은 작고 치우침 -> 스위치가 덜 복귀했거나 기준값이 아직 안 맞았다
+   */
+  if (args->argc >= 1 && args->argc <= 2 && args->isStr(0, "noise"))
+  {
+    static int16_t  d_min[KEYS_STEP_MAX][KEYS_CH_MAX];
+    static int16_t  d_max[KEYS_STEP_MAX][KEYS_CH_MAX];
+    static uint16_t a_min[KEYS_STEP_MAX][KEYS_CH_MAX];
+    static uint16_t a_max[KEYS_STEP_MAX][KEYS_CH_MAX];
+    uint32_t t_begin;
+    uint32_t cnt = 0;
+
+    /*
+     * 관측 시간을 받는다 — `keys noise 60000`.
+     *
+     * ★ 3초짜리 창을 여러 번 도는 것과 한 창을 길게 보는 것은 다르다.
+     *
+     *   드물게 튀는 사건은 창마다 흩어져, 나눠 보면 어느 창에서도 최악값이 안 된다.
+     *   한 창 안에서 봐야 p-p 에 그대로 남는다. 실제로 3초 x 12 로는 못 잡은 것을
+     *   찾으려고 넣었다.
+     */
+    const uint32_t noise_ms = (args->argc == 2) ? (uint32_t)args->getData(1)
+                                                : KEYS_NOISE_MS;
+
+    for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+    {
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+      {
+        d_min[st][c] = 32767; d_max[st][c] = -32768;
+        a_min[st][c] = 0xFFFF; a_max[st][c] = 0;
+      }
+    }
+
+    cliPrintf("%d ms 동안 측정한다 — 키에서 손을 뗄 것\n", (int)noise_ms);
+    delay(300);
+
+    t_begin = millis();
+    while (millis() - t_begin < noise_ms)
+    {
+      keysUpdate();
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          int32_t  d = keysGetDelta(st, c);
+          uint16_t a = keysGetAcc(st, c);
+
+          if (d < d_min[st][c]) d_min[st][c] = (int16_t)d;
+          if (d > d_max[st][c]) d_max[st][c] = (int16_t)d;
+          if (a < a_min[st][c]) a_min[st][c] = a;
+          if (a > a_max[st][c]) a_max[st][c] = a;
+        }
+      }
+      cnt++;
+    }
+
+    cliPrintf("\n진폭 (p-p)\n      ");
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++) cliPrintf(" ch%-3d", (int)c);
+    cliPrintf("\n");
+    for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+    {
+      cliPrintf("  s%-2d ", (int)st);
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        cliPrintf(" %5d", (int)(d_max[st][c] - d_min[st][c]));
+      cliPrintf("\n");
+    }
+
+    cliPrintf("\n중심 ((max+min)/2)\n      ");
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++) cliPrintf(" ch%-3d", (int)c);
+    cliPrintf("\n");
+    for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+    {
+      cliPrintf("  s%-2d ", (int)st);
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        cliPrintf(" %+5d", (int)((d_max[st][c] + d_min[st][c]) / 2));
+      cliPrintf("\n");
+    }
+    /*
+     * ★ **화면에 뜨는 값으로도 낸다.**
+     *
+     *   웹 도구가 보여주는 것은 계산된 거리다. 곡선은 맨 위가 평평해서 같은 카운트
+     *   편차가 거기서는 거리로 크게 부풀려진다 — 카운트로는 작아 보여도 화면에는
+     *   0.1mm 로 뜬다. 카운트만 보면 "왜 안 눌렀는데 값이 뜨지" 를 못 설명한다.
+     *
+     *   깊이 방향의 최악값(중심 + p-p/2)을 그대로 환산한다. 그 수가 곧 사용자가
+     *   가만히 뒀을 때 화면에서 볼 수 있는 최대값이다.
+     */
+    {
+      uint32_t mx_um = 0, mx_i = 0;
+
+      cliPrintf("\n가만히 둘 때 화면에 뜰 수 있는 최대 깊이 (0.01mm)\n      ");
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++) cliPrintf(" ch%-3d", (int)c);
+      cliPrintf("\n");
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        cliPrintf("  s%-2d ", (int)st);
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          uint32_t i  = st * KEYS_CH_MAX + c;
+          uint16_t um = keysCntToUm(i, d_max[st][c]);
+
+          if ((keys_present[st] & (1U << c)) == 0) { cliPrintf("     -"); continue; }
+          if (um > mx_um) { mx_um = um; mx_i = i; }
+          cliPrintf(" %5d", (int)um);
+        }
+        cliPrintf("\n");
+      }
+      cliPrintf("  최악 %d.%02d mm  (s%d/ch%d)\n",
+                mx_um / 100, mx_um % 100,
+                (int)(mx_i / KEYS_CH_MAX), (int)(mx_i % KEYS_CH_MAX));
+    }
+
+    /*
+     * ★ 필터 이전 값도 같이 낸다.
+     *
+     *   위 표는 데드밴드를 통과한 뒤라 밴드 폭을 바꾸면 같이 움직인다. 누적을
+     *   넣으면서 밴드도 7 -> 12 로 바꿨으니 그 표만으로는 누적의 효과를 못 가른다.
+     *   아래가 센서에서 온 그대로다.
+     */
+    {
+      uint32_t sum = 0, n = 0, mx = 0;
+
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          uint32_t pp;
+
+          if ((keys_present[st] & (1U << c)) == 0) continue;
+          pp = (uint32_t)(a_max[st][c] - a_min[st][c]);
+          sum += pp; n++;
+          if (pp > mx) mx = pp;
+        }
+      }
+      n = n ? n : 1;
+
+      cliPrintf("\n데드밴드 이전 (누적 %d개, 눈금 0~%d)\n", KEYS_ACC_CNT, 4095 * KEYS_ACC_CNT);
+      cliPrintf("  p-p 평균 %d, 최대 %d  (셀 %d)\n", (int)(sum / n), (int)mx, (int)n);
+      cliPrintf("  스트로크 %d 대비 %d.%02d %\n",
+                (int)(836 * KEYS_ACC_CNT),
+                (int)((sum / n) * 100 / (836 * KEYS_ACC_CNT)),
+                (int)((sum / n) * 10000 / (836 * KEYS_ACC_CNT) % 100));
+    }
+
+    cliPrintf("\n%d 회 스캔\n", (int)cnt);
+    ret = true;
+  }
+
+  /*
+   * 눌린 깊이를 가로 막대로 본다.
+   *
+   * keys map 은 숫자만 흘려서 "얼마나 깊이 들어갔나"가 눈에 안 들어온다. 여기서는
+   * 최대 6개까지 슬롯을 잡아 왼쪽에 좌표·값, 오른쪽에 막대를 그린다.
+   *
+   * 슬롯은 한 번 잡히면 값이 0 으로 돌아올 때까지 유지한다 — 떼는 동안 막대가
+   * 줄어드는 걸 봐야 하기 때문이다. 그래야 자리가 튀지 않는다.
+   */
+  if (args->argc == 1 && args->isStr(0, "bar"))
+  {
+    int8_t   slot_s[KEYS_BAR_SLOTS];
+    int8_t   slot_c[KEYS_BAR_SLOTS];
+    uint32_t slot_ms[KEYS_BAR_SLOTS];
+    /* 표시도 실제 판정값을 쓴다 — 0번 키 기준 (키별로 조금씩 다르다) */
+    uint32_t press_x = thr[0].press   * KEYS_BAR_W / KEYS_BAR_FULL;
+    uint32_t rel_x   = thr[0].release * KEYS_BAR_W / KEYS_BAR_FULL;
+
+    for (uint32_t i = 0; i < KEYS_BAR_SLOTS; i++)
+    {
+      slot_s[i] = -1; slot_c[i] = -1; slot_ms[i] = 0;
+    }
+
+    cliPrintf("눌린 깊이. ':' 해제 임계 %d, '|' 누름 임계 %d, 전체 %d\n\n",
+              thr[0].release, thr[0].press, KEYS_BAR_FULL);
+
+    while (keysCliKeep())
+    {
+      keysUpdate();
+
+      /* 살아 있는 슬롯의 시각을 갱신한다 — 재활용 순서를 정하는 기준이다 */
+      for (uint32_t i = 0; i < KEYS_BAR_SLOTS; i++)
+      {
+        if (slot_s[i] >= 0 && -keysGetDelta(slot_s[i], slot_c[i]) >= KEYS_BAR_MIN)
+        {
+          slot_ms[i] = millis();
+        }
+      }
+
+      /*
+       * 새로 움직인 셀을 슬롯에 앉힌다.
+       *
+       * ★ 빈 슬롯을 앞에서부터 찾으면 순차로 눌렀을 때 0번만 계속 재활용되어
+       *   한 줄에만 나온다. 빈 자리를 먼저 쓰고, 없으면 "가장 오래 조용했던"
+       *   슬롯을 밀어낸다. 그래야 동시에 눌러도, 하나씩 눌러도 쌓인다.
+       */
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          int32_t  d = -keysGetDelta(st, c);      /* 누를수록 양수 */
+          bool     have = false;
+          uint32_t pick = KEYS_BAR_SLOTS;
+
+          if (d < KEYS_BAR_MIN) continue;
+
+          for (uint32_t i = 0; i < KEYS_BAR_SLOTS; i++)
+          {
+            if (slot_s[i] == (int8_t)st && slot_c[i] == (int8_t)c) { have = true; break; }
+          }
+          if (have) continue;
+
+          for (uint32_t i = 0; i < KEYS_BAR_SLOTS; i++)      /* 빈 자리 우선 */
+          {
+            if (slot_s[i] < 0) { pick = i; break; }
+          }
+          if (pick == KEYS_BAR_SLOTS)                        /* 없으면 가장 오래 조용했던 슬롯 */
+          {
+            for (uint32_t i = 0; i < KEYS_BAR_SLOTS; i++)
+            {
+              if (-keysGetDelta(slot_s[i], slot_c[i]) >= KEYS_BAR_MIN) continue;
+              if (pick == KEYS_BAR_SLOTS || slot_ms[i] < slot_ms[pick]) pick = i;
+            }
+          }
+          if (pick < KEYS_BAR_SLOTS)
+          {
+            slot_s[pick]  = (int8_t)st;
+            slot_c[pick]  = (int8_t)c;
+            slot_ms[pick] = millis();
+          }
+        }
+      }
+
+      for (uint32_t i = 0; i < KEYS_BAR_SLOTS; i++)
+      {
+        char bar[KEYS_BAR_W + 1];
+
+        if (slot_s[i] < 0)
+        {
+          cliPrintf("  --      ---      ---  %*s   \n", KEYS_BAR_W, "");
+          continue;
+        }
+
+        {
+          int32_t  d = -keysGetDelta(slot_s[i], slot_c[i]);
+          uint32_t n;
+
+          if (d < 0) d = 0;
+          n = (uint32_t)d * KEYS_BAR_W / KEYS_BAR_FULL;
+          if (n > KEYS_BAR_W) n = KEYS_BAR_W;
+
+          for (uint32_t k = 0; k < KEYS_BAR_W; k++)
+          {
+            if (k < n)            bar[k] = '#';
+            else if (k == press_x) bar[k] = '|';
+            else if (k == rel_x)   bar[k] = ':';
+            else                   bar[k] = '.';
+          }
+          bar[KEYS_BAR_W] = 0;
+
+          cliPrintf("  s%d,ch%d  raw %4d  d %4d  %s %s\n",
+                    (int)slot_s[i], (int)slot_c[i],
+                    (int)keysGetRaw(slot_s[i], slot_c[i]), (int)d, bar,
+                    keysGetPressed(slot_s[i], slot_c[i]) ? "ON" : "  ");
+        }
+      }
+
+      cliMoveUp(KEYS_BAR_SLOTS);
+      delay(30);
+    }
+    cliMoveDown(KEYS_BAR_SLOTS);
+    ret = true;
+  }
+
+  /* 편차 표. 눌린 셀이 표에서 바로 보인다. */
+  if (args->argc == 1 && args->isStr(0, "watch"))
+  {
+    while (keysCliKeep())
+    {
+      keysUpdate();
+      cliPrintf("      ");
+      for (uint32_t c = 0; c < KEYS_CH_MAX; c++) cliPrintf(" ch%-3d", (int)c);
+      cliPrintf("\n");
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        cliPrintf("  s%-2d ", (int)st);
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++) cliPrintf(" %+5d", (int)keysGetDelta(st, c));
+        cliPrintf("\n");
+      }
+      cliMoveUp(KEYS_STEP_MAX + 1);
+      delay(50);
+    }
+    cliMoveDown(KEYS_STEP_MAX + 1);
+    ret = true;
+  }
+
+  /* 한 번만 찍는다. 스크립트로 캡처할 때 쓴다. */
+  if (args->argc == 1 && args->isStr(0, "dump"))
+  {
+    keysUpdate();
+    keysPrintTable();
+    cliPrintf("  scan : %d us\n", (int)scan_time_us);
+    ret = true;
+  }
+
+  /* 살아있는 8x8 표. 키를 눌러 값이 어떻게 움직이는지 본다. */
+  if (args->argc == 1 && args->isStr(0, "raw"))
+  {
+    while (keysCliKeep())
+    {
+      keysUpdate();
+      keysPrintTable();
+      cliPrintf("  scan : %d us   \n", (int)scan_time_us);
+      cliMoveUp(KEYS_STEP_MAX + 2);
+      delay(50);
+    }
+    cliMoveDown(KEYS_STEP_MAX + 2);
+    ret = true;
+  }
+
+  /*
+   * 스캔 한 바퀴 시간 — 8kHz(125us) 예산과 비교하는 근거.
+   *
+   * 총량만으로는 손댈 데를 못 고른다. 같은 루프를 네 단계로 쌓아 돌리고 차이로
+   * 각 몫을 뽑는다.
+   *
+   *   mux      MUX 주소 쓰기 + 세틀링
+   *   +adc     트리거와 완료 대기 — 여기 늘어난 만큼이 ADC 변환 시간이다
+   *   +filter  데드밴드 필터 8채널
+   *   +track   기준값 추적과 눌림 판정  == keysUpdate() 와 같다
+   *
+   * ★ 변환 대기가 크면 후처리를 그 안으로 겹치는 게 답이고 (파이프라인),
+   *   후처리가 크면 스텝 루프에서 빼내는 게 답이다. 답이 갈리므로 먼저 잰다.
+   */
+  if (args->argc == 1 && args->isStr(0, "time"))
+  {
+    const uint32_t   N       = 2000;
+    static const char *name[4] = { "mux+settle", "  +adc 변환", "  +filter ", "  +track  " };
+    uint32_t         us[4]   = { 0, };
+    uint32_t         cnt     = 0;
+    uint32_t         t_begin;
+
+    /* 드리프트가 끼면 회차마다 몫이 달라진다. 흔한 쪽(안 도는 회차)으로 고정한다. */
+    drift_due = false;
+
+    for (uint32_t mode = 0; mode < 4; mode++)
+    {
+      uint32_t t = micros();
+
+      for (uint32_t n = 0; n < N; n++)
+      {
+        for (uint32_t step = 0; step < KEYS_STEP_MAX; step++)
+        {
+          gpio_write_port(HPM_GPIO0, KEYS_MUX_GPIO_PORT, mux_addr[step]);
+          keysSettle();
+
+          if (mode >= 1)
+          {
+            keysDmaArm();
+            adc16_trigger_seq_by_sw(HPM_ADC0);
+            adc16_trigger_seq_by_sw(HPM_ADC1);
+            if (keysWaitDma() == false) break;
+            gpio_write_port(HPM_GPIO0, KEYS_MUX_GPIO_PORT, mux_addr[step + 1]);
+          }
+
+          if (mode >= 2)
+          {
+            for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++)
+            {
+              keysFilter(step, i,                adc0_buf[i]);
+              keysFilter(step, KEYS_SEQ_LEN + i, adc1_buf[i]);
+            }
+          }
+
+          if (mode >= 3 && is_calibrated) keysTrack(step);
+        }
+      }
+      us[mode] = micros() - t;
+    }
+
+    cliPrintf("스캔 1회 = %d step x %d ch,  %d 회 평균\n\n",
+              KEYS_STEP_MAX, KEYS_CH_MAX, (int)N);
+
+    for (uint32_t i = 0; i < 4; i++)
+    {
+      uint32_t ns   = us[i] * 1000 / N;                       /* 스캔 1회 */
+      uint32_t d_ns = ns - (i ? (us[i - 1] * 1000 / N) : 0);  /* 이번 단계 몫 */
+
+      cliPrintf("  %s : %3d.%03d us   (+%2d.%03d)\n",
+                name[i], (int)(ns / 1000), (int)(ns % 1000),
+                (int)(d_ns / 1000), (int)(d_ns % 1000));
+    }
+
+    /* 실제 keysUpdate() 로도 한 번 — 위 분해가 맞는지 대조한다 */
+    t_begin = micros();
+    while (micros() - t_begin < 500000)
+    {
+      keysUpdate();
+      cnt++;
+    }
+    cnt = cnt ? cnt : 1;
+
+    cliPrintf("\nkeysUpdate : %d us,  %d 회/초\n", (int)(500000 / cnt), (int)(cnt * 2));
+    cliPrintf("8kHz 예산 125us 대비 : %d %\n", (int)((500000 / cnt) * 100 / 125));
+    cliPrintf("timeout    : %d\n", (int)timeout_cnt);
+    ret = true;
+  }
+
+  /* 진단 — 시퀀스가 실제로 도는지, 어떤 인터럽트 비트가 서는지 본다 */
+  if (args->argc == 1 && args->isStr(0, "adc"))
+  {
+    struct { const char *name; ADC16_Type *ptr; volatile uint32_t *buf; }
+    tbl[2] = { {"ADC0", HPM_ADC0, adc0_buf}, {"ADC1", HPM_ADC1, adc1_buf} };
+
+    for (uint32_t n = 0; n < 2; n++)
+    {
+      uint32_t sts = 0;
+      uint32_t spin;
+
+      cliPrintf("%s\n", tbl[n].name);
+      cliPrintf("  SEQ_CFG0 : 0x%08X\n", (unsigned)tbl[n].ptr->SEQ_CFG0);
+      cliPrintf("  INT_EN   : 0x%08X\n", (unsigned)tbl[n].ptr->INT_EN);
+      cliPrintf("  INT_STS  : 0x%08X\n", (unsigned)adc16_get_status_flags(tbl[n].ptr));
+
+      adc16_clear_status_flags(tbl[n].ptr, ADC16_INT_STS_SEQ_CMPT_MASK);
+      for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++) tbl[n].buf[i] = 0xDEADBEEF;
+
+      adc16_trigger_seq_by_sw(tbl[n].ptr);
+
+      for (spin = 0; spin < 200000; spin++)
+      {
+        sts = adc16_get_status_flags(tbl[n].ptr);
+        if (sts) break;
+      }
+
+      cliPrintf("  트리거 후 INT_STS : 0x%08X (spin %d)\n", (unsigned)sts, (int)spin);
+      cliPrintf("  DMA 버퍼          : ");
+      for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++) cliPrintf("0x%08X ", (unsigned)tbl[n].buf[i]);
+      cliPrintf("\n");
+    }
+    ret = true;
+  }
+
+  if (ret == false)
+  {
+    cliPrintf("keys info\n");
+    cliPrintf("keys adc\n");
+    cliPrintf("keys show      눌린 키 표시 (8x8 격자)\n");
+    cliPrintf("keys layout    눌린 키 표시 (실제 배치)\n");
+    cliPrintf("keys learn     매핑 측정 — 누를 때마다 \"s,ch\" 한 줄\n");
+    cliPrintf("keys cal       전 키 보정 (끝까지 눌러 바닥값 수집)\n");
+    cliPrintf("keys cfg       저장된 설정 보기\n");
+    cliPrintf("keys prof [n]  프로파일 보기/전환 (1~%d)\n", KEYS_PROF_CNT);
+    cliPrintf("keys prof copy <n>   지금 것을 n 번에 붓기\n");
+    cliPrintf("keys save      설정 저장\n");
+    cliPrintf("keys load      설정 다시 읽기\n");
+    cliPrintf("keys base\n");
+    cliPrintf("keys map\n");
+    cliPrintf("keys bar       눌린 깊이를 막대로 (최대 6개)\n");
+    cliPrintf("keys key <st> <ch>   한 키만 — 누름마다 최대깊이와 판정 여부\n");
+    cliPrintf("keys led       누른 키의 LED 를 켠다 (매핑 확인)\n");
+    cliPrintf("keys watch\n");
+    cliPrintf("keys noise [ms]  잡음 측정 (기본 3000, 드문 사건은 길게)\n");
+    cliPrintf("keys dump\n");
+    cliPrintf("keys raw\n");
+    cliPrintf("keys time\n");
+    cliPrintf("keys rt        래피드 트리거 (on/off, cont, bottom, press, release, dead)\n");
+    cliPrintf("keys sw        커스텀 스위치 슬롯과 만들어진 곡선 33칸\n");
+  }
+
+  /* ★ 반드시 되돌린다. 안 그러면 keys 명령을 한 번 쓴 뒤로 키보드가 죽는다. */
+  report_off = false;
+}
+#endif
+
+#endif

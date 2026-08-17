@@ -17,3 +17,18 @@ CMakeUserPresets.json
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #cmake-build-*
+
+# 전역 gitignore(~/.gitignore_global)가 c_cpp_properties.json 을 제외하지만,
+# 본 저장소의 것은 ${env:...} 만 쓰고 머신 종속 경로가 없어 공유한다.
+!.vscode/c_cpp_properties.json
+
+#
+# 빌드 산출물 — 통째로 막는다.
+#
+# ★ .elf / .asm / .bin 이 여기 들어 있다. 어셈코드와 바이너리는 깃에 올리지 않는다.
+#   CMake 후처리가 .asm 과 두 벌의 .bin 을 만들고, 다 합쳐 150MB 쯤 된다.
+#
+build/
+
+__pycache__/
+.DS_Store
