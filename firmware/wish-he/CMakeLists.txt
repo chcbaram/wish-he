@@ -381,3 +381,24 @@ add_custom_command(TARGET ${EXECUTABLE}
   COMMAND ${CMAKE_OBJDUMP} ARGS -S -d ${EXECUTABLE} > ${PROJECT_NAME}.asm
   COMMENT "Invoking: Make Asm"
   )
+
+#
+# 태그를 심은 사본을 하나 더 만든다 — <이름>-tag.bin
+#
+# ★ 원본(.bin)은 그대로 둔다.
+#
+#   그쪽은 태그가 0 이라 부팅 검사를 건너뛴다. 개발 중 JTAG 나 iap_update.py 로
+#   바로 굽는 흐름이 그대로 살아 있어야 하기 때문이다.
+#
+#   -tag.bin 은 웹 도구의 "파일에서 굽기" 로 올릴 때 쓴다. 그때는 앱이 자기 CRC 를
+#   대조해서 반쯤 써진 이미지를 잡아낸다 (src/hw/hw.c 의 hwVerifyFirm).
+#
+# 태그를 심는 규칙은 tools/fw_tag.py 한 곳에만 둔다 — make_release.py 도 같은 것을
+# 부른다. 두 군데 적으면 반드시 갈라진다.
+#
+add_custom_command(TARGET ${EXECUTABLE}
+  POST_BUILD
+  COMMAND python3 ARGS ${CMAKE_CURRENT_SOURCE_DIR}/tools/fw_tag.py
+                       ${PROJECT_NAME}.bin ${PROJECT_NAME}-tag.bin
+  COMMENT "Invoking: Make Tagged Bin"
+  )
