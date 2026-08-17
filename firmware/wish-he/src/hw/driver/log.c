@@ -27,7 +27,15 @@ typedef struct
 log_buf_t log_buf_boot;
 log_buf_t log_buf_list;
 
+/*
+ * ★ 로그 고리는 AHB SRAM 에 둔다. **DLM 이 아깝다.**
+ *
+ *   32KB 짜리 AHB SRAM 이 통째로 놀고 있는데 DLM 은 87% 였다. 로그는 사람이 읽자고
+ *   쌓는 것이라 조금 느린 메모리로 보내도 아무 차이가 없다.
+ */
+ATTR_PLACE_AT(".ahb_sram")
 static uint8_t buf_boot[LOG_BOOT_BUF_MAX];
+ATTR_PLACE_AT(".ahb_sram")
 static uint8_t buf_list[LOG_LIST_BUF_MAX];
 
 static bool is_init = false;
