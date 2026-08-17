@@ -122,8 +122,10 @@ def main():
     print(f"  {version}  {len(image):,} B  crc {entry['crc']}")
     for n in args.note:
         print(f"    - {n}")
-    print(f"  생성: {(out_dir / name).relative_to(ROOT)}")
-    print(f"  갱신: {MANIFEST.relative_to(ROOT)}  (버전 {len(man['firmwares'])}개)")
+    # ★ ROOT 기준 상대경로로 찍지 않는다. RELEASE 는 **다른 저장소** 안이라
+    #   relative_to(ROOT) 가 터진다. 실제로 그렇게 터졌다.
+    print(f"  생성: {out_dir / name}")
+    print(f"  갱신: {MANIFEST}  (버전 {len(man['firmwares'])}개)")
     print()
     print("  ↳ 웹앱(via-he)에 바로 썼다. 거기서 커밋하면 된다.")
     print(f"     보드 목록은 public/firmware/manifest.json 이고 손으로 관리한다 —")
