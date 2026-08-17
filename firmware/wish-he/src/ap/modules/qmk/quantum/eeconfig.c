@@ -52,7 +52,20 @@ void eeconfig_init_quantum(void) {
     default_layer_state = (layer_state_t)1 << 0;
     eeprom_update_byte(EECONFIG_DEFAULT_LAYER, default_layer_state);
     // Enable oneshot and autocorrect by default: 0b0001 0100 0000 0000
-    eeprom_update_word(EECONFIG_KEYMAP, 0x1400);
+    /* [로컬 패치] NKRO 를 기본으로 켠다 (bit7 = keymap_config.nkro -> 0x0080).
+     *
+     * FORCE_NKRO 를 쓰지 않는 이유 — 그쪽은 부팅마다 nkro=1 을 다시 써서 NK_TOGG 와
+     * VIA 의 NKRO 토글이 매번 되돌아온다. 여기서 기본값만 바꾸면 처음 한 번 켜진 채로
+     * 시작하고 그 뒤로는 사용자가 끄고 켤 수 있다.
+     *
+     * 이미 EEPROM 이 잡혀 있는 보드는 magic 이 맞아 이 함수를 안 탄다. 새 기본값을
+     * 입히려면 `qmk clear eeprom` (qmk.c) 또는 VIA 의 초기화를 한 번 돌려야 한다.
+     */
+    eeprom_update_word(EECONFIG_KEYMAP, 0x1400
+#ifdef NKRO_ENABLE
+                                        | 0x0080
+#endif
+    );
     eeprom_update_byte(EECONFIG_BACKLIGHT, 0);
     eeprom_update_byte(EECONFIG_AUDIO, 0);
     eeprom_update_dword(EECONFIG_RGBLIGHT, 0);
