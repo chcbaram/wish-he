@@ -743,7 +743,56 @@ void cliWs2812(cli_args_t *args)
     for (uint32_t i = 0; i < n; i++) ws2812Encode();
     us = micros() - t0;
 
-    cliPrintf("encode %d회 %d us  ->  한 번 %d.%02d us\n",
+    cliPrintf("encode    %4d회 %6d us -> %2d.%02d us\n",
+              (int)n, (int)us, (int)(us / n), (int)((us * 100 / n) % 100));
+
+    /* 캐시 밀어내기 — 2144B, 캐시라인 32B 라 67줄 */
+    t0 = micros();
+    for (uint32_t i = 0; i < n; i++)
+    {
+      l1c_dc_writeback((uint32_t)frame_buf,
+                       HPM_L1C_CACHELINE_ALIGN_UP(WS2812_BUF_LEN));
+    }
+    us = micros() - t0;
+    cliPrintf("writeback %4d회 %6d us -> %2d.%02d us\n",
+              (int)n, (int)us, (int)(us / n), (int)((us * 100 / n) % 100));
+
+    /* SPI + DMA 설정. 전송은 안 건다 — 설정 비용만 본다 */
+    {
+      dma_channel_config_t cfg = {0};
+
+      t0 = micros();
+      for (uint32_t i = 0; i < n; i++)
+      {
+        dma_default_channel_config(HPM_HDMA, &cfg);
+        cfg.src_addr      = core_local_mem_to_sys_address(0, (uint32_t)frame_buf);
+        cfg.dst_addr      = (uint32_t)&WS2812_SPI->DATA;
+        cfg.src_width     = DMA_TRANSFER_WIDTH_BYTE;
+        cfg.dst_width     = DMA_TRANSFER_WIDTH_BYTE;
+        cfg.src_addr_ctrl = DMA_ADDRESS_CONTROL_INCREMENT;
+        cfg.dst_addr_ctrl = DMA_ADDRESS_CONTROL_FIXED;
+        cfg.src_burst_size = DMA_NUM_TRANSFER_PER_BURST_1T;
+        cfg.dst_mode      = DMA_HANDSHAKE_MODE_HANDSHAKE;
+        cfg.size_in_byte  = WS2812_BUF_LEN;
+      }
+      us = micros() - t0;
+      cliPrintf("dma cfg   %4d회 %6d us -> %2d.%02d us\n",
+                (int)n, (int)us, (int)(us / n), (int)((us * 100 / n) % 100));
+    }
+
+    /* 색 83개를 rgb_buf 에 넣는 비용 (rgb_matrix_port 가 프레임마다 한다) */
+    t0 = micros();
+    for (uint32_t i = 0; i < n; i++)
+    {
+      for (uint16_t c = 0; c < HW_WS2812_MAX_CH; c++)
+      {
+        rgb_buf[c][0] = (uint8_t)c;
+        rgb_buf[c][1] = (uint8_t)c;
+        rgb_buf[c][2] = (uint8_t)c;
+      }
+    }
+    us = micros() - t0;
+    cliPrintf("setcolor  %4d회 %6d us -> %2d.%02d us\n",
               (int)n, (int)us, (int)(us / n), (int)((us * 100 / n) % 100));
     ret = true;
   }
