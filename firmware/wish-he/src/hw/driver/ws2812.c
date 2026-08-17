@@ -67,7 +67,14 @@ static void cliWs2812(cli_args_t *args);
  * 불확실해 첫 비트가 깨진 것이다. 앞에 60us low 를 깔면 LED 가 확실히
  * 리셋 상태에서 데이터를 받기 시작한다.
  */
-#define WS2812_LEAD_BYTES     WS2812_RESET_BYTES
+/*
+ * ★ 64 다 — 리셋 규격(60)보다 4바이트 길다.
+ *
+ *   앞 구간 길이가 곧 데이터 시작 오프셋이라, 8의 배수여야 아래 LUT 를 8바이트
+ *   통짜로 밀어 넣을 수 있다. 60 이면 4바이트 정렬까지밖에 안 된다.
+ *   8MHz 에서 4바이트는 4us 니 리셋 여유만 늘어난다.
+ */
+#define WS2812_LEAD_BYTES     64
 #define WS2812_DATA_OFF       WS2812_LEAD_BYTES
 #define WS2812_DATA_LEN       (HW_WS2812_MAX_CH * WS2812_BYTES_PER_LED)
 
@@ -237,12 +244,51 @@ static void ws2812Hue(uint8_t hue, uint8_t level, uint8_t *p_r, uint8_t *p_g, ui
 }
 
 /* 한 바이트(8비트)를 프레임버퍼 8 바이트로 펼친다. MSB first. */
-static void ws2812WriteByte(uint8_t *p_buf, uint8_t data)
+/*
+ * 바이트 하나 -> SPI 8바이트.
+ *
+ * ★ 미리 펼쳐 두고 통짜로 민다.
+ *
+ *   비트 패턴이 0xE0 / 0xFC **두 값뿐**이라 256가지 조합을 다 만들어 둘 수 있다.
+ *   그러면 바이트마다 돌던 8회 루프(비교 + 분기 + 바이트 쓰기)가 **8바이트 저장
+ *   하나**가 된다. 프레임 한 장에 249번 도는 자리라 그 차이가 그대로 드러난다.
+ *
+ * ★ 부팅 때 RAM 에 만든다. 소스에 256줄짜리 표를 박지 않는다 — 손으로 적은 표는
+ *   비트 정의를 고칠 때 반드시 짝이 어긋난다. 만드는 데 몇 us 다.
+ *
+ * ★ 참고 보드는 표 대신 **분기 없는 비트 연산**을 쓴다 (0xE0 에 부호확장 마스크로
+ *   0x1C 를 더한다). 표가 없어 RAM 을 안 먹는 대신 바이트마다 네댓 명령이 든다.
+ *   우리는 DLM 에 여유가 있어 2KB 를 주고 저장 하나로 끝내는 쪽을 골랐다.
+ */
+static uint64_t ws2812_lut[256];
+
+static void ws2812LutInit(void)
 {
-  for (int i = 0; i < 8; i++)
+  for (uint32_t v = 0; v < 256; v++)
   {
-    p_buf[i] = (data & (0x80 >> i)) ? WS2812_BIT_1 : WS2812_BIT_0;
+    uint8_t tmp[8];
+
+    for (uint32_t i = 0; i < 8; i++)
+    {
+      tmp[i] = (v & (0x80U >> i)) ? WS2812_BIT_1 : WS2812_BIT_0;
+    }
+    memcpy(&ws2812_lut[v], tmp, sizeof(tmp));
   }
+}
+
+/*
+ * 8바이트 정렬을 여기서 못 박는다.
+ *
+ * frame_buf 는 캐시라인 정렬이고, 데이터 시작이 64, LED 하나가 24바이트, 색 오프셋이
+ * 0/8/16 이라 전부 8의 배수다. 하나라도 어긋나면 정렬 안 된 64비트 저장이 되어
+ * rv32 에서는 트랩이거나 느린 경로다.
+ */
+_Static_assert(WS2812_DATA_OFF % 8 == 0,     "데이터 시작이 8의 배수가 아니다");
+_Static_assert(WS2812_BYTES_PER_LED % 8 == 0, "LED 한 칸이 8의 배수가 아니다");
+
+static inline void ws2812WriteByte(uint8_t *p_buf, uint8_t data)
+{
+  *(uint64_t *)p_buf = ws2812_lut[data];
 }
 
 /* 무리별 채널 값 합. 전체 최대가 83 x 3 x 255 = 63495 이라 uint32 로 충분하다. */
@@ -389,6 +435,8 @@ static void ws2812Encode(void)
 
 bool ws2812Init(void)
 {
+  ws2812LutInit();   /* 펼치기 표 — 어느 인코딩보다 먼저 */
+
   spi_timing_config_t timing_config = {0};
   spi_format_config_t format_config = {0};
 
@@ -675,6 +723,30 @@ void cliWs2812(cli_args_t *args)
 {
   bool ret = false;
 
+
+  /*
+   * ws2812 enc — 인코딩만 직접 잰다.
+   *
+   * ★ rgb_max 로는 판단이 안 된다.
+   *
+   *   그 값은 rgb_matrix_task 한 바퀴라, 인코딩을 건너뛰는 호출과 DMA 설정까지
+   *   섞여 있다. 실제로 표를 넣고 평균이 15us 로 똑같이 나왔는데 그건 대부분의
+   *   호출이 애초에 인코딩을 안 하기 때문이었다. 재려면 그 함수만 재야 한다.
+   */
+  if (args->argc == 1 && args->isStr(0, "enc"))
+  {
+    const uint32_t n = 200;
+    uint32_t t0;
+    uint32_t us;
+
+    t0 = micros();
+    for (uint32_t i = 0; i < n; i++) ws2812Encode();
+    us = micros() - t0;
+
+    cliPrintf("encode %d회 %d us  ->  한 번 %d.%02d us\n",
+              (int)n, (int)us, (int)(us / n), (int)((us * 100 / n) % 100));
+    ret = true;
+  }
 
   if (args->argc == 1 && args->isStr(0, "info"))
   {
