@@ -111,7 +111,7 @@ static const uint8_t exk_report_desc[] = {
 
   /* ── 마우스 (ID 2) ─────────────────────────────────────────
    *
-   * 참고 보드가 쓰던 블록을 그대로 옮겼다. 버튼을 8개로 잡아 패딩이 없다 —
+   * 버튼을 8개로 잡아 패딩이 없다 —
    * QMK 는 KC_MS_BTN1~8 을 다 갖고 있고 report_mouse_t 의 buttons 도 8비트다.
    * X/Y/Wheel/AC Pan 이 전부 int8 이라 리포트가 6바이트로 report_mouse_t 와
    * 정확히 맞는다 (MOUSE_EXTENDED_REPORT 를 켜지 않는 이유).

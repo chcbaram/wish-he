@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """이미지에 태그를 심는다 — 굽다 만 앱이 그대로 도는 것을 막기 위한 것.
 
-    python3 tools/fw_tag.py build/wish60-he.bin build/wish60-he-tag.bin
+    python3 tools/fw_tag.py build/wish-he.bin build/wish-he-tag.bin
 
 ★ 왜 필요한가.
 
   보드의 IAP 는 선두 매직 "HPM\\n" 넉 자만 보고 앱으로 뛴다 — 길이도 CRC 도 안 본다
   (docs/board-iap.md 2절). 그런데 그 넉 자는 **맨 먼저** 써지므로, 굽다 만 이미지도
-  부트로더에게는 멀쩡해 보인다. 부트로더는 벤더 것이라 못 고치니 앱이 스스로 본다
+  부트로더에게는 멀쩡해 보인다. 부트로더는 바꿀 수 없으니 앱이 스스로 본다
   (`src/hw/hw.c` 의 hwVerifyFirm).
 
 ★ 왜 별도 파일로 만드나 — 원본을 덮지 않는다.
 
-  `build/wish60-he.bin` 은 태그가 0 이라 부팅 검사를 건너뛴다. 개발 중 JTAG 나
+  `build/wish-he.bin` 은 태그가 0 이라 부팅 검사를 건너뛴다. 개발 중 JTAG 나
   iap_update.py 로 바로 굽는 흐름이 그대로 살아 있어야 하기 때문이다.
   태그가 붙은 쪽(`-tag.bin`)은 웹 도구의 "파일에서 굽기" 로 올릴 때 쓴다 — 그때는
   검사가 돌아 반쯤 써진 이미지를 잡아낸다.

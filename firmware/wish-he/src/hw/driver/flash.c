@@ -231,7 +231,7 @@ void cliFlash(cli_args_t *args)
 
   /*
    * 시험용 소거·기록. 주소를 손으로 넣는 만큼 위험하므로 우리 영역 밖은 막는다.
-   * 부트로더(0x00000~0x20000)·앱(~0x80000)·벤더 EEPROM(~0xC0000) 은 건드리면 안 된다.
+   * 부트로더(0x00000~0x20000)·앱(~0x80000)·기존 데이터(~0xC0000) 는 건드리면 안 된다.
    */
   if (args->argc == 2 && args->isStr(0, "erase"))
   {
@@ -239,7 +239,7 @@ void cliFlash(cli_args_t *args)
 
     if (addr < HW_FLASH_USER_BEGIN)
     {
-      cliPrintf("[E_] 0x%06X 미만은 쓸 수 없다 (부트로더·앱·벤더 EEPROM)\n",
+      cliPrintf("[E_] 0x%06X 미만은 쓸 수 없다 (부트로더·앱·기존 데이터)\n",
                 (unsigned)HW_FLASH_USER_BEGIN);
     }
     else

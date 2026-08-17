@@ -19,7 +19,7 @@ CLI 에서  reset boot
 
 ```sh
 python3 tools/iap_update.py --list          # HID 장치 전부
-python3 tools/iap_update.py --info          # 벤더 usage 후보만
+python3 tools/iap_update.py --info          # 벤더 정의 usage 후보만
 python3 tools/iap_update.py fw.bin          # 기록
 python3 tools/iap_update.py --path <경로> fw.bin
 ```
@@ -85,8 +85,8 @@ IAP 의 `0x83` 분기는 코드상 `nop` 뿐이라 **status 0 이 정상**이다
 
 ## 사람 손 없애기 — HID 로 부트로더에 넣기
 
-여기까지 해도 사람이 **CDC 콘솔에 `reset boot` 를 쳐야** 했다. 상용 보드는 웹페이지에서
-버튼 하나로 끝나는데, 그건 앱이 HID 명령을 받아 스스로 넘어가기 때문이다. 같은 걸 만들었다.
+여기까지 해도 사람이 **CDC 콘솔에 `reset boot` 를 쳐야** 했다. 웹페이지에서 버튼
+하나로 끝나게 하려면 앱이 HID 명령을 받아 스스로 넘어가야 한다. 그걸 만들었다.
 
 ### 앱에 raw HID 인터페이스를 붙였다
 
@@ -157,7 +157,7 @@ cdcIfRegister()  /* 스택 등록. usbBegin() 에서만 */
 `0xFF60` 은 VIA 를 쓰는 키보드가 **다 같이 쓰는** 페이지다. 책상에 물려둔 다른 키보드가
 그대로 걸린다. 자동 점프는 **VID/PID 까지 일치할 때만** 한다.
 
-부트로더 쪽도 같은 함정이 있었다. 예전에는 `0xFF53` 이 없으면 "벤더 페이지(`>=0xFF00`)
+부트로더 쪽도 같은 함정이 있었다. 예전에는 `0xFF53` 이 없으면 "벤더 정의 페이지(`>=0xFF00`)
 전부"로 폴백했는데, 무관한 USB 장치들이 `0xFF00` 을 쓰는 바람에 그것들을 부트로더로
 오인했다. 폴백은 사용자가 `--vid/--pid` 로 대상을 좁혔을 때만 한다.
 
@@ -176,8 +176,8 @@ $ python3 tools/iap_update.py build/wish60-he.bin
 
 ### 도구가 알아야 하는 두 정체성
 
-앱과 부트로더는 **서로 다른 장치로 열거된다.** 부트로더는 벤더 것이라 고칠 수 없으니
-도구가 양쪽을 다 알고 있어야 한다.
+앱과 부트로더는 **서로 다른 장치로 열거된다.** 부트로더는 바꿀 수 없으니 도구가
+양쪽을 다 알고 있어야 한다.
 
 | | VID:PID | usage page |
 |---|---|---|
@@ -196,7 +196,7 @@ $ python3 tools/iap_update.py build/wish60-he.bin
   부트로더   534B:4102   usage page 0xFF53
 ```
 
-벤더 부트로더가 자기 ID 를 쓴다. `iap_update.py` 는 vid/pid 를 **0(아무거나)** 으로
+부트로더가 자기 ID 를 쓴다. `iap_update.py` 는 vid/pid 를 **0(아무거나)** 으로
 두고 usage page 로만 찾기 때문에 이 사실이 가려져 있었다. 앱의 VID/PID 로 부트로더를
 찾는 코드를 짜면 영영 못 찾는다 — 실제로 "부트로더 기다리는 중" 에서 멈췄다.
 

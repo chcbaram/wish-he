@@ -6,7 +6,7 @@ include(hpmicro-riscv-gcc)
 
 # 프로젝트 이름은 최종 출력 파일 이름으로 사용된다.
 #
-set(PRJ_NAME wish60-he)
+set(PRJ_NAME wish-he)
 
 
 project(${PRJ_NAME}

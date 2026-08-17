@@ -15,7 +15,7 @@ reset reset   소프트 리셋
 ## 소프트 리셋
 
 ```c
-ppor_sw_reset(HPM_PPOR, 10);      /* 24MHz 기준 카운터. 상용 펌웨어도 10 */
+ppor_sw_reset(HPM_PPOR, 10);      /* 24MHz 기준 카운터 */
 ```
 
 ## IAP 진입 — 플래시 플래그

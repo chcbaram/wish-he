@@ -43,7 +43,7 @@ from fw_tag import fill_tag           # noqa: E402  (태그 규칙은 그쪽 한
 
 ROOT = Path(__file__).resolve().parent.parent
 HW_DEF = ROOT / "src/hw/hw_def.h"
-BUILD = ROOT / "build/wish60-he.bin"
+BUILD = ROOT / "build/wish-he.bin"
 
 # 웹앱(via-he)의 public/firmware/ 아래 이 보드가 쓰는 칸.
 # 거기 manifest.json 은 **보드 목록**이고, 이 파일이 만드는 목록은 그 아래로 들어간다.

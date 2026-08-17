@@ -39,7 +39,7 @@
       "label": "flash-usb",
       "detail": "USB(부트로더 HID)로 기록. 배선 불필요. 먼저 CLI 에서 reset boot.",
       "type": "shell",
-      "command": "python3 tools/iap_update.py build/wish60-he.bin",
+      "command": "python3 tools/iap_update.py build/wish-he.bin",
       "dependsOn": "build-build",
       "problemMatcher": [],
       "presentation": { "clear": true },
@@ -76,7 +76,7 @@
       "label": "flash-jtag",
       "detail": "JTAG(FT2232 + HPMicro OpenOCD)로 0x80020000 에 기록. 앱이 죽었을 때.",
       "type": "shell",
-      "command": "${env:HPM_RISCV_OPENOCD_PATH}/openocd -s tools/openocd -f hpm5361-fw.cfg -c \"adapter speed 4000\" -c \"init\" -c \"reset halt\" -c \"flash probe 0\" -c \"flash write_image erase build/wish60-he.bin 0x80020000 bin\" -c \"verify_image build/wish60-he.bin 0x80020000 bin\" -c \"reset run\" -c \"exit\"",
+      "command": "${env:HPM_RISCV_OPENOCD_PATH}/openocd -s tools/openocd -f hpm5361-fw.cfg -c \"adapter speed 4000\" -c \"init\" -c \"reset halt\" -c \"flash probe 0\" -c \"flash write_image erase build/wish-he.bin 0x80020000 bin\" -c \"verify_image build/wish-he.bin 0x80020000 bin\" -c \"reset run\" -c \"exit\"",
       "dependsOn": "build-build",
       "problemMatcher": []
     },
