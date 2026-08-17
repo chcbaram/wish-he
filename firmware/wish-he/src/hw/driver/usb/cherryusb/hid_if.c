@@ -139,9 +139,42 @@ static volatile bool     prof_save_req = false;
  *   왕복에서 응답이 사라졌다.
  *
  *   버리지 말고 들고 있다가 자리가 나면 보낸다.
+ *
+ * ★ 그런데 **너무 늦었으면 보내면 안 된다.** 늦게 가는 것이 안 가는 것보다 나쁘다.
+ *
+ *   이 통로에는 순번이 없다. 요청 하나에 응답 하나로만 짝을 맞춘다. 그래서 호스트가
+ *   기다리다 포기하고 다음 명령을 보낸 뒤에 묵은 응답이 나가면, 호스트는 그것을
+ *   **다음 명령의 응답으로 읽는다.** 그때부터 모든 응답이 한 칸씩 밀리고 재시도로도
+ *   못 푼다 — 매번 "직전 것"이 오기 때문이다.
+ *
+ *   실제로 그렇게 됐다. 펌웨어를 굽고 나면 (a) 새 펌웨어가 부팅하며 플래시를 쓰고
+ *   (b) 도구는 그 순간 값들을 몰아서 묻는다. 도구 로그에 이렇게 남았다 —
+ *
+ *     보냄 14 37 244 28   받음 1 0 12 …         <- 훨씬 앞선 명령의 응답
+ *     보냄 14 38  16 28   받음 14 37 244 28 …   <- 직전 명령의 응답
+ *
+ *   그래서 자리가 났을 때 **묵었으면 버린다.** 응답이 사라지면 호스트는 그 한 번만
+ *   실패하고 재시도로 회복하지만, 어긋나면 회복할 길이 없다.
  */
-static volatile bool     tx_pending  = false;
-static volatile uint32_t tx_busy_ms  = 0;
+#define HID_TX_PENDING_MAX_MS   20      /* 정상은 1ms 안에 나간다 */
+
+static volatile bool     tx_pending    = false;
+static volatile uint32_t tx_pending_ms = 0;
+static volatile uint32_t tx_busy_ms    = 0;
+
+/*
+ * 들고 있던 응답을 지금 보낼지 정한다. 묵었으면 버린다.
+ * 어느 쪽이든 tx_pending 은 내려간다.
+ */
+static bool hidTxPendingTake(void)
+{
+  if (tx_pending == false)
+  {
+    return false;
+  }
+  tx_pending = false;
+  return (millis() - tx_pending_ms) <= HID_TX_PENDING_MAX_MS;
+}
 
 static struct usbd_interface hid_intf;
 
@@ -699,9 +732,8 @@ void hidIfUpdate(void)
     logPrintf("[  ] HID 전송 완료를 놓쳤다 — 되살린다\n");
     is_tx_busy = false;
 
-    if (tx_pending)
+    if (hidTxPendingTake())
     {
-      tx_pending = false;
       is_tx_busy = true;
       tx_busy_ms = millis();
       usbd_ep_start_write(HID_BUSID, HID_IN_EP, tx_report, HID_EP_MPS);
@@ -769,8 +801,9 @@ static void hidOutCallback(uint8_t busid, uint8_t ep, uint32_t nbytes)
       }
       else
       {
-        /* 자리가 나면 보낸다 (hidInCallback / hidIfUpdate) */
-        tx_pending = true;
+        /* 자리가 나면 보낸다 — 단 20ms 안에. 그 뒤엔 버린다 (hidTxPendingTake) */
+        tx_pending    = true;
+        tx_pending_ms = millis();
       }
     }
     else if (raw_recv != NULL && raw_pending == false)
@@ -792,10 +825,9 @@ static void hidInCallback(uint8_t busid, uint8_t ep, uint32_t nbytes)
 
   is_tx_busy = false;
 
-  /* 자리가 났다 — 못 보내고 들고 있던 응답이 있으면 지금 보낸다 */
-  if (tx_pending)
+  /* 자리가 났다 — 들고 있던 응답이 아직 쓸 만하면 지금 보낸다 */
+  if (hidTxPendingTake())
   {
-    tx_pending = false;
     is_tx_busy = true;
     tx_busy_ms = millis();
     usbd_ep_start_write(busid, HID_IN_EP, tx_report, HID_EP_MPS);
