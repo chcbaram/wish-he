@@ -54,6 +54,8 @@ void     hidKbdGetReportRaw(uint8_t *p_report);
 uint8_t  hidKbdGetLeds(void);
 
 uint32_t hidKbdGetSentCount(void);
+uint32_t hidKbdGetLostCount(void);
+void     hidKbdUpdate(void);        /* 메인 루프에서 — 놓친 전송 완료를 되살린다 */
 
 /*
  * 폴링 주기 측정 모드. 일부러 매번 재무장해 "폴링마다 전송"을 만들고

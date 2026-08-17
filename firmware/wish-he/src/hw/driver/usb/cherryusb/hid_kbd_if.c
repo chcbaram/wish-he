@@ -87,6 +87,8 @@ static volatile bool     is_tx_busy    = false;
 static volatile bool     is_pending    = false;   /* 아직 안 보낸 새 리포트가 있다 */
 static volatile uint32_t sent_cnt      = 0;
 static volatile bool     is_suspended  = false;
+static volatile uint32_t tx_busy_ms    = 0;       /* 실은 시각 — 놓친 완료를 재는 자 */
+static volatile uint32_t lost_cnt      = 0;
 
 static struct usbd_interface kbd_intf;
 
@@ -120,7 +122,35 @@ static void kbdArm(void)
 
   is_pending = false;
   is_tx_busy = true;
+  tx_busy_ms = millis();
   usbd_ep_start_write(KBD_BUSID, KBD_IN_EP, tx_report, KBD_REPORT_LEN);
+}
+
+
+/*
+ * 놓친 전송 완료를 되살린다. 메인 루프에서 부른다 (usbUpdate).
+ *
+ * 사연은 hid_exk_if.c 의 같은 함수에 적어 뒀다 — 플래시를 쓰는 6ms 동안 완료를
+ * 놓치면 is_tx_busy 가 굳어 이 인터페이스가 조용히 죽는다.
+ *
+ * 섀도에는 마지막 상태가 그대로 남아 있으므로 is_pending 만 다시 세우면 된다.
+ * 부트 리포트도 "지금 눌린 것 전부" 라는 절대 상태라 한 번 더 보내도 탈이 없다.
+ */
+void hidKbdUpdate(void)
+{
+  uint32_t mask;
+
+  if (is_tx_busy == false) return;
+  if ((millis() - tx_busy_ms) <= 50) return;
+
+  logPrintf("[  ] KBD 전송 완료를 놓쳤다 — 되살린다\n");
+
+  mask = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+  lost_cnt++;
+  is_tx_busy = false;
+  is_pending = true;
+  kbdArm();
+  restore_global_irq(mask);
 }
 
 /* 완료 콜백(ISR) — 그 사이에 바뀐 게 있으면 곧바로 잇는다. */
@@ -302,6 +332,11 @@ bool hidKbdIsSuspended(void)
 uint32_t hidKbdGetSentCount(void)
 {
   return sent_cnt;
+}
+
+uint32_t hidKbdGetLostCount(void)
+{
+  return lost_cnt;
 }
 
 void hidKbdPollTest(bool on)

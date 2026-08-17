@@ -95,6 +95,9 @@ void usbUpdate(void)
 #if HW_USB_STACK == HW_USB_STACK_CHERRYUSB
   hidIfUpdate();
   hidTrkUpdate();
+  /* 플래시를 쓰는 6ms 사이에 놓친 전송 완료를 되살린다 (각 파일의 *Update 주석) */
+  hidKbdUpdate();
+  hidExkUpdate();
 #endif
 }
 
@@ -172,10 +175,40 @@ void cliUsb(cli_args_t *args)
       cliPrintf("KBD Report  : %d /s   \n", (int)rate);
       cliPrintf("EXK Ready   : %d  (%d 리포트)\n",
                 hidExkIsConfigured(), (int)hidExkGetSentCount());
-      cliMoveUp(10);
+      cliPrintf("EXK 종류별  : NKRO %d  MOU %d  CONS %d  SYS %d\n",
+                (int)hidExkGetSentCountOf(EXK_REPORT_ID_NKRO),
+                (int)hidExkGetSentCountOf(EXK_REPORT_ID_MOUSE),
+                (int)hidExkGetSentCountOf(EXK_REPORT_ID_CONSUMER),
+                (int)hidExkGetSentCountOf(EXK_REPORT_ID_SYSTEM));
+      cliPrintf("놓친 완료   : KBD %d  EXK %d\n",
+                (int)hidKbdGetLostCount(), (int)hidExkGetLostCount());
+      cliMoveUp(12);
       delay(100);
     }
-    cliMoveDown(10);
+    cliMoveDown(12);
+    ret = true;
+  }
+
+  /*
+   * 한 번만 찍는다.
+   *
+   * `usb info` 는 화면을 갱신하는 라이브 뷰라 cliKeepLoop() 이 입력이 대기 중이면
+   * 곧바로 빠져나간다 — 도구(dev.py)로 명령을 던지면 아무것도 안 찍힌다. 스크립트로
+   * 확인하려면 이쪽을 쓴다.
+   */
+  if (args->argc == 1 && args->isStr(0, "stat"))
+  {
+    cliPrintf("KBD  ready %d  sent %d  lost %d\n",
+              hidKbdIsConfigured(), (int)hidKbdGetSentCount(),
+              (int)hidKbdGetLostCount());
+    cliPrintf("EXK  ready %d  sent %d  lost %d\n",
+              hidExkIsConfigured(), (int)hidExkGetSentCount(),
+              (int)hidExkGetLostCount());
+    cliPrintf("EXK  nkro %d  mouse %d  consumer %d  system %d\n",
+              (int)hidExkGetSentCountOf(EXK_REPORT_ID_NKRO),
+              (int)hidExkGetSentCountOf(EXK_REPORT_ID_MOUSE),
+              (int)hidExkGetSentCountOf(EXK_REPORT_ID_CONSUMER),
+              (int)hidExkGetSentCountOf(EXK_REPORT_ID_SYSTEM));
     ret = true;
   }
 
@@ -336,6 +369,7 @@ void cliUsb(cli_args_t *args)
   if (ret == false)
   {
     cliPrintf("usb info\n");
+    cliPrintf("usb stat        한 번만 찍는다 (도구로 읽을 때)\n");
     cliPrintf("usb rate\n");
     cliPrintf("usb poll\n");
     cliPrintf("usb tx\n");

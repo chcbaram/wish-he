@@ -48,6 +48,7 @@ set(QMK_SRC_FILES
   ${QMK_ROOT}/quantum/eeconfig.c
   ${QMK_ROOT}/quantum/keymap_introspection.c   # keymap.c 를 #include 한다
   ${QMK_ROOT}/quantum/color.c
+  ${QMK_ROOT}/quantum/mousekey.c
   ${QMK_ROOT}/quantum/process_keycode/process_grave_esc.c
   ${QMK_ROOT}/quantum/process_keycode/process_magic.c   # NK_TOGG
 
@@ -115,9 +116,13 @@ add_compile_definitions(DYNAMIC_KEYMAP_ENABLE)
 add_compile_definitions(GRAVE_ESC_ENABLE)
 add_compile_definitions(RGB_MATRIX_ENABLE)
 
-# NKRO 와 확장키는 IF1 (hid_exk_if.c) 로 나간다
+# NKRO 와 확장키, 마우스키는 IF1 (hid_exk_if.c) 로 리포트 ID 를 나눠 쓴다
 add_compile_definitions(NKRO_ENABLE)
 add_compile_definitions(EXTRAKEY_ENABLE)
+add_compile_definitions(MOUSEKEY_ENABLE)
+add_compile_definitions(MOUSE_ENABLE)
+add_compile_definitions(MOUSE_SHARED_EP)
+# MOUSE_EXTENDED_REPORT 는 켜지 않는다 — 기술자가 X/Y 를 int8 로 잡고 있어 어차피 잘린다
 
 # Hold On Other Key Press 를 VIA 에서 켜고 끈다 -> per-key 콜백 경로가 필요하다
 add_compile_definitions(HOLD_ON_OTHER_KEY_PRESS)

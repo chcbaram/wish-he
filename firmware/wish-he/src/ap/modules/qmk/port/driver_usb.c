@@ -9,8 +9,8 @@
  *   같은 리포트를 여러 번 보낼 수 있는데(레이어 처리 중간 상태 등) 그때마다
  *   전송을 걸면 옛 리포트가 먼저 나가느라 지연이 오히려 늘어난다.
  *
- * NKRO · 마우스 · 미디어키는 아직 인터페이스가 없다. 기술자에 IF 를 더하면 CDC 의
- * 인터페이스 번호가 밀리므로(7편의 등록 순서 함정) 11편에서 한꺼번에 정리한다.
+ * NKRO · 마우스 · 미디어키는 IF1(hid_exk_if.c) 하나에 리포트 ID 로 나눠 실린다.
+ * 인터페이스를 새로 더하면 CDC 의 번호가 밀리므로(7편의 등록 순서 함정) ID 만 얹었다.
  */
 
 #include "host.h"
@@ -44,7 +44,13 @@ static void usb_send_nkro(report_nkro_t *report)
 
 static void usb_send_mouse(report_mouse_t *report)
 {
-  (void)report;   /* 마우스 인터페이스는 아직 없다 */
+#ifdef MOUSE_ENABLE
+  /* report_mouse_t = { report_id, buttons, x, y, v, h } — IF1 의 ID 2 배치와 같다.
+   * host_mouse_send() 가 MOUSE_SHARED_EP 를 보고 report_id 를 채워 준다. */
+  hidExkSendReport((const uint8_t *)report, sizeof(report_mouse_t));
+#else
+  (void)report;
+#endif
 }
 
 static void usb_send_extra(report_extra_t *report)
