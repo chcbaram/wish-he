@@ -151,15 +151,12 @@ enum via_he_value
   val_he_rt_flags   = 8,   /* RT 켬 / 바닥 보호 / 연속 RT  8비트 */
 
   /*
-   * 일반형(GENERIC)을 골랐을 때의 전 행정.
+   * 9 번(일반형 전 행정)은 비었다.
    *
-   * ★ 이 값도 여기 있어야 한다.
-   *
-   *   키별 명령(0xC5)으로만 오갔더니 **쓰는 곳과 읽는 곳이 갈렸다.** 화면은 키를
-   *   안 고르면 프로파일 전역을 읽는데 거기에 이 값이 없어, 다시 연결하면 옛 값이
-   *   나온다. RT 플래그에서 똑같이 당한 적이 있다.
+   * 일반형의 행정을 사용자가 정하던 값인데, 이제 그 일은 커스텀 스위치 슬롯이
+   * 한다(자속을 0 으로 두면 그 행정의 직선이다). 번호는 **다시 쓰지 않는다** —
+   * 옛 앱이 9 번을 물으면 안 받는 것이 옛 값을 주는 것보다 낫다.
    */
-  val_he_gen_travel = 9,   /* 일반형 전 행정  0.01mm */
 };
 
 
@@ -327,7 +324,6 @@ static void viaHeSet(uint8_t *p_val)
     case val_he_rt_release: keysSetRtReleaseUm(v);        break;
     case val_he_bottom:     keysSetBottomUm(v);           break;
     case val_he_dead:       keysSetDeadUm(v);             break;
-    case val_he_gen_travel: keysSetGenTravelUm(v);        break;
 
     /* 8비트짜리는 첫 바이트만 본다 */
     case val_he_switch:     keysSetSwitchType(p_val[1]);  break;
@@ -348,7 +344,6 @@ static void viaHeGet(uint8_t *p_val)
     case val_he_rt_release: v = keysGetRtReleaseUm(); break;
     case val_he_bottom:     v = keysGetBottomUm();    break;
     case val_he_dead:       v = keysGetDeadUm();      break;
-    case val_he_gen_travel: v = keysGetGenTravelUm(); break;
 
     case val_he_switch:     p_val[1] = keysGetSwitchType(); return;
     case val_he_rt_flags:   p_val[1] = keysGetRtFlags();    return;

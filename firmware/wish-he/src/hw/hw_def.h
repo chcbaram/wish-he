@@ -6,7 +6,7 @@
 #include "bsp.h"
 
 
-#define _DEF_FIRMWATRE_VERSION    "V260817R39"
+#define _DEF_FIRMWATRE_VERSION    "V260817R41"
 #define _DEF_BOARD_NAME           "WISH60-HE"
 #define _DEF_MCU_NAME             "HPM5361 (RISC-V)"
 #define _DEF_AUTHOR_NAME          "BARAM"
@@ -84,6 +84,13 @@
  *   0x20000 ~ 0x80000   본 펌웨어
  *   0x80000 ~ 0xC0000   벤더 EEPROM (e2p)  ★ 우리 것이 아니다. 건드리면 안 됨
  *   0xC0000 ~ 0x100000  우리 몫 (256KB)
+ *
+ *   그 안의 배치 —
+ *     0xC0000 / 0xC1000   보정 핑퐁 (4KB x 2)
+ *     0xC4000             QMK/VIA EEPROM 16KB
+ *     0xC8000 / 0xCA000   설정 핑퐁 (8KB x 2)
+ *     0xCC000 / 0xCD000   스위치 정의 핑퐁 (4KB x 2)
+ *     0xCE000 ~ 0x100000  빈 곳 200KB
  */
 #define _USE_HW_FLASH
 #define      HW_FLASH_SECTOR_SIZE   4096         /* 소거 단위 */
@@ -110,6 +117,21 @@
  */
 #define      HW_FLASH_SET_A         0x0C8000UL   /* 설정 핑퐁 A (8KB) */
 #define      HW_FLASH_SET_B         0x0CA000UL   /* 설정 핑퐁 B (8KB) */
+
+/*
+ * 커스텀 스위치 정의 핑퐁 — 세 번째 기록.
+ *
+ * ★ 보정에도 설정에도 안 넣는다. **수명이 다르다.**
+ *
+ *   보정은 이 개체를 잰 값이라 절대 나누면 안 되고, 스위치 정의는 데이터시트에서
+ *   온 값이라 나누라고 있는 것이다. 설정은 프로파일마다 한 벌인데 스위치 정의는
+ *   보드 하나에 한 벌이다.
+ *
+ *   한 기록에 섞으면 앞으로 스위치 정의를 고칠 때마다 보정(63키 누르기)이 같이
+ *   날아간다.
+ */
+#define      HW_FLASH_SW_A          0x0CC000UL   /* 스위치 정의 핑퐁 A (4KB) */
+#define      HW_FLASH_SW_B          0x0CD000UL   /* 스위치 정의 핑퐁 B (4KB) */
 
 //-- USB (CDC)
 //

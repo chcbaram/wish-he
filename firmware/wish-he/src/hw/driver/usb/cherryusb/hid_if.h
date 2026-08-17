@@ -101,6 +101,38 @@ extern "C" {
 #define HID_CMD_HWINFO            0xCA
 
 /*
+ * 커스텀 스위치 슬롯 — 0xCB.
+ *
+ * ★ 0xC6(스위치 종류표)에 하위 명령을 못 낀다. 거기는 [1] 이 이미 인덱스라
+ *   자리가 없고, 이미 배포된 앱이 그 배치를 그대로 읽는다.
+ *
+ *   그래서 새 명령으로 뺀다. 0xC6 은 내장 표만 계속 내보내므로 옛 앱이 그대로 돈다.
+ *
+ *   OUT  [0]=CB [1]=하위 [2]=슬롯 [3..] 값
+ *   IN   [0]=CB [1]=하위 에코 ... (하위마다 다르다, 아래)
+ */
+#define HID_CMD_SWCUST            0xCB
+
+#define HID_SWCUST_GET            0x00    /* [2]=슬롯 */
+#define HID_SWCUST_SET            0x01    /* [2]=슬롯 [3..]=값 */
+#define HID_SWCUST_INFO           0x02    /* 슬롯 수와 이름이 붙은 칸 */
+
+/*
+ * 값 배치 — 이름을 **맨 뒤**에 둔다.
+ *
+ * 앞쪽이 고정 길이라야 짧게 온 요청을 받아 줄 수 있다. 뒤에 항목을 더할 때도
+ * 이름만 밀리면 되므로 옛 도구가 계속 돈다.
+ */
+#define HID_SWCUST_TRAVEL_OFF     3       /* LE16, 0.01mm */
+#define HID_SWCUST_REST_OFF       5       /* LE16, Gs */
+#define HID_SWCUST_BOTTOM_OFF     7       /* LE16, Gs */
+#define HID_SWCUST_KIND_OFF       9       /* 0 = 두 점 모델 */
+#define HID_SWCUST_NAME_OFF       10      /* NUL 로 끝나는 이름 */
+
+/* 쓰기가 싣는 값 바이트 수 — 이름 12칸까지 (3..21) */
+#define HID_SWCUST_LEN            19
+
+/*
  * 통계와 같은 이유로 페이지를 나눈다.
  *
  *   페이지 0,1  LE32 값들
@@ -176,7 +208,7 @@ extern "C" {
  *
  *   keys.c 의 KEYS_KEYCFG_WR_LEN 과 같은 수여야 한다.
  */
-#define HID_KEYCFG_LEN            16      /* 쓰기가 싣는 값 바이트 수 */
+#define HID_KEYCFG_LEN            14      /* 쓰기가 싣는 값 바이트 수 */
 
 #define HID_CMD_INFO              0xC0    /* 보드 정보 */
 #define HID_INFO_VER_OFF          16      /* 버전 문자열 자리 (고정) */

@@ -158,14 +158,35 @@ uint16_t    keysGetSwitchTravelUm(uint32_t i);
 uint16_t    keysGetSwitchFluxRest(uint32_t i);     /* 데이터시트 두 점 (Gs) */
 uint16_t    keysGetSwitchFluxBottom(uint32_t i);   /* 0 = 모른다 */
 
+/*
+ * 커스텀 스위치 슬롯 — 표에 없는 스위치를 사용자가 정의한다.
+ *
+ * sw_type 의 비트 7 이 서면 커스텀이고 하위 비트가 슬롯 번호다. 그래서 내장 표가
+ * 늘어도 사용자가 배정해 둔 번호가 안 밀린다.
+ *
+ * 담는 것은 "이름 + 행정 + 데이터시트 두 점" 뿐이다 — 두 점이면 곡선이 결정되므로
+ * 33칸 표를 주고받을 이유가 없다. 자속이 0 이면 그 행정의 직선으로 읽는다.
+ */
+typedef struct
+{
+  char     name[12];
+  uint16_t travel_um;        /* 0.01mm */
+  uint16_t flux_rest_gs;     /* 0 = 모른다 -> 직선 */
+  uint16_t flux_bottom_gs;
+  uint8_t  kind;             /* 0 = 두 점 모델 */
+} keys_sw_info_t;
+
+uint32_t keysSwCustomCount(void);
+bool     keysSwCustomGet(uint32_t slot, keys_sw_info_t *p_info);
+bool     keysSwCustomSet(uint32_t slot, const keys_sw_info_t *p_info);
+void     keysSwUpdate(void);   /* 메인 루프에서 — ISR 금지 (플래시) */
+
 /* 래피드 트리거 — 전부 0.01mm. 플래그는 keys.c 의 KEYS_RT_* */
 uint16_t keysGetRtPressUm(void);
 uint16_t keysGetRtReleaseUm(void);
 uint16_t keysGetBottomUm(void);
 uint16_t keysGetDeadUm(void);
 uint8_t  keysGetRtFlags(void);
-uint16_t keysGetGenTravelUm(void);   /* 일반형 전 행정 (프로파일 기본값) */
-void     keysSetGenTravelUm(uint16_t um);
 void     keysSetRtPressUm(uint16_t um);
 void     keysSetRtReleaseUm(uint16_t um);
 void     keysSetBottomUm(uint16_t um);

@@ -49,6 +49,7 @@ void update(void const *arg)
 
   usbUpdate();                        /* HID 로 들어온 부트/리셋/트래킹 요청 처리 */
   keysCfgUpdate();                    /* 바뀐 설정을 조용해진 뒤 한 번 저장 */
+  keysSwUpdate();                     /* 바뀐 스위치 정의도 (플래시라 ISR 밖) */
 }
 
 void cliLoopIdle(void)

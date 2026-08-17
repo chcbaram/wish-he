@@ -187,8 +187,17 @@ static uint32_t hidCmdArgLen(const uint8_t *p_rx)
     case HID_CMD_CAL:    return (p_rx[1] == HID_CAL_STROKE) ? 2 : 1;
 
     case HID_CMD_KEYCFG:
-      /* get: [하위, idx]   set: [하위, idx] + 값 14바이트 */
+      /* get: [하위, idx]   set: [하위, idx] + 값 */
       return (p_rx[1] == HID_KEYCFG_SET) ? (2 + HID_KEYCFG_LEN) : 2;
+
+    /*
+     * 커스텀 스위치. 상태만 물으면 하위 하나, 슬롯을 다루면 번호가 더 붙는다.
+     *
+     * ★ 쓰기 에코에 값을 다 싣지 않는다. 이름까지 되돌리면 19바이트가 에코라
+     *   32바이트에서 남는 자리가 없다. 하위와 슬롯만 맞으면 짝은 지켜진다.
+     */
+    case HID_CMD_SWCUST:
+      return (p_rx[1] == HID_SWCUST_INFO) ? 1 : 2;
 
     default:             return 0;
   }
@@ -518,6 +527,76 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
       for (uint32_t i = 0; i < (HID_EP_MPS - HID_SWITCH_NAME_OFF - 1) && p_nm[i]; i++)
       {
         p_tx[HID_SWITCH_NAME_OFF + i] = (uint8_t)p_nm[i];
+      }
+      break;
+    }
+
+    /*
+     * 커스텀 스위치 슬롯 — 표에 없는 스위치를 사용자가 정의한다.
+     *
+     * ★ 여기서 플래시를 쓰지 않는다. 이 함수는 USB OUT ISR 이라 6ms 를 잡아먹으면
+     *   리포트가 빠진다. keysSwCustomSet 은 RAM 만 고치고 표시만 남기며, 굽는 것은
+     *   메인 루프의 keysSwUpdate 가 한다 — 0xC7·0xC8 과 같은 방식이다.
+     */
+    case HID_CMD_SWCUST:
+    {
+      uint32_t sub  = p_rx[1];
+      uint32_t slot = p_rx[2];
+
+      if (sub == HID_SWCUST_INFO)
+      {
+        p_tx[2] = (uint8_t)keysSwCustomCount();
+
+        /* 이름이 붙은 칸 = 사용자가 실제로 고친 칸 */
+        p_tx[3] = 0;
+        for (uint32_t i = 0; i < keysSwCustomCount() && i < 8; i++)
+        {
+          keys_sw_info_t info;
+
+          if (keysSwCustomGet(i, &info) && info.name[0] != 0) p_tx[3] |= (uint8_t)(1U << i);
+        }
+        break;
+      }
+
+      if (sub == HID_SWCUST_SET)
+      {
+        keys_sw_info_t info;
+
+        memset(&info, 0, sizeof(info));
+        info.travel_um      = (uint16_t)(p_rx[HID_SWCUST_TRAVEL_OFF]
+                                       | (p_rx[HID_SWCUST_TRAVEL_OFF + 1] << 8));
+        info.flux_rest_gs   = (uint16_t)(p_rx[HID_SWCUST_REST_OFF]
+                                       | (p_rx[HID_SWCUST_REST_OFF + 1] << 8));
+        info.flux_bottom_gs = (uint16_t)(p_rx[HID_SWCUST_BOTTOM_OFF]
+                                       | (p_rx[HID_SWCUST_BOTTOM_OFF + 1] << 8));
+        info.kind           = p_rx[HID_SWCUST_KIND_OFF];
+
+        for (uint32_t i = 0; i < sizeof(info.name) - 1; i++)
+        {
+          info.name[i] = (char)p_rx[HID_SWCUST_NAME_OFF + i];
+          if (info.name[i] == 0) break;
+        }
+        keysSwCustomSet(slot, &info);
+        /* 되읽어 실제로 들어간 값을 응답에 싣는다 — 잘렸는지 화면이 안다 */
+      }
+
+      {
+        keys_sw_info_t info;
+
+        if (keysSwCustomGet(slot, &info) == false) break;
+
+        p_tx[HID_SWCUST_TRAVEL_OFF + 0] = (uint8_t)(info.travel_um & 0xFF);
+        p_tx[HID_SWCUST_TRAVEL_OFF + 1] = (uint8_t)(info.travel_um >> 8);
+        p_tx[HID_SWCUST_REST_OFF + 0]   = (uint8_t)(info.flux_rest_gs & 0xFF);
+        p_tx[HID_SWCUST_REST_OFF + 1]   = (uint8_t)(info.flux_rest_gs >> 8);
+        p_tx[HID_SWCUST_BOTTOM_OFF + 0] = (uint8_t)(info.flux_bottom_gs & 0xFF);
+        p_tx[HID_SWCUST_BOTTOM_OFF + 1] = (uint8_t)(info.flux_bottom_gs >> 8);
+        p_tx[HID_SWCUST_KIND_OFF]       = info.kind;
+
+        for (uint32_t i = 0; i < sizeof(info.name) && info.name[i]; i++)
+        {
+          p_tx[HID_SWCUST_NAME_OFF + i] = (uint8_t)info.name[i];
+        }
       }
       break;
     }
