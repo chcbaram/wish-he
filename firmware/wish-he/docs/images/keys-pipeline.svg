@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="636" viewBox="0 0 1180 636" role="img" aria-label="키 신호 처리 경로">
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8c959f"/></marker></defs>
+<rect width="1180" height="636" fill="#ffffff"/>
+<text xml:space="preserve" x="40" y="38" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="17" fill="#1f2328" text-anchor="start" font-weight="700">키 하나가 눌리기까지 — 신호가 거치는 단계</text>
+<text xml:space="preserve" x="40" y="60" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="12" fill="#6a737d" text-anchor="start" font-weight="400">숫자는 전부 실측값. 괄호 안은 12비트로 내리기 전 원시 16비트.</text>
+<rect x="40" y="88" width="200" height="132" rx="6" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.6"/>
+<text xml:space="preserve" x="140.0" y="112" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="13.5" fill="#1f2328" text-anchor="middle" font-weight="700">① ADC 시퀀스</text>
+<line x1="52" y1="122" x2="228" y2="122" stroke="#9ca3af" stroke-width="1"/>
+<text xml:space="preserve" x="54" y="142" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">ADC0 4채널</text>
+<text xml:space="preserve" x="54" y="159" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">ADC1 4채널</text>
+<text xml:space="preserve" x="54" y="176" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">동시 변환</text>
+<text xml:space="preserve" x="54" y="210" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">16비트 원시값</text>
+<line x1="245" y1="154.0" x2="267" y2="154.0" stroke="#8c959f" stroke-width="1.8" marker-end="url(#a)"/>
+<rect x="272" y="88" width="200" height="132" rx="6" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.6"/>
+<text xml:space="preserve" x="372.0" y="112" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="13.5" fill="#1f2328" text-anchor="middle" font-weight="700">② 12비트로</text>
+<line x1="284" y1="122" x2="460" y2="122" stroke="#3b82f6" stroke-width="1"/>
+<text xml:space="preserve" x="286" y="142" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">raw &gt;&gt; 4</text>
+<text xml:space="preserve" x="286" y="176" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">하위 4비트는</text>
+<text xml:space="preserve" x="286" y="193" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">노이즈뿐이라</text>
+<text xml:space="preserve" x="286" y="210" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">버려도 손실 없음</text>
+<line x1="477" y1="154.0" x2="499" y2="154.0" stroke="#8c959f" stroke-width="1.8" marker-end="url(#a)"/>
+<rect x="504" y="88" width="200" height="132" rx="6" fill="#dcfce7" stroke="#16a34a" stroke-width="1.6"/>
+<text xml:space="preserve" x="604.0" y="112" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="13.5" fill="#1f2328" text-anchor="middle" font-weight="700">③ 데드밴드 ±7</text>
+<line x1="516" y1="122" x2="692" y2="122" stroke="#16a34a" stroke-width="1"/>
+<text xml:space="preserve" x="518" y="142" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">밴드 밖 → 즉시</text>
+<text xml:space="preserve" x="518" y="159" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">밴드 안 → 무시</text>
+<text xml:space="preserve" x="518" y="193" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">지연 0</text>
+<text xml:space="preserve" x="518" y="210" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">노이즈 p-p 12→5</text>
+<line x1="709" y1="154.0" x2="731" y2="154.0" stroke="#8c959f" stroke-width="1.8" marker-end="url(#a)"/>
+<rect x="736" y="88" width="200" height="132" rx="6" fill="#fef3c7" stroke="#d97706" stroke-width="1.6"/>
+<text xml:space="preserve" x="836.0" y="112" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="13.5" fill="#1f2328" text-anchor="middle" font-weight="700">④ 기준값 추적</text>
+<line x1="748" y1="122" x2="924" y2="122" stroke="#d97706" stroke-width="1"/>
+<text xml:space="preserve" x="750" y="142" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">무압 = 물리적 극단</text>
+<text xml:space="preserve" x="750" y="176" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">큰 변화 → 즉시</text>
+<text xml:space="preserve" x="750" y="193" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">잔파도 → 512ms당 1</text>
+<text xml:space="preserve" x="750" y="210" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">누른 채 부팅 복구</text>
+<line x1="941" y1="154.0" x2="963" y2="154.0" stroke="#8c959f" stroke-width="1.8" marker-end="url(#a)"/>
+<rect x="968" y="88" width="200" height="132" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.6"/>
+<text xml:space="preserve" x="1068.0" y="112" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="13.5" fill="#1f2328" text-anchor="middle" font-weight="700">⑤ 판정</text>
+<line x1="980" y1="122" x2="1156" y2="122" stroke="#7c3aed" stroke-width="1"/>
+<text xml:space="preserve" x="982" y="142" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">d = base - raw</text>
+<text xml:space="preserve" x="982" y="176" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">d &gt; 250 → 눌림</text>
+<text xml:space="preserve" x="982" y="193" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">d &lt; 156 → 해제</text>
+<text xml:space="preserve" x="982" y="210" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">히스테리시스</text>
+<text xml:space="preserve" x="40" y="254" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="13" fill="#1f2328" text-anchor="start" font-weight="700">각 단계에서 값이 얼마나 되나</text>
+<text xml:space="preserve" x="48" y="284" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="start" font-weight="700"></text>
+<text xml:space="preserve" x="178" y="284" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="start" font-weight="700">무압 기준값</text>
+<text xml:space="preserve" x="378" y="284" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="start" font-weight="700">풀 스트로크</text>
+<text xml:space="preserve" x="528" y="284" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="start" font-weight="700">노이즈 p-p</text>
+<text xml:space="preserve" x="658" y="284" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="start" font-weight="700">누름 임계</text>
+<rect x="40" y="292" width="740" height="24" rx="3" fill="#fafbfc" stroke="#e5e7eb" stroke-width="0.8"/>
+<text xml:space="preserve" x="48" y="309" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="700">16비트 (①)</text>
+<text xml:space="preserve" x="178" y="309" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">40,000 ~ 46,000</text>
+<text xml:space="preserve" x="378" y="309" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">13,400</text>
+<text xml:space="preserve" x="528" y="309" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">200</text>
+<text xml:space="preserve" x="658" y="309" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">4,000</text>
+<rect x="40" y="318" width="740" height="24" rx="3" fill="#ffffff" stroke="#e5e7eb" stroke-width="0.8"/>
+<text xml:space="preserve" x="48" y="335" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="700">12비트 (② ~)</text>
+<text xml:space="preserve" x="178" y="335" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">2,490 ~ 2,880</text>
+<text xml:space="preserve" x="378" y="335" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">838</text>
+<text xml:space="preserve" x="528" y="335" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">12</text>
+<text xml:space="preserve" x="658" y="335" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">250</text>
+<text xml:space="preserve" x="40" y="388" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="13" fill="#1f2328" text-anchor="start" font-weight="700">키 하나를 눌렀다 뗄 때 (실측, 12비트)</text>
+<rect x="40" y="402" width="700" height="196" rx="4" fill="#ffffff" stroke="#e5e7eb" stroke-width="1"/>
+<line x1="40" y1="424" x2="740" y2="424" stroke="#d97706" stroke-width="1.6"/>
+<text xml:space="preserve" x="734" y="417" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11" fill="#d97706" text-anchor="end" font-weight="700">기준값 2524  (무압)</text>
+<text xml:space="preserve" x="50" y="417" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11" fill="#d97706" text-anchor="start" font-weight="400">손 뗀 상태</text>
+<line x1="40" y1="469.34606205250594" x2="740" y2="469.34606205250594" stroke="#7c3aed" stroke-width="1.3" stroke-dasharray="5 4"/>
+<text xml:space="preserve" x="50" y="463.34606205250594" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11" fill="#7c3aed" text-anchor="start" font-weight="700">누름 250  여기서 눌림 판정</text>
+<line x1="40" y1="452.2959427207637" x2="740" y2="452.2959427207637" stroke="#0ea5e9" stroke-width="1.3" stroke-dasharray="5 4"/>
+<text xml:space="preserve" x="734" y="467.2959427207637" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11" fill="#0ea5e9" text-anchor="end" font-weight="700">해제 156  (히스테리시스)</text>
+<path d="M 80.0,424.0 L 196.0,439.6 L 312.0,501.8 L 428.0,574.9 L 544.0,468.8 L 660.0,424.0" fill="none" stroke="#16a34a" stroke-width="2.4"/>
+<circle cx="80.0" cy="424.0" r="3.2" fill="#16a34a"/>
+<circle cx="196.0" cy="439.6" r="3.2" fill="#16a34a"/>
+<text xml:space="preserve" x="196.0" y="456.59904534606204" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11" fill="#16a34a" text-anchor="middle" font-weight="700">-86</text>
+<circle cx="312.0" cy="501.8" r="3.2" fill="#16a34a"/>
+<text xml:space="preserve" x="312.0" y="518.8138424821002" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11" fill="#16a34a" text-anchor="middle" font-weight="700">-429</text>
+<circle cx="428.0" cy="574.9" r="3.2" fill="#16a34a"/>
+<text xml:space="preserve" x="428.0" y="591.9116945107398" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11" fill="#16a34a" text-anchor="middle" font-weight="700">-832</text>
+<circle cx="544.0" cy="468.8" r="3.2" fill="#16a34a"/>
+<text xml:space="preserve" x="544.0" y="485.8019093078759" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11" fill="#16a34a" text-anchor="middle" font-weight="700">-247</text>
+<circle cx="660.0" cy="424.0" r="3.2" fill="#16a34a"/>
+<text xml:space="preserve" x="50" y="590" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="10.5" fill="#6a737d" text-anchor="start" font-weight="400">바닥 = 스트로크 838</text>
+<rect x="766" y="402" width="374" height="196" rx="5" fill="#fafbfc" stroke="#e5e7eb" stroke-width="1"/>
+<text xml:space="preserve" x="780" y="428" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">샘플 간격이 넓은 건</text>
+<text xml:space="preserve" x="780" y="444" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">필터 지연이 없기 때문이다.</text>
+<text xml:space="preserve" x="780" y="460" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400"></text>
+<text xml:space="preserve" x="780" y="476" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">IIR 을 쓰던 때는 같은 속도로</text>
+<text xml:space="preserve" x="780" y="492" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">눌러도 -652 까지밖에 못 갔다.</text>
+<text xml:space="preserve" x="780" y="508" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">필터가 못 따라온 것이다.</text>
+<text xml:space="preserve" x="780" y="524" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400"></text>
+<text xml:space="preserve" x="780" y="540" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">데드밴드는 밴드보다 큰 변화를</text>
+<text xml:space="preserve" x="780" y="556" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="start" font-weight="400">같은 샘플에서 반영한다.</text>
+</svg>

@@ -1,0 +1,287 @@
+{
+  "name": "WISH60-HE-7U",
+  "vendorId": "0x0483",
+  "productId": "0x5304",
+  "matrix": {
+    "rows": 8,
+    "cols": 8
+  },
+  "layouts": {
+    "keymap": [
+      [
+        {
+          "c": "#aaaaaa"
+        },
+        "5,1",
+        {
+          "c": "#cccccc"
+        },
+        "7,1",
+        "3,1",
+        "5,2",
+        "7,2",
+        "3,2",
+        "0,2",
+        "5,4",
+        "7,4",
+        "3,4",
+        "0,4",
+        "5,5",
+        "7,5",
+        {
+          "c": "#aaaaaa",
+          "w": 2
+        },
+        "0,5\n\n\n0,0",
+        {
+          "x": 0.5
+        },
+        "3,5\n\n\n0,1",
+        "1,5\n\n\n0,1"
+      ],
+      [
+        {
+          "w": 1.5
+        },
+        "4,1",
+        {
+          "c": "#cccccc"
+        },
+        "6,1",
+        "0,1",
+        "4,2",
+        "6,2",
+        "2,2",
+        "1,2",
+        "4,4",
+        "6,4",
+        "2,4",
+        "1,4",
+        "4,5",
+        "6,5",
+        {
+          "c": "#aaaaaa",
+          "w": 1.5
+        },
+        "2,5"
+      ],
+      [
+        {
+          "w": 1.75
+        },
+        "7,0",
+        {
+          "c": "#cccccc"
+        },
+        "2,1",
+        "1,1",
+        "4,3",
+        "5,3",
+        "7,3",
+        "3,3",
+        "5,7",
+        "7,7",
+        "3,7",
+        "0,7",
+        "1,7",
+        {
+          "c": "#aaaaaa",
+          "w": 2.25
+        },
+        "2,7"
+      ],
+      [
+        {
+          "w": 2.25
+        },
+        "5,0",
+        {
+          "c": "#cccccc"
+        },
+        "2,0",
+        "0,0",
+        "3,0",
+        "6,3",
+        "2,3",
+        "0,3",
+        "4,7",
+        "6,7",
+        "5,6",
+        "7,6",
+        {
+          "c": "#aaaaaa",
+          "w": 1.75
+        },
+        "3,6",
+        "1,6"
+      ],
+      [
+        {
+          "w": 1.5
+        },
+        "4,0",
+        "6,0",
+        {
+          "w": 1.5
+        },
+        "1,0",
+        {
+          "c": "#cccccc",
+          "w": 7
+        },
+        "1,3",
+        {
+          "c": "#aaaaaa",
+          "w": 1.5
+        },
+        "4,6",
+        "6,6",
+        {
+          "w": 1.5
+        },
+        "2,6"
+      ]
+    ],
+    "labels": [
+      [
+        "백스페이스",
+        "2U",
+        "스플릿"
+      ]
+    ]
+  },
+  "keycodes": [
+    "qmk_rgb_matrix_keycodes"
+  ],
+  "menus": [
+    {
+      "label": "Lighting",
+      "content": [
+        {
+          "label": "RGB Matrix",
+          "content": [
+            {
+              "label": "Brightness",
+              "type": "range",
+              "options": [
+                0,
+                255
+              ],
+              "content": [
+                "id_qmk_rgb_matrix_brightness",
+                3,
+                1
+              ]
+            },
+            {
+              "label": "Effect",
+              "type": "dropdown",
+              "options": [
+                "All Off",
+                "Solid Color",
+                "Gradient Up/Down",
+                "Breathing",
+                "Cycle All",
+                "Cycle Left/Right",
+                "Rainbow Moving Chevron",
+                "Pixel Flow",
+                "HE Depth Brightness",
+                "HE Depth Hue",
+                "HE Depth Ripple"
+              ],
+              "content": [
+                "id_qmk_rgb_matrix_effect",
+                3,
+                2
+              ]
+            },
+            {
+              "showIf": "{id_qmk_rgb_matrix_effect} != 0",
+              "label": "Effect Speed",
+              "type": "range",
+              "options": [
+                0,
+                255
+              ],
+              "content": [
+                "id_qmk_rgb_matrix_effect_speed",
+                3,
+                3
+              ]
+            },
+            {
+              "showIf": "{id_qmk_rgb_matrix_effect} != 0",
+              "label": "Color",
+              "type": "color",
+              "content": [
+                "id_qmk_rgb_matrix_color",
+                3,
+                4
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "QMK",
+      "content": [
+        {
+          "label": "Key Handling",
+          "content": [
+            {
+              "label": "Hold On Other Key Press",
+              "type": "toggle",
+              "content": [
+                "id_qmk_hold_okp",
+                14,
+                1
+              ]
+            },
+            {
+              "label": "NKRO",
+              "type": "toggle",
+              "content": [
+                "id_qmk_nkro",
+                15,
+                1
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "customKeycodes": [
+    {
+      "name": "Profile 1",
+      "title": "Switch to profile 1",
+      "shortName": "PF1"
+    },
+    {
+      "name": "Profile 2",
+      "title": "Switch to profile 2",
+      "shortName": "PF2"
+    },
+    {
+      "name": "Profile 3",
+      "title": "Switch to profile 3",
+      "shortName": "PF3"
+    },
+    {
+      "name": "Profile 4",
+      "title": "Switch to profile 4",
+      "shortName": "PF4"
+    },
+    {
+      "name": "Profile Next",
+      "title": "Switch to the next profile, wrapping around",
+      "shortName": "PF>"
+    },
+    {
+      "name": "Profile Prev",
+      "title": "Switch to the previous profile, wrapping around",
+      "shortName": "PF<"
+    }
+  ]
+}

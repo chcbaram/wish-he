@@ -1,0 +1,344 @@
+/*
+ * Copyright (c) 2022-2026 HPMicro
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
+ */
+
+#include "hpm_ffa_drv.h"
+#include <assert.h>
+
+#define FFA_ERROR_MASKS (FFA_STATUS_FIR_OV_MASK | FFA_STATUS_FFT_OV_MASK | FFA_STATUS_WR_ERR_MASK | FFA_STATUS_RD_NXT_ERR_MASK | FFA_STATUS_RD_ERR_MASK)
+
+static bool is_point_num_valid(uint16_t num_point);
+static uint32_t get_fft_misc_reg_fft_len(uint16_t num_point);
+static hpm_stat_t get_fft_error_kind(uint32_t ffa_status);
+
+static bool is_point_num_valid(uint16_t num_point)
+{
+    return ((num_point & (num_point - 1U)) == 0U) && (num_point >= 8U);
+}
+
+static uint32_t get_fft_misc_reg_fft_len(uint16_t num_point)
+{
+    uint32_t count = 0U;
+    num_point /= 8;
+    while (num_point > 0) {
+        count++;
+        num_point >>= 1U;
+    }
+
+    return (count - 1U);
+}
+
+void ffa_start_fft(FFA_Type *ptr, fft_xfer_t *fft_xfer)
+{
+
+    assert((ptr != NULL) && (fft_xfer != NULL) && is_point_num_valid(fft_xfer->num_points));
+
+    ffa_disable(ptr);
+
+    ffa_enable_interrupt(ptr, fft_xfer->interrupt_mask);
+
+    ptr->OP_CTRL = FFA_OP_CTRL_EN_MASK;
+
+    uint32_t op_cmd = FFA_OP_CMD_CMD_SET(FFA_OPCMD_FFT) | FFA_OP_CMD_IND_TYPE_SET(fft_xfer->src_data_type) |
+        FFA_OP_CMD_OUTD_TYPE_SET(fft_xfer->dst_data_type);
+    ptr->OP_CMD = op_cmd;
+
+    uint32_t fft_len = get_fft_misc_reg_fft_len(fft_xfer->num_points);
+    uint32_t fft_misc =
+        FFA_OP_FFT_MISC_FFT_LEN_SET(fft_len) | FFA_OP_FFT_MISC_TMP_BLK_SET(1) | FFA_OP_FFT_MISC_IND_BLK_SET(0);
+    if (fft_xfer->is_ifft) {
+        fft_misc |= FFA_OP_FFT_MISC_IFFT_MASK;
+    }
+    ptr->OP_REG0 = fft_misc;
+
+    ptr->OP_REG1 = 0;
+    ptr->OP_REG2 = (uint32_t) fft_xfer->src;
+    ptr->OP_REG4 = (uint32_t) fft_xfer->dst;
+
+
+    ffa_enable(ptr);
+}
+
+void ffa_start_fir(FFA_Type *ptr, fir_xfer_t *fir_xfer)
+{
+    assert((ptr != NULL) && (fir_xfer != NULL));
+
+    ffa_disable(ptr);
+
+    ffa_enable_interrupt(ptr, fir_xfer->interrupt_mask);
+
+    ptr->OP_CTRL = FFA_OP_CTRL_EN_MASK;
+
+    uint32_t op_cmd = FFA_OP_CMD_CMD_SET(FFA_OPCMD_FIR) | FFA_OP_CMD_IND_TYPE_SET(fir_xfer->data_type) |
+        FFA_OP_CMD_OUTD_TYPE_SET(fir_xfer->data_type) | FFA_OP_CMD_COEF_TYPE_SET(fir_xfer->data_type);
+    ptr->OP_CMD = op_cmd;
+
+    uint32_t fir_misc = FFA_OP_FIR_MISC_FIR_COEF_TAPS_SET(fir_xfer->coef_taps);
+    ptr->OP_REG0 = fir_misc;
+#if defined(HPM_IP_FEATURE_FFA_FP32) && HPM_IP_FEATURE_FFA_FP32
+    uint32_t fir_misc1 = FFA_OP_FIR_MISC1_OUTD_MEM_BLK_SET(0) | FFA_OP_FIR_MISC1_COEF_MEM_BLK_SET(0) |
+        FFA_OP_FIR_MISC1_IND_MEM_BLK_SET(1) | FFA_OP_FIR_MISC1_FIR_DATA_TAPS_SET(fir_xfer->input_taps);
+#else
+    uint32_t fir_misc1 = FFA_OP_FIR_MISC1_OUTD_MEM_BLK_SET(0) | FFA_OP_FIR_MISC1_COEF_MEM_BLK_SET(1) |
+        FFA_OP_FIR_MISC1_IND_MEM_BLK_SET(2) | FFA_OP_FIR_MISC1_FIR_DATA_TAPS_SET(fir_xfer->input_taps);
+#endif
+
+    ptr->OP_REG1 = fir_misc1;
+    ptr->OP_REG2 = 0xFFFFFFFFUL;
+    ptr->OP_REG3 = (uint32_t) fir_xfer->src;
+    ptr->OP_REG4 = (uint32_t) fir_xfer->coeff;
+    ptr->OP_REG5 = (uint32_t) fir_xfer->dst;
+
+    ffa_enable(ptr);
+}
+
+static hpm_stat_t get_fft_error_kind(uint32_t ffa_status)
+{
+    hpm_stat_t status;
+    if (IS_HPM_BITMASK_SET(ffa_status, FFA_ERROR_MASKS)) {
+        if (IS_HPM_BITMASK_SET(ffa_status, FFA_STATUS_FIR_OV_MASK)) {
+            status = status_ffa_fir_overflow;
+        } else if (IS_HPM_BITMASK_SET(ffa_status, FFA_STATUS_FFT_OV_MASK)) {
+            status = status_ffa_fft_overflow;
+        } else if (IS_HPM_BITMASK_SET(ffa_status, FFA_STATUS_WR_ERR_MASK)) {
+            status = status_ffa_write_error;
+        } else if (IS_HPM_BITMASK_SET(ffa_status, FFA_STATUS_RD_NXT_ERR_MASK)) {
+            status = status_ffa_read_next_error;
+        } else {
+            status = status_ffa_read_error;
+        }
+    } else {
+        status = status_success;
+    }
+    return status;
+}
+
+hpm_stat_t ffa_calculate_fft_blocking(FFA_Type *ptr, fft_xfer_t *fft_xfer)
+{
+    hpm_stat_t status = status_invalid_argument;
+    do {
+        HPM_BREAK_IF((ptr == NULL) || (fft_xfer == NULL) || !is_point_num_valid(fft_xfer->num_points));
+
+        fft_xfer->interrupt_mask = 0;
+
+        ffa_start_fft(ptr, fft_xfer);
+
+        while (!IS_HPM_BITMASK_SET(ptr->STATUS, FFA_STATUS_OP_CMD_DONE_MASK)) {
+        }
+
+        uint32_t ffa_status = ptr->STATUS;
+        status = get_fft_error_kind(ffa_status);
+    } while (false);
+
+    return status;
+}
+
+hpm_stat_t ffa_calculate_fir_blocking(FFA_Type *ptr, fir_xfer_t *fir_xfer)
+{
+    hpm_stat_t status = status_invalid_argument;
+    uint32_t i, data_size, buffer_size, input_size, num;
+    fir_xfer_t xfer = { 0 };
+
+    do {
+        HPM_BREAK_IF((ptr == NULL) || (fir_xfer == NULL));
+        switch (fir_xfer->data_type) {
+#if defined(HPM_IP_FEATURE_FFA_FP32) && HPM_IP_FEATURE_FFA_FP32
+        case FFA_DATA_TYPE_COMPLEX_FP32:
+        case FFA_DATA_TYPE_REAL_FP32:
+#endif
+        case FFA_DATA_TYPE_REAL_Q31:
+        case FFA_DATA_TYPE_COMPLEX_Q31:
+            data_size = 4U;
+            break;
+        case FFA_DATA_TYPE_COMPLEX_Q15:
+        case FFA_DATA_TYPE_REAL_Q15:
+            data_size = 2U;
+            break;
+        default:
+            return status;
+        }
+        buffer_size = FFA_SOC_BUFFER_MAX / data_size;
+        if (fir_xfer->input_taps > buffer_size) {
+            input_size = buffer_size - fir_xfer->coef_taps + 1;
+            num = fir_xfer->input_taps / input_size;
+            for (i = 0; i <= num; i++) {
+                if (i == num) {
+                    xfer.input_taps = fir_xfer->input_taps - i * input_size;
+                    if (xfer.input_taps == 0) {
+                        break;
+                    }
+                } else {
+                    xfer.input_taps = buffer_size;
+                }
+                xfer.data_type = fir_xfer->data_type;
+                xfer.dst = (uint8_t *)fir_xfer->dst + i * input_size * data_size;
+                xfer.src = (uint8_t *)fir_xfer->src + i * input_size * data_size;
+                xfer.coeff = fir_xfer->coeff;
+                xfer.interrupt_mask = 0;
+                xfer.coef_taps = fir_xfer->coef_taps;
+
+                ffa_start_fir(ptr, &xfer);
+
+                while (!IS_HPM_BITMASK_SET(ptr->STATUS, FFA_STATUS_OP_CMD_DONE_MASK)) {
+                }
+                uint32_t ffa_status = ptr->STATUS;
+                status = get_fft_error_kind(ffa_status);
+                if (status != status_success) {
+                    return status;
+                }
+            }
+        } else {
+
+            fir_xfer->interrupt_mask = 0;
+
+            ffa_start_fir(ptr, fir_xfer);
+
+            while (!IS_HPM_BITMASK_SET(ptr->STATUS, FFA_STATUS_OP_CMD_DONE_MASK)) {
+            }
+
+            uint32_t ffa_status = ptr->STATUS;
+            status = get_fft_error_kind(ffa_status);
+        }
+    } while (false);
+
+    return status;
+}
+
+void ffa_build_fir_chained_desc(ffa_chained_desc_t *desc,
+                                fir_xfer_t *fir_xfer,
+                                ffa_chained_desc_t *next_desc,
+                                uint8_t cmd_len)
+{
+    assert((desc != NULL) && (fir_xfer != NULL));
+
+    uint32_t op_ctrl = FFA_OP_CTRL_EN_MASK;
+    uint32_t op_cmd = FFA_OP_CMD_CMD_SET(FFA_OPCMD_FIR) |
+                      FFA_OP_CMD_IND_TYPE_SET(fir_xfer->data_type) |
+                      FFA_OP_CMD_OUTD_TYPE_SET(fir_xfer->data_type) |
+                      FFA_OP_CMD_COEF_TYPE_SET(fir_xfer->data_type);
+
+    if (next_desc != NULL) {
+        /* NXT_ADDR is at bit[31:2], address is already 4-byte aligned */
+        op_ctrl |= FFA_OP_CTRL_NXT_EN_MASK | ((uint32_t)next_desc & FFA_OP_CTRL_NXT_ADDR_MASK);
+        op_cmd |= FFA_OP_CMD_NXT_CMD_LEN_SET(cmd_len);
+    }
+    desc->op_ctrl = op_ctrl;
+    desc->op_cmd = op_cmd;
+
+    desc->op_reg0 = FFA_OP_FIR_MISC_FIR_COEF_TAPS_SET(fir_xfer->coef_taps);
+
+#if defined(HPM_IP_FEATURE_FFA_FP32) && HPM_IP_FEATURE_FFA_FP32
+    desc->op_reg1 = FFA_OP_FIR_MISC1_OUTD_MEM_BLK_SET(0) |
+                    FFA_OP_FIR_MISC1_COEF_MEM_BLK_SET(0) |
+                    FFA_OP_FIR_MISC1_IND_MEM_BLK_SET(1) |
+                    FFA_OP_FIR_MISC1_FIR_DATA_TAPS_SET(fir_xfer->input_taps);
+#else
+    desc->op_reg1 = FFA_OP_FIR_MISC1_OUTD_MEM_BLK_SET(0) |
+                    FFA_OP_FIR_MISC1_COEF_MEM_BLK_SET(1) |
+                    FFA_OP_FIR_MISC1_IND_MEM_BLK_SET(2) |
+                    FFA_OP_FIR_MISC1_FIR_DATA_TAPS_SET(fir_xfer->input_taps);
+#endif
+
+    desc->op_reg2 = 0xFFFFFFFFUL;
+    desc->op_reg3 = (uint32_t)fir_xfer->src;
+    desc->op_reg4 = (uint32_t)fir_xfer->coeff;
+    desc->op_reg5 = (uint32_t)fir_xfer->dst;
+    desc->op_reg6 = 0;
+    desc->op_reg7 = 0;
+    /* op_reg6~7 not used by FIR, keep consistent with ffa_start_fir */
+}
+
+void ffa_build_fft_chained_desc(ffa_chained_desc_t *desc,
+                                fft_xfer_t *fft_xfer,
+                                ffa_chained_desc_t *next_desc,
+                                uint8_t cmd_len)
+{
+    assert((desc != NULL) && (fft_xfer != NULL) && is_point_num_valid(fft_xfer->num_points));
+
+    uint32_t op_ctrl = FFA_OP_CTRL_EN_MASK;
+    uint32_t op_cmd = FFA_OP_CMD_CMD_SET(FFA_OPCMD_FFT) |
+                      FFA_OP_CMD_IND_TYPE_SET(fft_xfer->src_data_type) |
+                      FFA_OP_CMD_OUTD_TYPE_SET(fft_xfer->dst_data_type);
+
+    if (next_desc != NULL) {
+        /* NXT_ADDR is at bit[31:2], address is already 4-byte aligned */
+        op_ctrl |= FFA_OP_CTRL_NXT_EN_MASK | ((uint32_t)next_desc & FFA_OP_CTRL_NXT_ADDR_MASK);
+        op_cmd |= FFA_OP_CMD_NXT_CMD_LEN_SET(cmd_len);
+    }
+    desc->op_ctrl = op_ctrl;
+    desc->op_cmd = op_cmd;
+
+    uint32_t fft_len = get_fft_misc_reg_fft_len(fft_xfer->num_points);
+    uint32_t fft_misc = FFA_OP_FFT_MISC_FFT_LEN_SET(fft_len) |
+                        FFA_OP_FFT_MISC_TMP_BLK_SET(1) |
+                        FFA_OP_FFT_MISC_IND_BLK_SET(0);
+    if (fft_xfer->is_ifft) {
+        fft_misc |= FFA_OP_FFT_MISC_IFFT_MASK;
+    }
+    desc->op_reg0 = fft_misc;
+    desc->op_reg1 = 0;
+    desc->op_reg2 = (uint32_t)fft_xfer->src;
+    desc->op_reg3 = 0;
+    desc->op_reg4 = (uint32_t)fft_xfer->dst;
+    desc->op_reg5 = 0;
+    desc->op_reg6 = 0;
+    desc->op_reg7 = 0;
+    /* op_reg5~7 not used by FFT, keep consistent with ffa_start_fft */
+}
+
+void ffa_start_chained(FFA_Type *ptr, ffa_chained_desc_t *first_desc)
+{
+    assert((ptr != NULL) && (first_desc != NULL));
+
+    /* Disable FFA without soft reset to preserve register state */
+    ptr->CTRL &= ~FFA_CTRL_EN_MASK;
+
+    /*
+     * Write registers according to operation type to keep consistent with normal mode.
+     * FFT: uses op_reg0~4 (but op_reg3 is not written in ffa_start_fft)
+     * FIR: uses op_reg0~5
+     */
+    ptr->OP_CTRL = first_desc->op_ctrl;
+    ptr->OP_CMD = first_desc->op_cmd;
+    ptr->OP_REG0 = first_desc->op_reg0;
+    ptr->OP_REG1 = first_desc->op_reg1;
+    ptr->OP_REG2 = first_desc->op_reg2;
+
+    if (FFA_OP_CMD_CMD_GET(first_desc->op_cmd) == FFA_OPCMD_FIR) {
+        /* FIR uses op_reg3~5 */
+        ptr->OP_REG3 = first_desc->op_reg3;
+        ptr->OP_REG4 = first_desc->op_reg4;
+        ptr->OP_REG5 = first_desc->op_reg5;
+    } else {
+        /* FFT uses op_reg4 only (op_reg3 not used) */
+        ptr->OP_REG4 = first_desc->op_reg4;
+    }
+    /* op_reg6~7 reserved for future use */
+
+    ffa_enable(ptr);
+}
+
+hpm_stat_t ffa_calculate_chained_blocking(FFA_Type *ptr, ffa_chained_desc_t *first_desc)
+{
+    hpm_stat_t status = status_invalid_argument;
+
+    do {
+        HPM_BREAK_IF((ptr == NULL) || (first_desc == NULL));
+
+        ffa_start_chained(ptr, first_desc);
+        while (!IS_HPM_BITMASK_SET(ptr->STATUS, FFA_STATUS_OP_CMD_DONE_MASK)) {
+        }
+        while (ptr->OP_CTRL & FFA_OP_CTRL_NXT_ADDR_MASK) {
+        }
+        while (!IS_HPM_BITMASK_SET(ptr->STATUS, FFA_STATUS_OP_CMD_DONE_MASK)) {
+        }
+
+        uint32_t ffa_status = ptr->STATUS;
+        status = get_fft_error_kind(ffa_status);
+    } while (false);
+
+    return status;
+}
