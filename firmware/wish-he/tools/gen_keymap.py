@@ -479,6 +479,9 @@ def cmd_gen():
         "productId": PID,
         "matrix": {"rows": ROWS, "cols": COLS},
         "layouts": layouts,
+        # 키 선택기에 RGB 키코드(RGB_TOG · RGB_MODE_*)를 띄운다. 이게 없으면 웹앱에서
+        # 조명 키를 고를 수가 없다 — 공장 기본값의 Fn+B / Fn+N 과 짝이다.
+        "keycodes": ["qmk_rgb_matrix_keycodes"],
     }
 
     # 커스텀 메뉴 — 있으면 그대로 싣는다. VIA 가 이걸 보고 설정 UI 를 그린다.
@@ -787,13 +790,19 @@ def gen_qmk(kle, keys, names):
 
 
 # FN 레이어에 얹을 것 — 숫자열은 F키, WASD 쪽은 방향키.
+#
+# B/N 은 조명이다 (원래 PGDN/END 였다). 나란히 붙어 있어 손이 기억하기 쉽고,
+# 조명은 자주 만지는데 EEPROM 이 지워지면 VIA 로 넣은 것은 같이 날아간다 —
+# 공장 기본값에 두어야 초기화 뒤에도 남는다.
 FN_MAP = {
     "ESC": "KC_GRV",
     "1": "KC_F1", "2": "KC_F2", "3": "KC_F3", "4": "KC_F4", "5": "KC_F5", "6": "KC_F6",
     "7": "KC_F7", "8": "KC_F8", "9": "KC_F9", "0": "KC_F10", "MINS": "KC_F11",
     "EQL": "KC_F12", "BSPC": "KC_DEL",
     "I": "KC_UP", "J": "KC_LEFT", "K": "KC_DOWN", "L": "KC_RGHT",
-    "H": "KC_HOME", "N": "KC_END", "Y": "KC_PGUP", "B": "KC_PGDN",
+    "H": "KC_HOME", "Y": "KC_PGUP",
+    "B": "RGB_TOG",             # 조명 켜고 끄기
+    "N": "RGB_MODE_FORWARD",    # 다음 모드
 }
 
 
