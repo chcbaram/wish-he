@@ -36,6 +36,10 @@ BUILD = ROOT / "build/wish60-he.bin"
 RELEASE = ROOT / "release"
 MANIFEST = RELEASE / "manifest.json"
 
+# 웹앱(via-he)의 public/firmware/ 아래 이 보드가 쓰는 칸 이름.
+# 거기 manifest.json 은 **보드 목록**이고, 이 파일이 만드는 목록은 그 아래로 들어간다.
+BOARD_DIR = "wish60-he"
+
 APP_MAGIC = b"HPM\n"
 
 
@@ -100,8 +104,10 @@ def main():
     print(f"  갱신: {MANIFEST.relative_to(ROOT)}  (버전 {len(man['firmwares'])}개)")
     print()
     print("  ↳ 웹앱에도 옮겨야 한다:")
-    print(f"       rsync -a {RELEASE.relative_to(ROOT)}/ <via-he>/public/firmware/")
+    print(f"       rsync -a {RELEASE.relative_to(ROOT)}/ <via-he>/public/firmware/{BOARD_DIR}/")
     print("     (두 저장소가 따로 움직여 자동으로 잇지 않는다)")
+    print(f"     ★ 보드마다 칸이 나뉜다. 웹앱의 public/firmware/manifest.json 은")
+    print(f"       보드 목록이고, 여기 것은 그 아래 {BOARD_DIR}/manifest.json 으로 들어간다.")
 
 
 if __name__ == "__main__":
