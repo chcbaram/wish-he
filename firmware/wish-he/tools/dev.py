@@ -49,19 +49,32 @@ def cli(cmds, wait=1.2):
       동안 재는 명령을 기본 1.2초만 기다리면 **출력이 잘린 채로 돌아온다** —
       아무것도 안 나온 것처럼 보여서 명령이 실패한 줄 알게 된다.
     """
+    for c, out in cli_get(cmds, wait):
+        print(f"$ {c}")
+        print(out)
+        print("-" * 60)
+
+
+def cli_get(cmds, wait=1.2):
+    """
+    같은 일을 하되 출력을 돌려준다 — 다른 도구가 파싱해 쓰라고 둔다.
+
+    한 번 열고 여러 명령을 던진다. 포트를 명령마다 여닫으면 그때마다 0.3초를
+    버리고, CDC 재열거가 끼면 첫 출력을 통째로 놓친다.
+    """
     import serial
 
     s = serial.Serial(PORT, 115200, timeout=0.4)
     time.sleep(0.3)
     s.reset_input_buffer()
 
+    out = []
     for c in cmds:
         s.write((c + "\r\n").encode())
         time.sleep(wait)
-        print(f"$ {c}")
-        print(s.read(200000).decode("utf-8", "replace").strip())
-        print("-" * 60)
+        out.append((c, s.read(200000).decode("utf-8", "replace").strip()))
     s.close()
+    return out
 
 
 # ── 설정 채널 (HID) ──────────────────────────────────────────────────────
