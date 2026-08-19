@@ -134,9 +134,19 @@ def burst():
 
     ★ 전환 직후가 위험하다. 전환은 플래시에 "지금 몇 번" 을 남기고, 그 6ms 동안
       인터럽트가 꺼져 있다. 그때 전송 완료를 놓치면 응답 하나가 조용히 사라진다.
+
+    ★ 시험 전 프로파일로 되돌려 놓는다.
+
+      전환이 플래시에 남으므로 그냥 끝내면 **사용자가 쓰던 프로파일이 4번으로
+      바뀐 채 남는다.** 시험 도구가 조용히 설정을 갈아 놓으면, 다음에 키보드를
+      칠 때 감이 달라져도 원인을 짚을 수가 없다. 실제로 그렇게 남긴 적이 있다.
     """
     h = _open()
     fails = 0
+
+    r, _ = _cmd(h, [0xC8, 0])                 # 상태만 — 지금 몇 번인가
+    orig = r[2] if r else None
+    print(f"시험 전 프로파일 : {orig + 1 if orig is not None else '?'}")
 
     for p in range(4):
         r, dt = _cmd(h, [0xC8, 1, p])
@@ -160,6 +170,15 @@ def burst():
         print(f"   왕복 {n} 회 완료")
 
     print(f"\n실패 {fails}건" + ("  ← 정상" if fails == 0 else "  ← 파고들 것"))
+
+    if orig is not None:
+        r, _ = _cmd(h, [0xC8, 1, orig])
+        now = r[2] if r else None
+        ok = (now == orig)
+        print(f"프로파일 복원   : {orig + 1} 번  {'OK' if ok else '[E_] 실패 — 손으로 되돌릴 것'}")
+    else:
+        print("[E_] 시험 전 프로파일을 못 읽어 복원하지 못했다 — 손으로 되돌릴 것")
+
     h.close()
 
 
