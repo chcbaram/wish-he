@@ -2118,6 +2118,24 @@ static void keysThrRebuild(void)
     }
 
     /*
+     * ★ 해제지점은 0 이면 안 된다 — 그러면 키가 영영 안 떨어진다.
+     *
+     *   판정에서 d 는 0 미만으로 안 내려간다(데드존 가지가 자른다). 그래서 절대
+     *   해제인 `d < t->release` 는 t->release 가 0 이면 `0 < 0` 이라 **영원히
+     *   거짓이다.** 손을 다 떼도 눌린 채로 남는다.
+     *
+     *   전역 setter(keysSetReleaseUm)는 0 을 막는데 웹앱이 쓰는 키별 명령(0xC5)은
+     *   안 막았다. 게다가 press_um 이 0 이면 위의 순서 보정도 통째로 건너뛰어져
+     *   0 이 그대로 살아남는다. 실제로 재현했다 — 0xC5 로 둘 다 0 을 쏘고 주입으로
+     *   눌렀다 떼니 깊이 12(0.05mm)에서 눌린 채로 굳었다.
+     *
+     *   막는 자리를 여기로 둔다. **표를 만드는 곳이 하나뿐이라** 어느 경로로
+     *   들어와도 걸린다 — VIA, 플래시에서 읽은 옛 기록, 기본값, 앞으로 생길 길까지.
+     *   입력 검사를 명령마다 흩어 두면 새 명령을 더할 때 반드시 하나를 빠뜨린다.
+     */
+    if (t->release == 0) t->release = 1;
+
+    /*
      * 데드존은 해제지점을 못 넘는다.
      *
      * ★ 순서가 무너지면 **앞의 값이 거짓이 된다.**
@@ -3674,8 +3692,21 @@ bool keysSetKeyCfg(uint32_t idx, const uint8_t *p_buf, uint32_t len)
   {
     keys_key_set_t *k = KS(i);
 
-    k->press_um      = keysClampUm(keysGet16(&p_buf[0]));
-    k->release_um    = keysClampUm(keysGet16(&p_buf[2]));
+    /*
+     * ★ 0 은 값이 아니라 "안 보냈다" 로 본다 — 그 자리를 안 건드린다.
+     *
+     *   입력지점 0 인 키는 뜻이 없다. 그런데 그대로 받으면 아래 순서 보정이
+     *   통째로 건너뛰어지고(press_um > 0 조건), 표를 만들 때 t->release 가 0 으로
+     *   남아 **손을 다 떼도 키가 안 떨어진다.** d 는 0 미만으로 안 내려가므로
+     *   `d < 0` 이 영원히 거짓이기 때문이다. 실제로 재현했다.
+     *
+     *   전역 setter(keysSetPressUm/keysSetReleaseUm)는 이미 0 을 막고 있었다.
+     *   웹앱이 쓰는 이 길만 안 막혀 있었다 — 같은 뜻으로 맞춘다.
+     *
+     *   sw_type 이 이미 같은 방식이다(유효할 때만 쓴다). 결을 따른다.
+     */
+    if (keysGet16(&p_buf[0]) > 0) k->press_um   = keysClampUm(keysGet16(&p_buf[0]));
+    if (keysGet16(&p_buf[2]) > 0) k->release_um = keysClampUm(keysGet16(&p_buf[2]));
     k->rt_press_um   = keysClampUm(keysGet16(&p_buf[4]));
     k->rt_release_um = keysClampUm(keysGet16(&p_buf[6]));
     k->bottom_um     = keysClampUm(keysGet16(&p_buf[8]));

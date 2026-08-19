@@ -177,6 +177,64 @@ def t_drift_alive():
     return None
 
 
+# ── 3-b. 문턱 방어 ───────────────────────────────────────────────────────
+
+KEYCFG_OFF = 3          # hid_if.h 의 HID_KEYCFG_OFF
+KEYCFG_LEN = 14         # HID_KEYCFG_LEN
+
+
+def keycfg(idx, vals=None):
+    """키별 설정을 웹앱과 같은 길(0xC5)로 읽고 쓴다."""
+    h = dev._open()
+    try:
+        if vals is not None:
+            dev._cmd(h, [0xC5, 0x01, idx] + list(vals))
+            time.sleep(0.3)
+        r, _ = dev._cmd(h, [0xC5, 0x00, idx])
+        return list(r[KEYCFG_OFF:KEYCFG_OFF + KEYCFG_LEN])
+    finally:
+        h.close()
+
+
+@test("guard", "해제지점 0 을 쏴도 키가 떨어진다 (A3)")
+def t_release_zero():
+    """
+    ★ 웹앱이 쓰는 길에는 방어가 없었다.
+
+      전역 setter 는 0 을 막는데 키별 명령(0xC5)은 안 막았고, press_um 이 0 이면
+      순서 보정까지 건너뛰어져 t->release 가 0 으로 남았다. d 는 0 미만으로 안
+      내려가므로 `d < 0` 이 영원히 거짓 — 손을 다 떼도 안 떨어졌다.
+    """
+    idx = CELL_ST * 8 + CELL_CH
+    orig = keycfg(idx)
+
+    try:
+        bad = list(orig)
+        bad[0] = bad[1] = 0            # press_um  = 0
+        bad[2] = bad[3] = 0            # release_um = 0
+        keycfg(idx, bad)
+
+        say("keys inject %d %d d 150" % (CELL_ST, CELL_CH))
+        d, pressed = depth()
+        if not pressed:
+            return f"누름부터 안 잡힌다 (깊이 {d})"
+
+        say("keys inject %d %d d 0" % (CELL_ST, CELL_CH))
+        time.sleep(0.5)
+        d, pressed = depth()
+        if pressed:
+            return f"손을 뗐는데(깊이 {d}) 안 떨어진다 — 해제지점이 0 이다"
+        return None
+    finally:
+        # ★ 순서가 중요하다 — 설정을 먼저 되돌리고 주입을 나중에 끈다.
+        #
+        #   반대로 하면 그 사이 몇 초 동안 **해제지점이 0 인 채로 리포트가 살아난다.**
+        #   주입 중에는 keysIsReportEnabled() 가 막아 주지만 끄는 순간 풀린다.
+        #   실제로 이 순서 때문에 스턱 키가 호스트로 새어 나갔다.
+        keycfg(idx, orig)
+        say("keys inject off")
+
+
 # ── 4. 기준값 래치 ───────────────────────────────────────────────────────
 
 @test("latch", "상향 글리치가 기준값을 영구히 끌어올린다 (A2)", xfail=True)
@@ -205,6 +263,26 @@ def t_latch_stuck():
     return None
 
 
+# ── 4-b. 뒷정리 확인 ─────────────────────────────────────────────────────
+
+@test("clean", "시험이 끝난 뒤 눌린 키가 없다")
+def t_no_stuck():
+    """
+    ★ 시험 자체가 스턱 키를 만들 수 있다.
+
+      주입 중에는 리포트가 막히지만 끄는 순간 풀린다. 그때 문턱이 이상한 상태로
+      남아 있으면 그 키가 눌린 채 호스트로 나간다 — 터미널에 글자가 쏟아진다.
+      실제로 한 번 냈다. 마지막에 반드시 확인한다.
+    """
+    say("keys inject off")
+    a = re.search(r"EXK\s+ready \d+\s+sent (\d+)", say("usb stat"))
+    time.sleep(2.5)
+    b = re.search(r"EXK\s+ready \d+\s+sent (\d+)", say("usb stat"))
+    if a and b and int(b.group(1)) != int(a.group(1)):
+        return "아무도 안 치는데 리포트가 나간다 — 키가 눌린 채로 남았다"
+    return None
+
+
 # ── 5. 성능 ──────────────────────────────────────────────────────────────
 
 @test("perf", "스캔이 예산 안이다")
@@ -215,12 +293,27 @@ def t_perf():
     return None if us <= 50 else f"keysUpdate {us}us — 예산 대비 너무 크다"
 
 
-@test("perf", "태스크가 125us 를 안 넘는다")
+@test("perf", "태스크 평균이 예산 안이다")
 def t_task():
-    m = re.search(r"125us 초과\s+:\s+(\d+) 회", say("qmk info"))
-    n = int(m.group(1))
-    # 플래시 쓰기(설정 저장·프로파일 전환) 중에는 정상적으로 난다
-    return None if n < 50 else f"125us 초과 {n} 회 — 파고들 것"
+    """
+    ★ 125us 초과 **횟수**로는 판정하지 않는다.
+
+      플래시 쓰기(설정 저장·프로파일 전환·굽기)는 XIP 라 인터럽트를 막아야 하고,
+      그동안 태스크가 통째로 멎는다. 시험 자체가 설정을 쓰므로 이 시험이 그 초과를
+      만들어 낸다 — 그걸로 판정하면 늘 빨간불이다.
+
+      평균과 최대를 본다. 평균이 늘면 진짜 회귀다.
+    """
+    o = say("qmk info")
+    m = re.search(r"keyboard_task : last \d+ us, avg (\d+) us, max (\d+) us", o)
+    if not m:
+        return "qmk info 를 못 읽었다"
+    avg, mx = int(m.group(1)), int(m.group(2))
+    if avg > 10:
+        return f"태스크 평균 {avg}us — 실측 2us 대비 너무 크다"
+    if mx > 2000:
+        return f"태스크 최대 {mx}us — 플래시 쓰기(약 1.7ms)보다 크다"
+    return None
 
 
 # ── 표로 찍기 ────────────────────────────────────────────────────────────
