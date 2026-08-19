@@ -3,7 +3,9 @@
 장치에 직접 붙어 확인하는 도구 — CLI(CDC) 와 설정 채널(HID) 양쪽.
 
     python3 tools/dev.py cli "keys info" "keys prof"     CLI 명령을 던진다
+    python3 tools/dev.py cli -w 12 "keys noise 10000"   오래 도는 명령은 -w 로 기다린다
     python3 tools/dev.py stat                            진단 통계를 읽는다
+    python3 tools/dev.py stat clear                      읽고 0 으로 (깨끗한 창)
     python3 tools/dev.py hw                              하드웨어·펌웨어 제원
     python3 tools/dev.py ver                             지금 올라간 펌웨어 버전
     python3 tools/dev.py burst                           대량 왕복 — 응답 소실 시험
@@ -39,7 +41,14 @@ PORT = "/dev/cu.usbmodem00015"
 
 # ── CLI (CDC) ────────────────────────────────────────────────────────────
 
-def cli(cmds):
+def cli(cmds, wait=1.2):
+    """
+    CLI 명령을 던지고 출력을 회수한다.
+
+    ★ 오래 도는 명령은 wait 를 늘려야 한다. `keys noise 10000` 처럼 장치가 10초
+      동안 재는 명령을 기본 1.2초만 기다리면 **출력이 잘린 채로 돌아온다** —
+      아무것도 안 나온 것처럼 보여서 명령이 실패한 줄 알게 된다.
+    """
     import serial
 
     s = serial.Serial(PORT, 115200, timeout=0.4)
@@ -48,9 +57,9 @@ def cli(cmds):
 
     for c in cmds:
         s.write((c + "\r\n").encode())
-        time.sleep(1.2)
+        time.sleep(wait)
         print(f"$ {c}")
-        print(s.read(20000).decode("utf-8", "replace").strip())
+        print(s.read(200000).decode("utf-8", "replace").strip())
         print("-" * 60)
     s.close()
 
@@ -95,9 +104,12 @@ def ver():
     h.close()
 
 
-def stat():
+def stat(clear=False):
     """
     진단 통계. 한 프레임이 32바이트라 페이지로 나눠 온다 — 페이지당 LE32 일곱 개.
+
+    clear 를 주면 읽고 나서 0 으로 되돌린다. **깨끗한 창**을 잡을 때 쓴다 —
+    누적값만 보면 "언제부터의 수치인가" 를 못 가려 시간당 빈도를 못 낸다.
     """
     names = ["scan_us", "scan_max", "scan_over", "scan_cnt", "timeout",
              "cal_ms", "calibrated", "task_us", "task_max", "task_avg",
@@ -105,10 +117,12 @@ def stat():
     h = _open()
     v = []
     for page in (0, 1):
-        r, _ = _cmd(h, [0xC9, 0, page])
+        r, _ = _cmd(h, [0xC9, 1 if clear else 0, page])
         v += [_u32(r, 4, i) for i in range(7)]
     for n, x in zip(names, v):
         print(f"  {n:12s} {x:,}")
+    if clear:
+        print("  (0 으로 되돌렸다)")
     h.close()
 
 
@@ -188,9 +202,14 @@ if __name__ == "__main__":
 
     what = sys.argv[1]
     if what == "cli":
-        cli(sys.argv[2:] or ["keys info"])
+        rest = sys.argv[2:]
+        wait = 1.2
+        if len(rest) >= 2 and rest[0] == "-w":
+            wait = float(rest[1])
+            rest = rest[2:]
+        cli(rest or ["keys info"], wait)
     elif what == "stat":
-        stat()
+        stat("clear" in sys.argv[2:])
     elif what == "hw":
         hw()
     elif what == "ver":

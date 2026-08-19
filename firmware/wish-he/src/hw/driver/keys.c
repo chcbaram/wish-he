@@ -2521,6 +2521,11 @@ void keysClearStat(void)
   scan_over_cnt = 0;
   scan_cnt      = 0;
   timeout_cnt   = 0;
+
+  /* 기준값 사건도 같이 — 깨끗한 창을 잡아야 시간당 몇 번인지 잴 수 있다 */
+  latch_cnt     = 0;
+  drift_up_cnt  = 0;
+  drift_dn_cnt  = 0;
 }
 
 uint32_t keysGetScanTime(void)
