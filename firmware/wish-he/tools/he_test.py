@@ -245,22 +245,29 @@ def t_latch_stuck():
       +100/표본 글리치 뒤 정상값으로 되돌려도 깊이가 안 줄어든다. d 가 밴드 밖이라
       하향 보정이 아예 안 돌기 때문이다. 회복은 재보정뿐이다.
     """
-    say("keys inject %d %d d 0" % (CELL_ST, CELL_CH))
-    base_raw = int(re.search(r"raw\s+(\d+)", say("keys inject")).group(1))
+    try:
+        say("keys inject %d %d d 0" % (CELL_ST, CELL_CH))
+        base_raw = int(re.search(r"raw\s+(\d+)", say("keys inject")).group(1))
 
-    say("keys inject %d %d %d" % (CELL_ST, CELL_CH, base_raw + 100))
-    time.sleep(2)
-    say("keys inject %d %d %d" % (CELL_ST, CELL_CH, base_raw))
+        say("keys inject %d %d %d" % (CELL_ST, CELL_CH, base_raw + 100))
+        time.sleep(2)
+        say("keys inject %d %d %d" % (CELL_ST, CELL_CH, base_raw))
 
-    d0, _ = depth()
-    time.sleep(6)
-    d1, _ = depth()
+        d0, _ = depth()
+        time.sleep(6)
+        d1, _ = depth()
 
-    if d0 is None or d0 < DRIFT_BAND:
-        return f"글리치가 밴드를 못 넘겼다 (깊이 {d0}) — 시험 조건이 안 됐다"
-    if abs(d1 - d0) > DRIFT_STEP:
-        return f"기준값이 회복됐다 ({d0} -> {d1}) — 고쳐졌나?"
-    return None
+        if d0 is None or d0 < DRIFT_BAND:
+            return f"글리치가 밴드를 못 넘겼다 (깊이 {d0}) — 시험 조건이 안 됐다"
+        if abs(d1 - d0) > DRIFT_STEP:
+            return f"기준값이 회복됐다 ({d0} -> {d1}) — 고쳐졌나?"
+        return None
+    finally:
+        # ★ 이 시험은 **일부러 기준값을 갇히게 만든다.** 되돌리지 않으면 그 키가
+        #   실물에서도 눌린 것으로 남는다 — 실제로 X 키가 0.9mm 눌린 채로 남았다.
+        #   회복 수단이 재보정뿐인 것이 이 버그의 성질이므로 여기서 재보정한다.
+        say("keys inject off")
+        say("keys base", wait=3.0)
 
 
 # ── 4-b. 뒷정리 확인 ─────────────────────────────────────────────────────
@@ -280,6 +287,35 @@ def t_no_stuck():
     b = re.search(r"EXK\s+ready \d+\s+sent (\d+)", say("usb stat"))
     if a and b and int(b.group(1)) != int(a.group(1)):
         return "아무도 안 치는데 리포트가 나간다 — 키가 눌린 채로 남았다"
+    return None
+
+
+@test("clean", "기준값이 실제 값에 붙어 있다")
+def t_base_sane():
+    """
+    ★ "리포트가 안 나간다" 로는 못 잡는다.
+
+      기준값이 295 카운트 갇혀 있어도 입력지점(334)을 안 넘으면 리포트는 조용하다.
+      그런데 화면에는 **0.9mm 눌린 것으로** 보인다. 실제로 그렇게 남긴 적이 있다.
+
+      기준값(keys key)과 실제 값(keys dump)을 직접 견준다. 아무도 안 누르고 있으면
+      둘이 잡음 폭 안에서 붙어 있어야 한다.
+    """
+    m = re.search(r"기준값 (\d+)", say("keys key %d %d" % (CELL_ST, CELL_CH)))
+    if not m:
+        return "기준값을 못 읽었다"
+    base = int(m.group(1))
+
+    o = say("keys dump", wait=3.0)
+    row = re.search(r"^\s+s%d\s+(.+)$" % CELL_ST, o, re.M)
+    if not row:
+        return "keys dump 를 못 읽었다"
+    raw = int(row.group(1).split()[CELL_CH])
+
+    d = base - raw
+    # 실측 잡음 p-p 가 누적 눈금 44 다. 그 두 배까지는 정상으로 본다
+    if abs(d) > 90:
+        return f"기준값이 {d} 카운트 떠 있다 (기준 {base}, 실제 {raw}) — 갇혔다"
     return None
 
 
@@ -412,9 +448,11 @@ def main():
               f"{pad(f'통과 {n_ok} · 실패 {n_bad} · 알려진 문제 {n_x}', COL_N + COL_R)}"
               f"{time.time() - t_all:5.1f}s")
     finally:
-        say("keys inject off",
-            "keys cfg press %d" % press0,
+        # 순서 — 설정 먼저, 주입 나중 (그 사이 리포트가 살아나면 안 된다)
+        say("keys cfg press %d" % press0,
             "keys cfg release %d" % release0)
+        say("keys inject off")
+        say("keys base", wait=3.0)      # 갇힌 기준값이 남지 않게
 
     if bad:
         print("\n파고들 것")
@@ -423,7 +461,7 @@ def main():
     else:
         print("\n문제 없다" + (f"  (알려진 문제 {n_x} 건은 그대로 재현됨)" if n_x else ""))
 
-    print("\n설정은 시험 전 값으로 되돌려 놓았다")
+    print("\n설정을 되돌리고 기준값을 다시 잡았다")
     return 1 if n_bad else 0
 
 
