@@ -919,14 +919,37 @@ typedef struct
 
 static keys_thr_t thr[KEYS_MAX];
 
+/*
+ * 키별 스트로크의 역수 — 설정·보정이 바뀔 때 다시 만든다 (keysThrRebuild).
+ *
+ * u = d * 32767 / stroke 의 나눗셈을 없앤다. 시프트를 12 로 두면 남는 곱이
+ * 최대 12285 x 89475 = 1.1e9 라 32비트 안이고, u 오차는 32767 분의 1 이다 —
+ * 우리 단위(0.01mm)의 양자화보다 작아서 안 보인다.
+ */
+#define KEYS_STROKE_RECIP_SH   12
+
+static uint32_t stroke_recip[KEYS_MAX];
+
+static void            keysInitPins(void);
+static bool            keysInitAdc(ADC16_Type *ptr, const uint8_t *seq_ch, volatile uint32_t *buf);
+static ATTR_RAMFUNC void keysTrack(uint32_t step);
+static inline void     keysFilter(uint32_t step, uint32_t ch, uint32_t packed);
 static void            keysThrRebuild(void);
 static void            keysCfgFanout(void);
+static bool            keysCfgLoad(void);
+static bool            keysCfgSave(void);
 static uint16_t        keysStrokeCnt(uint32_t i);
 static inline uint8_t  keysSwType(uint32_t i);
 static void            keysSwRefBuiltinInit(void);
 static void            keysSwRefCustomInit(void);
 static void            keysCurveRecipInit(void);
 static uint16_t        keysTravelUmOf(uint32_t i);
+static void            keysCalRejectOutlier(void);
+
+#if CLI_USE(HW_KEYS)
+static void cliKeys(cli_args_t *args);
+#endif
+
 
 /*
  * RT 반응 행정의 하한 (카운트).
@@ -993,6 +1016,7 @@ static bool     is_init      = false;
 static uint32_t timeout_cnt  = 0;
 static uint32_t cal_time_ms  = 0;
 static uint32_t drift_ms     = 0;
+static bool     drift_due    = false;
 static bool     is_cfg_loaded = false;
 
 /*
@@ -1023,302 +1047,66 @@ static uint16_t cal_min_tmp[KEYS_MAX];
  */
 static uint16_t cal_max_tmp[KEYS_MAX];
 
-/*
- * 지정한 두 키코드가 동시에 눌려 있는가.
- *
- * 보정 중에는 리포트를 막아두므로 키 조합을 종료 신호로 쓸 수 있다. 터미널 없이
- * 키보드만 연결한 상태에서도 끝낼 수 있어야 하기 때문이다.
- *
- * 자리를 박아두지 않고 키맵에서 찾는다 — 키맵이 바뀌어도 따라간다.
- */
-/*
- * ★ 루프 명령은 키보드만으로도 빠져나올 수 있어야 한다.
- *
- *   report_off 를 켜는 명령(map·learn·layout·show·bar·watch·raw)이 도는 동안에는
- *   키보드가 리포트를 안 보낸다. 그런데 콘솔은 그 키보드로 치는 터미널이다 —
- *   Ctrl-C 를 칠 방법이 없어서 USB 를 뽑는 수밖에 없었다. cal 만 자체 탈출이
- *   있었는데, 나머지도 같아야 한다.
- *
- *   ★ Esc 단독이 아니라 Ctrl+Esc 다.
- *
- *     처음에 Esc 단독으로 만들었더니 keys cal 이 망가졌다. 보정은 Esc 키까지
- *     전부 눌러야 하는데 그 순간 빠져나가 버린다. cal 이 원래 쓰던 조합과 같게
- *     맞춘다 — 보정 중에 Ctrl 과 Esc 를 동시에 누를 일은 없다.
- */
-static bool keysComboHeld(uint8_t kc1, uint8_t kc2);
-
-static bool keysCliKeep(void)
-{
-  if (cliKeepLoop() == false) return false;
-
-  /* 리포트를 막는 동안에만 — 평소에는 Ctrl+Esc 가 호스트로 가야 한다 */
-  if (report_off && keysComboHeld(KEYS_MOD_KC, KEYS_CANCEL_KC)) return false;
-
-  return true;
-}
-
-static bool keysComboHeld(uint8_t kc1, uint8_t kc2)
-{
-  bool a = false;
-  bool b = false;
-
-  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
-  {
-    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
-    {
-      uint8_t kc;
-
-      if (keysGetPressed(st, c) == false) continue;
-
-      kc = keys_keymap[st][c];
-      if (kc == kc1) a = true;
-      if (kc == kc2) b = true;
-    }
-  }
-  return (a && b);
-}
-
-/*
- * ── 보정 핵 ────────────────────────────────────────────────────────────
- *
- * ★ CLI 루프 안에 있던 것을 밖으로 뺐다.
- *
- *   `keys cal` 이 수집·판정·저장을 한 함수 안에서 다 했다. CLI 로만 쓸 때는
- *   문제가 없었는데, 웹 도구에서 부르려니 통째로 다시 짜야 할 판이었다.
- *   같은 일을 두 벌 두면 반드시 갈라진다 — 핵을 빼서 둘이 나눠 쓰게 한다.
- *
- * 무압 기준값은 러닝 최대값이 늘 추적하므로 여기서 할 일이 없다. 바닥값만
- * 모은다 — 그건 실제로 끝까지 눌러야만 알 수 있다.
- */
-static bool cal_active = false;
-
-static bool keysCalIsDone(uint16_t row, uint16_t col);
-static bool keysCalSaveBlob(void);
-
-bool keysCalIsActive(void)
-{
-  return cal_active;
-}
-
-void keysCalStart(void)
-{
-  for (uint32_t i = 0; i < KEYS_MAX; i++)
-  {
-    cal_min_tmp[i] = 0xFFFF;
-    cal_max_tmp[i] = 0;
-  }
-  cal_active = true;
-}
-
-void keysCalCancel(void)
-{
-  cal_active = false;
-}
-
-/*
- * 표본 하나를 더한다. 스캔마다 불려도 되게 싸게 짰다 — 64칸 최소값 갱신뿐이다.
- * 켜져 있을 때만 도므로 평상시 비용은 분기 하나다.
- */
-void keysCalCollect(void)
-{
-  if (cal_active == false) return;
-
-  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
-  {
-    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
-    {
-      uint32_t i = st * KEYS_CH_MAX + c;
-      uint16_t v;
-
-      if (keysIsPresent(st, c) == false) continue;
-
-      v = raw[st][c];
-      if (v < cal_min_tmp[i])
-      {
-        cal_min_tmp[i] = v;
-        cal_max_tmp[i] = base[st][c];   /* 같은 순간의 기준값을 짝지어 둔다 */
-      }
-    }
-  }
-}
-
-uint32_t keysCalTotal(void)
-{
-  uint32_t n = 0;
-
-  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
-  {
-    for (uint32_t c = 0; c < KEYS_CH_MAX; c++) if (keysIsPresent(st, c)) n++;
-  }
-  return n;
-}
-
-uint32_t keysCalDone(void)
-{
-  uint32_t n = 0;
-
-  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
-  {
-    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
-    {
-      if (keysIsPresent(st, c) && keysCalIsDone(st, c)) n++;
-    }
-  }
-  return n;
-}
-
-/*
- * 지금까지 모인 행정을 키별로 준다 (카운트). 0 = 아직 못 잰 키.
- *
- * ★ 저장 전에도 읽을 수 있어야 한다.
- *
- *   보정 중에 도구가 keysGetKeyCfg 로 읽으면 **저장돼 있던 옛 값**이 나온다.
- *   이번에 모으는 값은 저장할 때까지 cfg 에 들어가지 않기 때문이다. 누르는 대로
- *   숫자가 갱신되는 것을 보여주려면 진행 중인 값을 따로 내줘야 한다.
- *
- *   완료 판정(keysCalIsDone)과 같은 식으로 잰다. 아직 기준에 못 미치는 키도
- *   0 으로 준다 — 어중간한 값을 보여주면 다 눌린 것으로 오해한다.
- *
- * start 부터 max 개까지 채우고 채운 개수를 준다. 한 프레임에 다 안 들어가므로
- * 도구가 나눠서 묻는다.
- */
-uint32_t keysCalStrokes(uint32_t start, uint16_t *p_out, uint32_t max)
-{
-  uint32_t n = 0;
-
-  if (p_out == NULL) return 0;
-
-  for (uint32_t i = start; i < KEYS_MAX && n < max; i++, n++)
-  {
-    uint16_t st = (uint16_t)(i / KEYS_CH_MAX);
-    uint16_t c  = (uint16_t)(i % KEYS_CH_MAX);
-    int32_t  s;
-
-    p_out[n] = 0;
-
-    if (keysIsPresent(st, c) == false) continue;
-    if (cal_min_tmp[i] == 0xFFFF)      continue;
-
-    s = (int32_t)cal_max_tmp[i] - (int32_t)cal_min_tmp[i];
-    if (s >= KEYS_CAL_STROKE_MIN) p_out[n] = (uint16_t)s;
-  }
-  return n;
-}
-
-/* 키별 완료 여부를 비트로 채운다. 비트 i = 키 인덱스 i. */
-uint32_t keysCalBitmap(uint8_t *p_buf, uint32_t len)
-{
-  uint32_t need = (KEYS_MAX + 7) / 8;
-
-  if (len < need) return 0;
-  for (uint32_t i = 0; i < need; i++) p_buf[i] = 0;
-
-  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
-  {
-    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
-    {
-      uint32_t i = st * KEYS_CH_MAX + c;
-
-      if (keysIsPresent(st, c) && keysCalIsDone(st, c)) p_buf[i / 8] |= (uint8_t)(1u << (i % 8));
-    }
-  }
-  return need;
-}
-
-/*
- * 끝난 키만 저장한다.
- *
- * ★ 부분 저장을 허용한다. 레이아웃에는 옵션 소켓(스플릿 백스페이스 등)이 다 들어
- *   있지만 실제로는 그중 하나만 끼운다. "전부 끝나야 저장" 으로 막으면 영영
- *   저장할 수 없다. 나머지는 종류표의 공칭값을 계속 쓰면 된다.
- */
-bool keysCalSave(uint32_t *p_done, uint32_t *p_skip)
-{
-  uint32_t done = 0, skip = 0;
-
-  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
-  {
-    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
-    {
-      uint32_t i = st * KEYS_CH_MAX + c;
-
-      if (keysIsPresent(st, c) == false) continue;
-
-      if (keysCalIsDone(st, c))
-      {
-        KC(i)->cal_max = cal_max_tmp[i];
-        KC(i)->cal_min = cal_min_tmp[i];
-        KC(i)->flags  |= 0x01;
-        done++;
-      }
-      else
-      {
-        skip++;
-      }
-    }
-  }
-
-  cal_active = false;
-  if (p_done) *p_done = done;
-  if (p_skip) *p_skip = skip;
-
-  if (done == 0) return false;
-  return keysCalSaveBlob();
-}
-
-static bool keysCalIsDone(uint16_t row, uint16_t col)
-{
-  uint32_t i = row * KEYS_CH_MAX + col;
-
-  if (i >= KEYS_MAX)                return false;
-  if (cal_min_tmp[i] == 0xFFFF)     return false;
-
-  return ((int32_t)cal_max_tmp[i] - (int32_t)cal_min_tmp[i]) >= KEYS_CAL_STROKE_MIN;
-}
-static bool     drift_due    = false;
-
-static void keysCalRejectOutlier(void);
-static bool keysCfgLoad(void);
-static bool keysCfgSave(void);
-static ATTR_RAMFUNC void keysTrack(uint32_t step);
-static inline void keysFilter(uint32_t step, uint32_t ch, uint32_t packed);
-
-#if CLI_USE(HW_KEYS)
-static void cliKeys(cli_args_t *args);
-#endif
-
-
-
-
-/*---------------------------------------------------------------------------
- *  완료 대기
- *---------------------------------------------------------------------------*/
-
-/*
- * ★ 인터럽트를 쓰지 않는다.
- *
- *   처음에는 ADC 완료 인터럽트로 플래그를 세우고 스캔 루프가 그걸 스핀으로 기다렸다.
- *   그런데 어차피 기다릴 거면 상태 레지스터를 직접 보면 된다 — 인터럽트가 하는 일이
- *   플래그 하나 세우는 것뿐이었다.
- *
- *   인터럽트 부하가 만만치 않았다. 8스텝 x ADC 2개 x 초당 15,000 스캔이면
- *   초당 24만 번이다. 그 ISR 들이 USB 완료 콜백을 밀어내서 다음 마이크로프레임(125us)
- *   안에 재무장하지 못했고, 리포트가 8000/s 가 아니라 6000/s 로 떨어졌다.
- */
-/*
- * ★ SEQ_CMPT 폴링도 걷어냈다.
- *
- *   한동안 "SEQ_CMPT 를 기다린 뒤 DMA 칸이 채워지길 기다린다"로 두 번 기다렸는데,
- *   DMA 기록은 변환이 끝나야 일어난다 — 뒤엣것이 앞엣것을 이미 포함한다.
- *   두 번 기다리는 값이 스캔 1회에 4.5us 였다.
- *
- *   플래그는 이제 아무도 보지 않으므로 지우지도 않는다. `keys adc` 진단만 읽는다.
- */
 
 
 /*---------------------------------------------------------------------------
  *  초기화
  *---------------------------------------------------------------------------*/
+
+bool keysInit(void)
+{
+  bool ret = true;
+
+
+  clock_add_to_group(clock_adc0, 0);
+  clock_add_to_group(clock_adc1, 0);
+  clock_set_adc_source(clock_adc0, clk_adc_src_ahb0);
+  clock_set_adc_source(clock_adc1, clk_adc_src_ahb0);
+
+  keysInitPins();
+
+  if (keysInitAdc(HPM_ADC0, adc0_seq_ch, adc0_buf) == false) ret = false;
+  if (keysInitAdc(HPM_ADC1, adc1_seq_ch, adc1_buf) == false) ret = false;
+
+  is_init = ret;
+
+#if CLI_USE(HW_KEYS)
+  cliAdd("keys", cliKeys);
+#endif
+
+  /*
+   * 저장된 설정을 읽는다. 읽기뿐이라 인터럽트를 막지 않아 부팅 경로에서 안전하다.
+   * 없거나 깨졌으면 기본값으로 계속 간다 — 여기서 멈추면 복구가 막힌다.
+   */
+  is_cfg_loaded = keysCfgLoad();
+
+  /*
+   * 순서가 있다 — 뒤엣것이 앞엣것에 기댄다.
+   *
+   *   역수 -> 내장 서술자 -> 커스텀 서술자(곡선을 만든다) -> 임계값
+   *
+   * 커스텀은 저장된 두 점에서 곡선을 만드는 일이라 keysCfgLoad 뒤여야 한다.
+   */
+  keysCurveRecipInit();
+  keysSwRefBuiltinInit();
+  keysSwRefCustomInit();
+  keysThrRebuild();          /* 설정을 읽었으니 임계값을 푼다 */
+
+  if (ret)
+  {
+    keysCalibrate();
+  }
+
+  logPrintf("[%s] keysInit()\n", ret ? "OK" : "E_");
+  if (ret)
+  {
+    logPrintf("     %d step x %d ch = %d keys, cal %d\n",
+              KEYS_STEP_MAX, KEYS_CH_MAX, KEYS_MAX, is_calibrated);
+  }
+
+  return ret;
+}
+
 static void keysInitPins(void)
 {
   /* 아날로그 입력 — PB00~PB15 */
@@ -1462,66 +1250,35 @@ static bool keysInitAdc(ADC16_Type *ptr, const uint8_t *seq_ch, volatile uint32_
   return true;
 }
 
-bool keysInit(void)
-{
-  bool ret = true;
-
-
-  clock_add_to_group(clock_adc0, 0);
-  clock_add_to_group(clock_adc1, 0);
-  clock_set_adc_source(clock_adc0, clk_adc_src_ahb0);
-  clock_set_adc_source(clock_adc1, clk_adc_src_ahb0);
-
-  keysInitPins();
-
-  if (keysInitAdc(HPM_ADC0, adc0_seq_ch, adc0_buf) == false) ret = false;
-  if (keysInitAdc(HPM_ADC1, adc1_seq_ch, adc1_buf) == false) ret = false;
-
-  is_init = ret;
-
-#if CLI_USE(HW_KEYS)
-  cliAdd("keys", cliKeys);
-#endif
-
-  /*
-   * 저장된 설정을 읽는다. 읽기뿐이라 인터럽트를 막지 않아 부팅 경로에서 안전하다.
-   * 없거나 깨졌으면 기본값으로 계속 간다 — 여기서 멈추면 복구가 막힌다.
-   */
-  is_cfg_loaded = keysCfgLoad();
-
-  /*
-   * 순서가 있다 — 뒤엣것이 앞엣것에 기댄다.
-   *
-   *   역수 -> 내장 서술자 -> 커스텀 서술자(곡선을 만든다) -> 임계값
-   *
-   * 커스텀은 저장된 두 점에서 곡선을 만드는 일이라 keysCfgLoad 뒤여야 한다.
-   */
-  keysCurveRecipInit();
-  keysSwRefBuiltinInit();
-  keysSwRefCustomInit();
-  keysThrRebuild();          /* 설정을 읽었으니 임계값을 푼다 */
-
-  if (ret)
-  {
-    keysCalibrate();
-  }
-
-  logPrintf("[%s] keysInit()\n", ret ? "OK" : "E_");
-  if (ret)
-  {
-    logPrintf("     %d step x %d ch = %d keys, cal %d\n",
-              KEYS_STEP_MAX, KEYS_CH_MAX, KEYS_MAX, is_calibrated);
-  }
-
-  return ret;
-}
-
-
 
 
 /*---------------------------------------------------------------------------
  *  스캔
  *---------------------------------------------------------------------------*/
+
+/*
+ * ── 완료 대기 ──────────────────────────────────
+ *
+ * ★ 인터럽트를 쓰지 않는다.
+ *
+ *   처음에는 ADC 완료 인터럽트로 플래그를 세우고 스캔 루프가 그걸 스핀으로 기다렸다.
+ *   그런데 어차피 기다릴 거면 상태 레지스터를 직접 보면 된다 — 인터럽트가 하는 일이
+ *   플래그 하나 세우는 것뿐이었다.
+ *
+ *   인터럽트 부하가 만만치 않았다. 8스텝 x ADC 2개 x 초당 15,000 스캔이면
+ *   초당 24만 번이다. 그 ISR 들이 USB 완료 콜백을 밀어내서 다음 마이크로프레임(125us)
+ *   안에 재무장하지 못했고, 리포트가 8000/s 가 아니라 6000/s 로 떨어졌다.
+ */
+/*
+ * ★ SEQ_CMPT 폴링도 걷어냈다.
+ *
+ *   한동안 "SEQ_CMPT 를 기다린 뒤 DMA 칸이 채워지길 기다린다"로 두 번 기다렸는데,
+ *   DMA 기록은 변환이 끝나야 일어난다 — 뒤엣것이 앞엣것을 이미 포함한다.
+ *   두 번 기다리는 값이 스캔 1회에 4.5us 였다.
+ *
+ *   플래그는 이제 아무도 보지 않으므로 지우지도 않는다. `keys adc` 진단만 읽는다.
+ */
+
 static inline void keysSettle(void)
 {
   for (uint32_t i = 0; i < KEYS_SETTLE_CYCLES; i++)
@@ -1598,17 +1355,6 @@ static inline void keysFilter(uint32_t step, uint32_t ch, uint32_t packed)
 
   raw[step][ch] = (uint16_t)o;
 }
-
-/*
- * 기준값 추적 + 눌림 판정.
- *
- * 안 눌린 상태가 물리적 극단(자석이 가장 멀어 값이 가장 크다)이므로 기준값은
- * 러닝 최대값이다. 이 하나로 세 가지가 같이 해결된다.
- *
- *   - 누른 채 부팅  -> 손을 떼는 순간 제 값을 찾는다
- *   - 온도 드리프트 -> 위로 새면 즉시, 아래로 새면 천천히 따라간다
- *   - 개체 편차     -> 셀마다 제 기준을 갖는다
- */
 /*
  * 거리(0.01mm) -> 정규화 값 u (Q15). 곡선을 앞으로 읽는 일이다.
  *
@@ -1631,17 +1377,6 @@ static uint32_t keysCurveToU(const uint16_t *c, uint32_t um, uint32_t travel)
 
   return c[idx] + ((((uint32_t)c[idx + 1] - c[idx]) * frac) >> 16);
 }
-
-/*
- * 키별 스트로크의 역수 — 설정·보정이 바뀔 때 다시 만든다 (keysThrRebuild).
- *
- * u = d * 32767 / stroke 의 나눗셈을 없앤다. 시프트를 12 로 두면 남는 곱이
- * 최대 12285 x 89475 = 1.1e9 라 32비트 안이고, u 오차는 32767 분의 1 이다 —
- * 우리 단위(0.01mm)의 양자화보다 작아서 안 보인다.
- */
-#define KEYS_STROKE_RECIP_SH   12
-
-static uint32_t stroke_recip[KEYS_MAX];
 
 /*
  * 곡선 칸 간격의 역수 — 부팅 때 한 번 만든다. Q31 (2^31 / 간격).
@@ -2284,6 +2019,16 @@ ATTR_RAMFUNC static inline uint32_t keysRtZone(uint32_t idx, uint16_t cnt)
   return (z >= KEYS_RT_ZONE_CNT) ? (KEYS_RT_ZONE_CNT - 1) : z;
 }
 
+/*
+ * 기준값 추적 + 눌림 판정.
+ *
+ * 안 눌린 상태가 물리적 극단(자석이 가장 멀어 값이 가장 크다)이므로 기준값은
+ * 러닝 최대값이다. 이 하나로 세 가지가 같이 해결된다.
+ *
+ *   - 누른 채 부팅  -> 손을 떼는 순간 제 값을 찾는다
+ *   - 온도 드리프트 -> 위로 새면 즉시, 아래로 새면 천천히 따라간다
+ *   - 개체 편차     -> 셀마다 제 기준을 갖는다
+ */
 ATTR_RAMFUNC static void keysTrack(uint32_t step)
 {
   bool do_drift = drift_due;
@@ -2642,6 +2387,285 @@ bool keysIsReportEnabled(void)
   return (report_off == false);
 }
 
+/* 기준값 대비 편차. 부호가 어느 쪽으로 움직이는지는 실측으로 정한다. */
+int32_t keysGetDelta(uint8_t step, uint8_t ch)
+{
+  if (step >= KEYS_STEP_MAX || ch >= KEYS_CH_MAX) return 0;
+  if (is_calibrated == false)                     return 0;
+
+  return (int32_t)raw[step][ch] - (int32_t)base[step][ch];
+}
+
+uint16_t keysGetBase(uint8_t step, uint8_t ch)
+{
+  if (step >= KEYS_STEP_MAX || ch >= KEYS_CH_MAX) return 0;
+  return base[step][ch];
+}
+
+bool keysGetPressed(uint16_t row, uint16_t col)
+{
+  if (row >= KEYS_STEP_MAX || col >= KEYS_CH_MAX) return false;
+  return (pressed[row] & (1U << col)) != 0;
+}
+
+
+/*---------------------------------------------------------------------------
+ *  보정
+ *---------------------------------------------------------------------------*/
+
+/*
+ * 지정한 두 키코드가 동시에 눌려 있는가.
+ *
+ * 보정 중에는 리포트를 막아두므로 키 조합을 종료 신호로 쓸 수 있다. 터미널 없이
+ * 키보드만 연결한 상태에서도 끝낼 수 있어야 하기 때문이다.
+ *
+ * 자리를 박아두지 않고 키맵에서 찾는다 — 키맵이 바뀌어도 따라간다.
+ */
+/*
+ * ★ 루프 명령은 키보드만으로도 빠져나올 수 있어야 한다.
+ *
+ *   report_off 를 켜는 명령(map·learn·layout·show·bar·watch·raw)이 도는 동안에는
+ *   키보드가 리포트를 안 보낸다. 그런데 콘솔은 그 키보드로 치는 터미널이다 —
+ *   Ctrl-C 를 칠 방법이 없어서 USB 를 뽑는 수밖에 없었다. cal 만 자체 탈출이
+ *   있었는데, 나머지도 같아야 한다.
+ *
+ *   ★ Esc 단독이 아니라 Ctrl+Esc 다.
+ *
+ *     처음에 Esc 단독으로 만들었더니 keys cal 이 망가졌다. 보정은 Esc 키까지
+ *     전부 눌러야 하는데 그 순간 빠져나가 버린다. cal 이 원래 쓰던 조합과 같게
+ *     맞춘다 — 보정 중에 Ctrl 과 Esc 를 동시에 누를 일은 없다.
+ */
+static bool keysComboHeld(uint8_t kc1, uint8_t kc2);
+
+static bool keysCliKeep(void)
+{
+  if (cliKeepLoop() == false) return false;
+
+  /* 리포트를 막는 동안에만 — 평소에는 Ctrl+Esc 가 호스트로 가야 한다 */
+  if (report_off && keysComboHeld(KEYS_MOD_KC, KEYS_CANCEL_KC)) return false;
+
+  return true;
+}
+
+static bool keysComboHeld(uint8_t kc1, uint8_t kc2)
+{
+  bool a = false;
+  bool b = false;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      uint8_t kc;
+
+      if (keysGetPressed(st, c) == false) continue;
+
+      kc = keys_keymap[st][c];
+      if (kc == kc1) a = true;
+      if (kc == kc2) b = true;
+    }
+  }
+  return (a && b);
+}
+
+/*
+ * ── 보정 핵 ────────────────────────────────────────────────────────────
+ *
+ * ★ CLI 루프 안에 있던 것을 밖으로 뺐다.
+ *
+ *   `keys cal` 이 수집·판정·저장을 한 함수 안에서 다 했다. CLI 로만 쓸 때는
+ *   문제가 없었는데, 웹 도구에서 부르려니 통째로 다시 짜야 할 판이었다.
+ *   같은 일을 두 벌 두면 반드시 갈라진다 — 핵을 빼서 둘이 나눠 쓰게 한다.
+ *
+ * 무압 기준값은 러닝 최대값이 늘 추적하므로 여기서 할 일이 없다. 바닥값만
+ * 모은다 — 그건 실제로 끝까지 눌러야만 알 수 있다.
+ */
+static bool cal_active = false;
+
+static bool keysCalIsDone(uint16_t row, uint16_t col);
+static bool keysCalSaveBlob(void);
+
+bool keysCalIsActive(void)
+{
+  return cal_active;
+}
+
+void keysCalStart(void)
+{
+  for (uint32_t i = 0; i < KEYS_MAX; i++)
+  {
+    cal_min_tmp[i] = 0xFFFF;
+    cal_max_tmp[i] = 0;
+  }
+  cal_active = true;
+}
+
+void keysCalCancel(void)
+{
+  cal_active = false;
+}
+
+/*
+ * 표본 하나를 더한다. 스캔마다 불려도 되게 싸게 짰다 — 64칸 최소값 갱신뿐이다.
+ * 켜져 있을 때만 도므로 평상시 비용은 분기 하나다.
+ */
+void keysCalCollect(void)
+{
+  if (cal_active == false) return;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      uint32_t i = st * KEYS_CH_MAX + c;
+      uint16_t v;
+
+      if (keysIsPresent(st, c) == false) continue;
+
+      v = raw[st][c];
+      if (v < cal_min_tmp[i])
+      {
+        cal_min_tmp[i] = v;
+        cal_max_tmp[i] = base[st][c];   /* 같은 순간의 기준값을 짝지어 둔다 */
+      }
+    }
+  }
+}
+
+uint32_t keysCalTotal(void)
+{
+  uint32_t n = 0;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++) if (keysIsPresent(st, c)) n++;
+  }
+  return n;
+}
+
+uint32_t keysCalDone(void)
+{
+  uint32_t n = 0;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      if (keysIsPresent(st, c) && keysCalIsDone(st, c)) n++;
+    }
+  }
+  return n;
+}
+
+/*
+ * 지금까지 모인 행정을 키별로 준다 (카운트). 0 = 아직 못 잰 키.
+ *
+ * ★ 저장 전에도 읽을 수 있어야 한다.
+ *
+ *   보정 중에 도구가 keysGetKeyCfg 로 읽으면 **저장돼 있던 옛 값**이 나온다.
+ *   이번에 모으는 값은 저장할 때까지 cfg 에 들어가지 않기 때문이다. 누르는 대로
+ *   숫자가 갱신되는 것을 보여주려면 진행 중인 값을 따로 내줘야 한다.
+ *
+ *   완료 판정(keysCalIsDone)과 같은 식으로 잰다. 아직 기준에 못 미치는 키도
+ *   0 으로 준다 — 어중간한 값을 보여주면 다 눌린 것으로 오해한다.
+ *
+ * start 부터 max 개까지 채우고 채운 개수를 준다. 한 프레임에 다 안 들어가므로
+ * 도구가 나눠서 묻는다.
+ */
+uint32_t keysCalStrokes(uint32_t start, uint16_t *p_out, uint32_t max)
+{
+  uint32_t n = 0;
+
+  if (p_out == NULL) return 0;
+
+  for (uint32_t i = start; i < KEYS_MAX && n < max; i++, n++)
+  {
+    uint16_t st = (uint16_t)(i / KEYS_CH_MAX);
+    uint16_t c  = (uint16_t)(i % KEYS_CH_MAX);
+    int32_t  s;
+
+    p_out[n] = 0;
+
+    if (keysIsPresent(st, c) == false) continue;
+    if (cal_min_tmp[i] == 0xFFFF)      continue;
+
+    s = (int32_t)cal_max_tmp[i] - (int32_t)cal_min_tmp[i];
+    if (s >= KEYS_CAL_STROKE_MIN) p_out[n] = (uint16_t)s;
+  }
+  return n;
+}
+
+/* 키별 완료 여부를 비트로 채운다. 비트 i = 키 인덱스 i. */
+uint32_t keysCalBitmap(uint8_t *p_buf, uint32_t len)
+{
+  uint32_t need = (KEYS_MAX + 7) / 8;
+
+  if (len < need) return 0;
+  for (uint32_t i = 0; i < need; i++) p_buf[i] = 0;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      uint32_t i = st * KEYS_CH_MAX + c;
+
+      if (keysIsPresent(st, c) && keysCalIsDone(st, c)) p_buf[i / 8] |= (uint8_t)(1u << (i % 8));
+    }
+  }
+  return need;
+}
+
+/*
+ * 끝난 키만 저장한다.
+ *
+ * ★ 부분 저장을 허용한다. 레이아웃에는 옵션 소켓(스플릿 백스페이스 등)이 다 들어
+ *   있지만 실제로는 그중 하나만 끼운다. "전부 끝나야 저장" 으로 막으면 영영
+ *   저장할 수 없다. 나머지는 종류표의 공칭값을 계속 쓰면 된다.
+ */
+bool keysCalSave(uint32_t *p_done, uint32_t *p_skip)
+{
+  uint32_t done = 0, skip = 0;
+
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      uint32_t i = st * KEYS_CH_MAX + c;
+
+      if (keysIsPresent(st, c) == false) continue;
+
+      if (keysCalIsDone(st, c))
+      {
+        KC(i)->cal_max = cal_max_tmp[i];
+        KC(i)->cal_min = cal_min_tmp[i];
+        KC(i)->flags  |= 0x01;
+        done++;
+      }
+      else
+      {
+        skip++;
+      }
+    }
+  }
+
+  cal_active = false;
+  if (p_done) *p_done = done;
+  if (p_skip) *p_skip = skip;
+
+  if (done == 0) return false;
+  return keysCalSaveBlob();
+}
+
+static bool keysCalIsDone(uint16_t row, uint16_t col)
+{
+  uint32_t i = row * KEYS_CH_MAX + col;
+
+  if (i >= KEYS_MAX)                return false;
+  if (cal_min_tmp[i] == 0xFFFF)     return false;
+
+  return ((int32_t)cal_max_tmp[i] - (int32_t)cal_min_tmp[i]) >= KEYS_CAL_STROKE_MIN;
+}
+
 /*
  * 무압 기준값을 잡는다.
  *
@@ -2748,27 +2772,6 @@ static void keysCalRejectOutlier(void)
       }
     }
   }
-}
-
-/* 기준값 대비 편차. 부호가 어느 쪽으로 움직이는지는 실측으로 정한다. */
-int32_t keysGetDelta(uint8_t step, uint8_t ch)
-{
-  if (step >= KEYS_STEP_MAX || ch >= KEYS_CH_MAX) return 0;
-  if (is_calibrated == false)                     return 0;
-
-  return (int32_t)raw[step][ch] - (int32_t)base[step][ch];
-}
-
-uint16_t keysGetBase(uint8_t step, uint8_t ch)
-{
-  if (step >= KEYS_STEP_MAX || ch >= KEYS_CH_MAX) return 0;
-  return base[step][ch];
-}
-
-bool keysGetPressed(uint16_t row, uint16_t col)
-{
-  if (row >= KEYS_STEP_MAX || col >= KEYS_CH_MAX) return false;
-  return (pressed[row] & (1U << col)) != 0;
 }
 
 /*---------------------------------------------------------------------------
@@ -3386,12 +3389,6 @@ uint8_t keysGetLevel8(uint16_t row, uint16_t col)
  *  값만 바꾸고 플래시에는 쓰지 않는다. 저장은 `keys save` 나 보정 완료처럼 사용자가
  *  명시할 때만 한다 — VIA 슬라이더를 움직일 때마다 섹터를 지우면 수명이 남지 않는다.
  *---------------------------------------------------------------------------*/
-/*
- * 설정을 플래시에 남긴다.
- *
- * 값을 바꾸는 것과 저장은 따로다 — 바꾸면 즉시 반영되지만 전원을 끄면 사라진다.
- * 플래시 쓰기는 XIP 를 멈추므로 사용자가 명시할 때만 한다.
- */
 static uint16_t keysClampUm(uint16_t um)
 {
   uint16_t travel = keysTravelUmOf(0);
@@ -3591,6 +3588,12 @@ void keysCfgUpdate(void)
   keysCfgSave();
 }
 
+/*
+ * 설정을 플래시에 남긴다.
+ *
+ * 값을 바꾸는 것과 저장은 따로다 — 바꾸면 즉시 반영되지만 전원을 끄면 사라진다.
+ * 플래시 쓰기는 XIP 를 멈추므로 사용자가 명시할 때만 한다.
+ */
 bool keysSave(void)
 {
   cfg_dirty = false;
