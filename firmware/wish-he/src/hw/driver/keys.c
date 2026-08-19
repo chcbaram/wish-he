@@ -945,6 +945,7 @@ static void            keysSwRefCustomInit(void);
 static void            keysCurveRecipInit(void);
 static uint16_t        keysTravelUmOf(uint32_t i);
 static void            keysCalRejectOutlier(void);
+static void            keysInject(uint32_t step, uint32_t *snap);
 
 #if CLI_USE(HW_KEYS)
 static void cliKeys(cli_args_t *args);
@@ -1018,6 +1019,64 @@ static uint32_t cal_time_ms  = 0;
 static uint32_t drift_ms     = 0;
 static bool     drift_due    = false;
 static bool     is_cfg_loaded = false;
+
+/*
+ * ── 기준값 사건 카운터 ──────────────────────────────────────────────
+ *
+ * "느려지지 않아도 나는" 증상을 잡으려고 둔다. 태스크 시간이나 스캔 시간에는
+ * 아무것도 안 나타나므로 성능 지표로는 못 본다.
+ *
+ *   latch     상향 변화가 KEYS_LATCH_JUMP 를 넘어 기준값이 즉시 끌려 올라간 횟수.
+ *             누른 채 부팅한 키를 뗄 때 정상적으로 난다. 그런데 **상향 글리치
+ *             한 방으로도 난다.** 그 뒤 d 가 KEYS_DRIFT_BAND 밖이면 하향 보정이
+ *             아예 멎어 그 키가 눌린 채로 굳는다 — 재부팅 전까지.
+ *   drift_up  잔파도를 따라 한 걸음 올린 횟수
+ *   drift_dn  밴드 안이라 한 걸음 내린 횟수
+ *
+ * ★ 잡음을 주입해 놓고 latch 가 시간당 몇 번인지 재면 "글리치 래치가 실제로
+ *   일어나는가" 가 숫자가 된다. 지금은 짐작뿐이다.
+ */
+static uint32_t latch_cnt    = 0;
+static uint32_t drift_up_cnt = 0;
+static uint32_t drift_dn_cnt = 0;
+
+/*
+ * ── 값 주입 ─────────────────────────────────────────────────────────
+ *
+ * 실제 키를 누르지 않고 스캔 **뒤의 전부**를 시험한다 — 데드밴드 필터·3탭 누적·
+ * 드리프트·스퀄치·데드존·RT 상태기계·키맵·SOCD·연타·HID 리포트까지.
+ *
+ * 손으로는 못 만드는 조건을 만들 수 있는 것이 요점이다. 한 스캔짜리 글리치,
+ * 정확한 깊이 유지, 몇 번을 돌려도 같은 궤적 — 손가락으로는 하나도 안 된다.
+ *
+ * ★ 셀 단위 마스크다. 전체를 덮지 않는다.
+ *
+ *   마스크가 안 선 셀은 실물 값이 그대로 살아 있어야 한다. 전부 덮으면 시험 중에
+ *   키보드가 통째로 죽어 CLI 탈출 조합(Ctrl+Esc)조차 못 친다 — USB 를 뽑는
+ *   수밖에 없어진다.
+ *
+ * ★ ADC 는 계속 돈다. 결과만 갈아 끼운다.
+ *
+ *   DMA 를 멈추면 스캔 시간이 달라져 시험의 뜻이 바뀐다. 타이밍을 그대로 두고
+ *   값만 덮어야 "평소와 같은 조건" 이 된다.
+ */
+static uint16_t inject_mask[KEYS_STEP_MAX];              /* 비트가 서면 그 채널을 덮는다 */
+static uint16_t inject_raw[KEYS_STEP_MAX][KEYS_CH_MAX];  /* 12비트 원시값 */
+static uint16_t inject_noise_pp   = 0;                   /* 0 = 잡음 없음 (12비트 눈금) */
+static bool     inject_noise_tail = false;               /* 꼬리 있는 분포를 쓴다 */
+static uint32_t inject_rng        = 0x2545F491;
+
+/*
+ * ★ 주입 중에는 리포트를 막는 것이 기본이다.
+ *
+ *   주입한 키는 진짜 키와 구별이 안 되므로 그대로 호스트로 나간다. 시험을 걸어
+ *   놓고 손을 떼면 **그 키가 무한히 눌린 채로 터미널에 쏟아진다.** 명령을 더 칠
+ *   수도 없어진다 — 실제로 위험하다.
+ *
+ *   그래서 판정까지만 보는 것이 기본이고(`keys base`/`keys show` 로 확인),
+ *   호스트까지 보내는 종단간 시험은 `keys inject live on` 으로 명시할 때만 한다.
+ */
+static bool     inject_live       = false;
 
 /*
  * keys 명령이 도는 동안에는 HID 리포트를 막는다.
@@ -1354,6 +1413,72 @@ static inline void keysFilter(uint32_t step, uint32_t ch, uint32_t packed)
   else if (v < o - KEYS_DEADBAND) o = v + KEYS_DEADBAND;
 
   raw[step][ch] = (uint16_t)o;
+}
+
+/*
+ * 잡음 한 표본. xorshift32 — 곱셈도 나눗셈도 없다.
+ *
+ * ★ 균등 분포로는 래치 시험이 안 된다.
+ *
+ *   균등은 p-p 밖으로 절대 안 나가므로, p-p 를 실측값(40)으로 두면 래치 조건
+ *   (KEYS_LATCH_JUMP = 93) 에 **영원히 안 닿는다.** 아무리 오래 돌려도 사건이 0 이라
+ *   "안 일어난다" 는 잘못된 결론이 나온다.
+ *
+ *   꼬리가 필요하다. 균등 셋을 더하면 종 모양이 되고 드문 큰 이탈이 생긴다.
+ *   표준편차를 균등과 맞추려 1/√3 배 하는데, 정수라 4/7(≈0.571)로 대신한다.
+ *   그러면 최대 이탈이 균등의 1.7배까지 뻗는다 — 거기가 시험하려는 자리다.
+ */
+static uint32_t keysInjectRand(void)
+{
+  uint32_t x = inject_rng;
+
+  x ^= x << 13;
+  x ^= x >> 17;
+  x ^= x << 5;
+  return inject_rng = x;
+}
+
+static int32_t keysInjectNoise(void)
+{
+  uint32_t w = (uint32_t)inject_noise_pp + 1u;
+  int32_t  n;
+
+  if (inject_noise_tail == false)
+  {
+    return (int32_t)(keysInjectRand() % w) - (int32_t)(inject_noise_pp / 2);
+  }
+
+  n  = (int32_t)(keysInjectRand() % w);
+  n += (int32_t)(keysInjectRand() % w);
+  n += (int32_t)(keysInjectRand() % w);
+
+  return ((n - (int32_t)(3u * w / 2u)) * 4) / 7;
+}
+
+/*
+ * 마스크가 선 셀의 표본을 갈아 끼운다.
+ *
+ * keysFilter 가 (packed & 0xFFFF) >> KEYS_RAW_SHIFT 로 12비트를 뽑으므로 왼쪽으로
+ * 그만큼 밀어 넣는다. 그래야 데드밴드와 누적을 실제와 같은 눈금으로 지난다.
+ */
+static void keysInject(uint32_t step, uint32_t *snap)
+{
+  uint16_t m = inject_mask[step];
+
+  for (uint32_t i = 0; i < KEYS_CH_MAX; i++)
+  {
+    int32_t v;
+
+    if ((m & (1U << i)) == 0) continue;
+
+    v = (int32_t)inject_raw[step][i];
+    if (inject_noise_pp > 0) v += keysInjectNoise();
+
+    if (v < 0)    v = 0;
+    if (v > 4095) v = 4095;
+
+    snap[i] = (uint32_t)v << KEYS_RAW_SHIFT;
+  }
 }
 /*
  * 거리(0.01mm) -> 정규화 값 u (Q15). 곡선을 앞으로 읽는 일이다.
@@ -2066,8 +2191,16 @@ ATTR_RAMFUNC static void keysTrack(uint32_t step)
      */
     if (v > base[step][c])
     {
-      if ((uint32_t)(v - base[step][c]) > KEYS_LATCH_JUMP) base[step][c] = v;
-      else if (do_drift)                                   base[step][c] += KEYS_DRIFT_STEP;
+      if ((uint32_t)(v - base[step][c]) > KEYS_LATCH_JUMP)
+      {
+        base[step][c] = v;
+        latch_cnt++;
+      }
+      else if (do_drift)
+      {
+        base[step][c] += KEYS_DRIFT_STEP;
+        drift_up_cnt++;
+      }
     }
 
     d = (int32_t)base[step][c] - (int32_t)v;    /* 깊이 — 누를수록 커진다 */
@@ -2077,7 +2210,10 @@ ATTR_RAMFUNC static void keysTrack(uint32_t step)
      * 눌려 있는 셀은 d 가 밴드를 넘어서 영향받지 않는다.
      */
     if (do_drift && d > KEYS_DRIFT_STEP && d < KEYS_DRIFT_BAND)
+    {
       base[step][c] -= KEYS_DRIFT_STEP;
+      drift_dn_cnt++;
+    }
 
     /*
      * ★ 여기서 음수를 잘라낸다.
@@ -2296,6 +2432,10 @@ ATTR_RAMFUNC bool keysUpdate(void)
       snap[i]               = adc0_buf[i];
       snap[KEYS_SEQ_LEN + i] = adc1_buf[i];
     }
+
+    /* 주입 중인 셀만 갈아 끼운다 — 스텝당 분기 하나다 */
+    if (inject_mask[step]) keysInject(step, snap);
+
     hold     = step;
     has_hold = true;
   }
@@ -2391,7 +2531,15 @@ uint32_t keysGetScanTime(void)
 /* 리포트를 내보내도 되는가. keys 명령 중에는 false 다. */
 bool keysIsReportEnabled(void)
 {
-  return (report_off == false);
+  if (report_off) return false;
+
+  /* 주입 중이면 명시할 때만 내보낸다 — 위 inject_live 주석 참고 */
+  if (inject_live == false)
+  {
+    for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      if (inject_mask[st]) return false;
+  }
+  return true;
 }
 
 /* 기준값 대비 편차. 부호가 어느 쪽으로 움직이는지는 실측으로 정한다. */
@@ -3262,6 +3410,27 @@ static uint16_t keysStrokeCnt(uint32_t i)
  *
  *   진단(keys noise)도 같은 식을 타야 화면과 말이 맞는다.
  */
+/*
+ * 깊이(0.01mm) -> 카운트. keysThrRebuild 의 UM2CNT 와 같은 식이다.
+ *
+ * 그쪽은 지역 매크로라 밖에서 못 쓴다. 값 주입이 "몇 mm 로 눌린 것처럼" 을
+ * 만들려면 같은 환산이 필요해서 함수로 한 벌 둔다 — 식이 갈리면 시험이 거짓말을 한다.
+ */
+static uint16_t keysUmToCnt(uint32_t i, uint16_t um)
+{
+  const keys_sw_ref_t *r      = keysSwRefOf(i);
+  uint16_t             stroke = keysStrokeCnt(i);
+  uint16_t             travel = r->travel_um;
+
+  if (travel == 0) return 0;
+  if (r->curve != NULL)
+  {
+    return (uint16_t)(((uint32_t)keysCurveToU(r->curve, um, travel) * stroke)
+                      / KEYS_CURVE_ONE);
+  }
+  return (uint16_t)(((uint32_t)um * stroke) / travel);
+}
+
 static uint16_t keysCntToUm(uint32_t i, int32_t d)
 {
   const keys_sw_ref_t *r = keysSwRefOf(i);
@@ -4009,6 +4178,125 @@ void cliKeys(cli_args_t *args)
     ret = true;
   }
 
+  /*
+   * ── 값 주입 ──────────────────────────────────────────────────────
+   *
+   *   keys inject                      지금 주입 중인 것
+   *   keys inject <st> <ch> <raw>      12비트 원시값으로 고정
+   *   keys inject <st> <ch> d <um>     깊이(0.01mm)로 — 지금 기준값·곡선으로 환산
+   *   keys inject noise <pp> [tail]    주입 셀에 잡음을 얹는다
+   *   keys inject off                  전부 해제
+   *
+   * ★ 마스크가 안 선 셀은 실물 그대로다. 그래야 시험 중에도 Ctrl+Esc 가 먹는다.
+   */
+  if (args->argc >= 1 && args->isStr(0, "inject"))
+  {
+    if (args->argc == 1)
+    {
+      uint32_t n = 0;
+
+      if (inject_noise_pp > 0)
+        cliPrintf("잡음   : p-p %d  (%s)\n", (int)inject_noise_pp,
+                  inject_noise_tail ? "꼬리 있음" : "균등");
+      else
+        cliPrintf("잡음   : 없음\n");
+
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+      {
+        for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+        {
+          if ((inject_mask[st] & (1U << c)) == 0) continue;
+
+          cliPrintf("  s%d/ch%d  raw %4d  ->  깊이 %d 카운트%s\n",
+                    (int)st, (int)c, (int)inject_raw[st][c],
+                    (int)((int32_t)base[st][c] - (int32_t)raw[st][c]),
+                    (pressed[st] & (1U << c)) ? "   [눌림]" : "");
+          n++;
+        }
+      }
+      if (n == 0) cliPrintf("  주입 중인 셀 없다\n");
+      ret = true;
+    }
+    else if (args->argc == 2 && args->isStr(1, "off"))
+    {
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++) inject_mask[st] = 0;
+      inject_noise_pp   = 0;
+      inject_noise_tail = false;
+      inject_live       = false;
+      cliPrintf("주입 전부 해제\n");
+      ret = true;
+    }
+    else if (args->argc == 3 && args->isStr(1, "live"))
+    {
+      inject_live = args->isStr(2, "on");
+      cliPrintf("주입 리포트 %s%s\n", inject_live ? "켬" : "끔",
+                inject_live ? "  — 주입한 키가 호스트로 나간다. 조심할 것" : "");
+      ret = true;
+    }
+    else if (args->argc >= 3 && args->isStr(1, "noise"))
+    {
+      inject_noise_pp   = (uint16_t)args->getData(2);
+      inject_noise_tail = (args->argc >= 4 && args->isStr(3, "tail"));
+      cliPrintf("잡음 p-p %d  (%s)\n", (int)inject_noise_pp,
+                inject_noise_tail ? "꼬리 있음 — 래치 시험용" : "균등 — 오입력 시험용");
+      ret = true;
+    }
+    else if (args->argc >= 4)
+    {
+      uint32_t st = (uint32_t)args->getData(1);
+      uint32_t ch = (uint32_t)args->getData(2);
+      int32_t  v;
+
+      if (st >= KEYS_STEP_MAX || ch >= KEYS_CH_MAX)
+      {
+        cliPrintf("[E_] 자리가 범위 밖이다 (step 0~%d, ch 0~%d)\n",
+                  KEYS_STEP_MAX - 1, KEYS_CH_MAX - 1);
+        ret = true;
+      }
+      else if (args->argc == 5 && args->isStr(3, "d"))
+      {
+        /*
+         * 깊이로 준다. 누적합 기준값에서 그만큼 뺀 뒤 표본 하나 몫으로 나눈다 —
+         * 필터가 KEYS_ACC_CNT 개를 더하므로 고정값을 넣으면 합이 그 배로 수렴한다.
+         */
+        uint32_t i   = st * KEYS_CH_MAX + ch;
+        uint16_t um  = (uint16_t)args->getData(4);
+        int32_t  cnt = (int32_t)keysUmToCnt(i, um);
+
+        v = ((int32_t)base[st][ch] - cnt) / KEYS_ACC_CNT;
+        if (v < 0) v = 0;
+
+        inject_raw[st][ch]  = (uint16_t)v;
+        inject_mask[st]    |= (uint16_t)(1U << ch);
+        cliPrintf("s%d/ch%d  깊이 %d (0.01mm) = %d 카운트  ->  raw %d\n",
+                  (int)st, (int)ch, (int)um, (int)cnt, (int)v);
+        ret = true;
+      }
+      else if (args->argc == 4)
+      {
+        v = (int32_t)args->getData(3);
+        if (v < 0)    v = 0;
+        if (v > 4095) v = 4095;
+
+        inject_raw[st][ch]  = (uint16_t)v;
+        inject_mask[st]    |= (uint16_t)(1U << ch);
+        cliPrintf("s%d/ch%d  raw %d 로 고정\n", (int)st, (int)ch, (int)v);
+        ret = true;
+      }
+    }
+
+    if (ret == false)
+    {
+      cliPrintf("keys inject                    지금 주입 중인 것\n");
+      cliPrintf("keys inject <st> <ch> <raw>    12비트 원시값으로 고정\n");
+      cliPrintf("keys inject <st> <ch> d <um>   깊이(0.01mm)로\n");
+      cliPrintf("keys inject noise <pp> [tail]  잡음을 얹는다\n");
+      cliPrintf("keys inject live on|off        호스트로 내보낼지 (기본 끔)\n");
+      cliPrintf("keys inject off                전부 해제\n");
+      ret = true;
+    }
+  }
+
   if (args->argc == 1 && args->isStr(0, "info"))
   {
     cliPrintf("keys init   : %d\n", is_init);
@@ -4026,6 +4314,8 @@ void cliKeys(cli_args_t *args)
               (int)scan_time_us, (int)scan_us_max,
               KEYS_SCAN_OVER_US, (int)scan_over_cnt, (int)scan_cnt);
     cliPrintf("timeout     : %d\n", (int)timeout_cnt);
+    cliPrintf("기준값 사건 : latch %d,  drift 위 %d / 아래 %d\n",
+              (int)latch_cnt, (int)drift_up_cnt, (int)drift_dn_cnt);
     ret = true;
   }
 
@@ -4340,6 +4630,34 @@ void cliKeys(cli_args_t *args)
 
     ws2812Clear();
     ws2812Refresh();
+    ret = true;
+  }
+
+  /*
+   * 입력지점·해제지점을 CLI 에서 바꾼다.
+   *
+   * ★ 여기 없으면 웹앱 없이는 못 바꾼다 — 그래서 검증이 막힌다.
+   *
+   *   드리프트 밴드(KEYS_DRIFT_BAND)가 입력 문턱보다 큰지를 보려면 입력지점을
+   *   얕게 두고 재야 하는데, 그 길이 웹앱뿐이라 CLI 시험이 반쪽이었다.
+   *
+   * ★ `keys rt press` 와 뜻이 다르다. 저쪽은 RT 반응 행정이고 이쪽은 절대 입력지점이다.
+   */
+  if (args->argc == 3 && args->isStr(0, "cfg")
+      && (args->isStr(1, "press") || args->isStr(1, "release")))
+  {
+    uint16_t um = (uint16_t)args->getData(2);
+
+    if (args->isStr(1, "press")) keysSetPressUm(um);
+    else                         keysSetReleaseUm(um);
+
+    cliPrintf("입력지점 %d.%02d mm,  해제지점 %d.%02d mm\n",
+              keysGetPressUm() / 100, keysGetPressUm() % 100,
+              keysGetReleaseUm() / 100, keysGetReleaseUm() % 100);
+    cliPrintf("  카운트로 : 입력 %d,  해제 %d   (드리프트 밴드 %d)\n",
+              (int)keysUmToCnt(0, keysGetPressUm()),
+              (int)keysUmToCnt(0, keysGetReleaseUm()),
+              KEYS_DRIFT_BAND);
     ret = true;
   }
 
@@ -5002,6 +5320,8 @@ void cliKeys(cli_args_t *args)
     cliPrintf("keys time\n");
     cliPrintf("keys rt        래피드 트리거 (on/off, cont, bottom, press, release, dead)\n");
     cliPrintf("keys sw        커스텀 스위치 슬롯과 만들어진 곡선 33칸\n");
+    cliPrintf("keys cfg press|release <um>   입력·해제지점 (0.01mm)\n");
+    cliPrintf("keys inject    값 주입 — 실제 키를 안 누르고 시험한다\n");
   }
 
   /* ★ 반드시 되돌린다. 안 그러면 keys 명령을 한 번 쓴 뒤로 키보드가 죽는다. */
