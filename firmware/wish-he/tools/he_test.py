@@ -496,7 +496,16 @@ def t_rt_reseed():
 # ── 3-e. 연타 ────────────────────────────────────────────────────────────
 
 CH_GHOST, CH_SOCD_A = 12, 10
-KC_F13, KC_F14 = 0x0068, 0x0069        # 무해한 키 — 호스트에 쳐 넣어도 아무 일 없다
+#
+# 시험용 키코드.
+#
+# ★ **F13~F15 를 쓰면 안 된다.** macOS 에서 F14 는 화면 밝기 낮추기, F15 는 올리기다.
+#   연타 시험이 그것을 수십 번 쏘아 **화면이 캄캄해졌다.** "기능 키니까 무해하겠지"
+#   라고 짐작한 것이 틀렸다 — 무해한지는 호스트 OS 가 정한다.
+#
+# F23/F24 는 맥에 기본 배정이 없고 물리 키를 가진 키보드도 드물다.
+#
+KC_TEST_A, KC_TEST_B = 0x0072, 0x0073   # F23 / F24
 
 
 def nkro_sent():
@@ -523,15 +532,15 @@ def t_ghost_count():
       두 키로 연타를 돌리는 중에 하나를 SOCD 묶음에 넣고 둘 다 떼면, key_cnt 가
       1 남아 running 이 안 꺼진다. 그 뒤로 **키 하나만 눌러도 연타가 걸렸다.**
 
-    ★ 시험 키를 F13/F14 로 바꿔 둔다. 연타는 리포트를 실제로 호스트에 쏘므로,
+    ★ 시험 키를 F23/F24 로 바꿔 둔다. 연타는 리포트를 실제로 호스트에 쏘므로,
       평소 키코드 그대로 두면 화면에 글자가 쏟아진다.
     """
     h = hid()
     k0 = keycode(h, 0, CELL_ST, CELL_CH)
     k1 = keycode(h, 0, CELL_ST, CELL_CH + 1)
     try:
-        keycode(h, 0, CELL_ST, CELL_CH, KC_F13)
-        keycode(h, 0, CELL_ST, CELL_CH + 1, KC_F14)
+        keycode(h, 0, CELL_ST, CELL_CH, KC_TEST_A)
+        keycode(h, 0, CELL_ST, CELL_CH + 1, KC_TEST_B)
         via_set(h, CH_GHOST, 1, 1)                 # 연타 켬
         say("keys inject live on")
 
@@ -542,8 +551,8 @@ def t_ghost_count():
             return "두 키를 쥐었는데 연타가 안 돈다"
 
         # 누른 채로 SOCD 묶음에 넣는다 — 게이트를 바꿔 짝을 깬다
-        via_set(h, CH_SOCD_A, 2, KC_F13 >> 8, KC_F13 & 0xFF)
-        via_set(h, CH_SOCD_A, 3, KC_F14 >> 8, KC_F14 & 0xFF)
+        via_set(h, CH_SOCD_A, 2, KC_TEST_A >> 8, KC_TEST_A & 0xFF)
+        via_set(h, CH_SOCD_A, 3, KC_TEST_B >> 8, KC_TEST_B & 0xFF)
         via_set(h, CH_SOCD_A, 1, 1)
 
         say("keys inject %d %d d 0" % (CELL_ST, CELL_CH)); time.sleep(0.5)
