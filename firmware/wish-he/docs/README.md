@@ -91,7 +91,7 @@ ROM → 부트 헤더 → 부트로더(0x80003000) → 매직 확인 → 본 펌
 
       | # | 내용 | 자리 | 확신도 |
       |---|---|---|---|
-      | B1 | **부트 프로토콜이 사실상 미구현.** `keyboard_protocol_get()` 이 늘 1, `SET_PROTOCOL` 은 weak 스텁이 삼킨다. `nkro=1`(기본)이면 QMK 는 6KRO 를 안 보낸다 → **BIOS·부트로더에서 키가 안 먹을 수 있다.** 실측: `usb stat` 이 `KBD sent 1` vs `EXK nkro 6440` | `driver_usb.c:84` | **실측** |
+      | ~~B1~~ | ~~부트 프로토콜이 사실상 미구현~~ — **고쳤다.** `SET_PROTOCOL` 을 받아 기록하고 `keyboard_protocol_get()` 이 그 값을 준다. 바뀌면 눌린 키를 비운다. 부트에서 IF0 +2 / IF1 +0 으로 확인 | `hid_kbd_if.c`, `driver_usb.c` | **고침** |
       | B2 | **부팅 보정 실패가 방치된다.** 1152 스캔 중 한 번의 타임아웃에도 포기하고 반환값을 버린다. `is_calibrated=false` 면 판정이 아예 안 돌아 **전 키 무반응**. 자동 재시도 없음 | `keys.c` `keysInit`/`keysCalibrate` | 코드 |
       | ~~B3~~ | ~~RT 상태를 웹앱 경로가 안 지운다~~ — **고쳤다.** `keysRtReseed()` 를 두 길에서 다 부른다. 0 으로 미는 것이 아니라 **지금 깊이로 다시 잡는다** | `keys.c` `keysSetKeyCfg` | **고침** |
       | ~~B4~~ | ~~`rt_arm` 해제 기준이 주석과 코드가 다르다~~ — **고쳤다.** 원위치 판정에 사용자 설정을 안 쓴다. 스퀄치 문턱(0.12mm, 실측 잡음에서 나온 상수)을 본다 | `keys.c` `keysTrack` 끝 | **고침** |

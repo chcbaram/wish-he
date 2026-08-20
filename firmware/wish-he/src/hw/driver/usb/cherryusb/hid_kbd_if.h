@@ -56,6 +56,8 @@ uint8_t  hidKbdGetLeds(void);
 uint32_t hidKbdGetSentCount(void);
 uint32_t hidKbdGetLostCount(void);
 void     hidKbdUpdate(void);        /* 메인 루프에서 — 놓친 전송 완료를 되살린다 */
+uint8_t  hidKbdGetProtocol(void);   /* 0 = 부트, 1 = 리포트. 호스트가 정한다 */
+void     hidKbdSetProtocol(uint8_t protocol);   /* 시험용 — 호스트 요청을 흉내 낸다 */
 
 /*
  * 폴링 주기 측정 모드. 일부러 매번 재무장해 "폴링마다 전송"을 만들고

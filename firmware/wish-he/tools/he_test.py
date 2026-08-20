@@ -508,6 +508,14 @@ CH_GHOST, CH_SOCD_A = 12, 10
 KC_TEST_A, KC_TEST_B = 0x0072, 0x0073   # F23 / F24
 
 
+def usb_counts():
+    """(KBD IF0, EXK IF1) 전송 수. 프로토콜에 따라 어느 쪽으로 나가는지 본다."""
+    o = say("usb stat")
+    k = re.search(r"KBD\s+ready \d+\s+sent (\d+)", o)
+    e = re.search(r"EXK\s+ready \d+\s+sent (\d+)", o)
+    return (int(k.group(1)) if k else 0, int(e.group(1)) if e else 0)
+
+
 def nkro_sent():
     m = re.search(r"EXK\s+ready \d+\s+sent (\d+)", say("usb stat"))
     return int(m.group(1)) if m else 0
@@ -627,6 +635,46 @@ def t_ghost_no_merge():
         say("keys inject off", "keys inject live off")
         keycode(h, 0, CELL_ST, CELL_CH, k0)
         keycode(h, 0, CELL_ST, CELL_CH + 1, k1)
+        h.close()
+
+
+@test("host", "부트 프로토콜에서 키가 나간다 (B1)")
+def t_boot_protocol():
+    """
+    ★ BIOS·부트로더는 **부트 프로토콜**만 안다.
+
+      호스트가 SET_PROTOCOL 로 그것을 요구하는데, 그 요청을 스택의 weak 스텁이
+      삼키고 keyboard_protocol_get() 은 언제나 1 을 돌려주고 있었다. QMK 는
+      `keyboard_protocol && nkro` 일 때 6KRO 를 아예 안 보내므로, 우리 기본인
+      NKRO 에서는 **IF0 으로 아무것도 안 나갔다** — 실측으로 KBD sent 1,
+      EXK nkro sent 6440 이었다.
+
+      부트 프로토콜을 요구하는 것은 BIOS 뿐이라 책상에서는 재현할 방법이 없다.
+      `qmk proto` 로 같은 자리에 값을 넣어 흉내 낸다.
+    """
+    h = hid()
+    k0 = keycode(h, 0, CELL_ST, CELL_CH)
+    try:
+        keycode(h, 0, CELL_ST, CELL_CH, KC_TEST_A)
+        say("keys inject live on")
+
+        for proto, kbd_want, exk_want in ((1, 0, 2), (0, 2, 0)):
+            say("qmk proto %d" % proto)
+            a = usb_counts()
+            say("keys inject %d %d d 150" % (CELL_ST, CELL_CH)); time.sleep(0.4)
+            say("keys inject %d %d d 0" % (CELL_ST, CELL_CH)); time.sleep(0.4)
+            b = usb_counts()
+            dk, de = b[0] - a[0], b[1] - a[1]
+
+            if proto == 0 and dk == 0:
+                return "부트 프로토콜인데 IF0 으로 아무것도 안 나간다 — BIOS 에서 안 먹는다"
+            if proto == 1 and de == 0:
+                return "리포트 프로토콜인데 IF1 로 아무것도 안 나간다"
+        return None
+    finally:
+        say("qmk proto 1")
+        say("keys inject off", "keys inject live off")
+        keycode(h, 0, CELL_ST, CELL_CH, k0)
         h.close()
 
 

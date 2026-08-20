@@ -199,6 +199,29 @@ void qmkUpdate(void)
   uint32_t dt;
 #endif
 
+  /*
+   * ★ 호스트가 HID 프로토콜을 바꾸면 눌린 키를 비운다.
+   *
+   *   부트 <-> 리포트로 갈리면 리포트가 나가는 인터페이스가 통째로 바뀐다
+   *   (IF0 6KRO <-> IF1 NKRO). 그때 눌려 있던 키는 **옛 인터페이스에 남은 채로
+   *   아무도 안 뗀다.** QMK 가 nkro 비트를 토글할 때 clear_keyboard() 를 먼저
+   *   부르는 것과 같은 이유다.
+   *
+   *   하드웨어 층은 값만 기록한다. 변화 감지는 여기서 한다 — 그쪽에서 QMK 함수를
+   *   부르면 층이 뒤집히고, 게다가 거기는 제어 전송 안이다.
+   */
+  {
+    static uint8_t proto_p = 1;
+    uint8_t        proto   = hidKbdGetProtocol();
+
+    if (proto != proto_p)
+    {
+      proto_p = proto;
+      clear_keyboard();
+      logPrintf("[  ] HID 프로토콜 %s\n", proto ? "report" : "boot");
+    }
+  }
+
   keyboard_task();
 
 #if _USE_HW_PERF_STAT
@@ -335,6 +358,26 @@ static void cliQmk(cli_args_t *args)
    *   있으면 QMK 가 6KRO 를 아예 안 보내서 IF0 이 죽어 있다. 실측으로 KBD 는
    *   sent 1, EXK NKRO 는 sent 6440 이었다.
    */
+  /*
+   * HID 프로토콜을 보고 바꾼다 — **시험용이다.**
+   *
+   * 평소에는 호스트가 SET_PROTOCOL 로 정한다. 그런데 그것을 요구하는 것은 BIOS·
+   * 부트로더뿐이라 책상에서는 재현할 방법이 없다. 같은 함수를 직접 불러 흉내 낸다.
+   *
+   *   0 = 부트    IF0 으로 6KRO 가 나가야 한다
+   *   1 = 리포트  IF1 로 NKRO 가 나간다 (평소)
+   */
+  if (args->argc >= 1 && args->isStr(0, "proto"))
+  {
+    if (args->argc == 2)
+    {
+      hidKbdSetProtocol((uint8_t)args->getData(1));
+    }
+    cliPrintf("HID 프로토콜 : %d (%s)\n", hidKbdGetProtocol(),
+              hidKbdGetProtocol() ? "report — NKRO" : "boot — 6KRO");
+    ret = true;
+  }
+
   if (args->argc == 1 && args->isStr(0, "held"))
   {
     uint8_t  buf[32];
@@ -527,6 +570,7 @@ static void cliQmk(cli_args_t *args)
     cliPrintf("qmk log        USB 로 나가는 부트 리포트를 찍는다\n");
 
     cliPrintf("qmk held      호스트가 눌린 것으로 아는 키 (NKRO 리포트)\n");
+    cliPrintf("qmk proto [0|1]  HID 프로토콜 (시험용 — 0 은 BIOS 가 쓰는 부트)\n");
     cliPrintf("qmk reset\n");
     cliPrintf("qmk clear eeprom\n");
   }

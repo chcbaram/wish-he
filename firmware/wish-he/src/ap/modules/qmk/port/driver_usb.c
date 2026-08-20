@@ -83,7 +83,13 @@ host_driver_t usb_driver = {
  */
 uint8_t keyboard_protocol_get(void)
 {
-  return 1;
+  /*
+   * 호스트가 SET_PROTOCOL 로 정한 값을 그대로 준다.
+   *
+   * 예전에는 늘 1 을 돌려줬다. 그러면 QMK 가 NKRO 만 보내서 부트 프로토콜만 아는
+   * BIOS·부트로더에서 키가 하나도 안 먹는다 — 실측으로 KBD sent 1 / EXK 6440 이었다.
+   */
+  return hidKbdGetProtocol();
 }
 
 bool host_can_send_nkro(void)

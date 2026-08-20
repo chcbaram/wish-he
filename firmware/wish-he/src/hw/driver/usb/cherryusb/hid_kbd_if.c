@@ -93,6 +93,26 @@ static volatile uint32_t lost_cnt      = 0;
 static struct usbd_interface kbd_intf;
 
 /*
+ * ── 부트 프로토콜 ───────────────────────────────────────────────────────
+ *
+ * 호스트가 SET_PROTOCOL 로 정한다. 0 = 부트, 1 = 리포트.
+ *
+ * ★ 이걸 안 받고 있었다. 스택의 weak 스텁이 요청을 삼키고 keyboard_protocol_get()
+ *   은 언제나 1 을 돌려줬다. 그런데 QMK 는 `keyboard_protocol && keymap_config.nkro`
+ *   일 때 **6KRO 를 아예 안 보낸다.** 우리 기본이 NKRO 라, 부트 프로토콜만 아는
+ *   BIOS·부트로더 화면에서는 **키가 하나도 안 먹었다.**
+ *
+ *   실측으로도 보였다 — 타건 중에 `usb stat` 이 KBD sent 1 / EXK nkro 6440 이다.
+ *   IF0 은 열거 직후 한 번 나가고 그 뒤로 죽어 있었다.
+ *
+ * ★ 기본값은 1(리포트)이다. 호스트가 안 물으면 평소대로 NKRO 로 간다.
+ *
+ * ★ 버스 리셋에서 되돌린다. 그러지 않으면 BIOS 를 거쳐 부팅한 뒤 OS 에서도 부트
+ *   프로토콜로 남아 NKRO 가 안 나간다.
+ */
+static volatile uint8_t kbd_protocol   = 1;
+
+/*
  * 폴링 주기 측정용.
  *
  * 평소에는 바뀔 때만 보내므로 호스트가 실제로 몇 us 마다 물어보는지 알 수 없다.
@@ -136,8 +156,55 @@ static void kbdArm(void)
  * 섀도에는 마지막 상태가 그대로 남아 있으므로 is_pending 만 다시 세우면 된다.
  * 부트 리포트도 "지금 눌린 것 전부" 라는 절대 상태라 한 번 더 보내도 탈이 없다.
  */
+/*
+ * 호스트가 프로토콜을 정한다. **모든 인터페이스가 이리로 온다** — 부트 서브클래스를
+ * 가진 것은 IF0 뿐이라 그것만 본다.
+ */
+void usbd_hid_set_protocol(uint8_t busid, uint8_t intf, uint8_t protocol)
+{
+  (void)busid;
+
+  if (intf != 0) return;
+  if (kbd_protocol == protocol) return;
+
+  /*
+   * ★ 여기서는 값만 기록한다.
+   *
+   *   바뀌는 순간 리포트가 나가는 인터페이스가 통째로 갈리므로(IF1 NKRO <-> IF0
+   *   6KRO) 눌린 키를 비워야 하는데, **그것은 QMK 의 일이고 여기는 제어 전송
+   *   안이다.** 하드웨어 층이 QMK 함수를 부르면 층이 뒤집힌다 — 값을 노출하고
+   *   변화 감지는 그쪽에서 한다 (qmk.c 의 qmkUpdate).
+   */
+  kbd_protocol = protocol;
+}
+
+uint8_t usbd_hid_get_protocol(uint8_t busid, uint8_t intf)
+{
+  (void)busid;
+
+  return (intf == 0) ? kbd_protocol : 1;
+}
+
+uint8_t hidKbdGetProtocol(void)
+{
+  return kbd_protocol;
+}
+
+/*
+ * ★ 시험용이다. 평소에는 호스트가 정한다.
+ *
+ *   부트 프로토콜을 요구하는 것은 BIOS·부트로더뿐이라 책상에서는 재현할 방법이
+ *   없다. 같은 자리에 값을 넣어 흉내 낸다 — 그러지 않으면 "BIOS 에서 키가 먹나"
+ *   를 영영 시험할 수 없다.
+ */
+void hidKbdSetProtocol(uint8_t protocol)
+{
+  usbd_hid_set_protocol(0, 0, protocol);
+}
+
 void hidKbdUpdate(void)
 {
+
   uint32_t mask;
 
   if (is_tx_busy == false) return;
