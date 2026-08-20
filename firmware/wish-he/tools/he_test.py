@@ -311,6 +311,13 @@ def t_prof_stuck():
         h.close()
 
 
+def stat_clear(h):
+    """진단 카운터를 0 으로. 0xC9 의 CLEAR 플래그."""
+    for page in (0, 1):
+        dev._cmd(h, [0xC9, 1, page])
+    time.sleep(0.2)
+
+
 def via_set(h, ch, vid, *data):
     dev._cmd(h, [0x07, ch, vid] + list(data))
     time.sleep(0.25)
@@ -715,6 +722,11 @@ def t_scan_dead_release():
         say("keys inject fail off")
         say("keys inject off", "keys inject live off")
         keycode(h, 0, CELL_ST, CELL_CH, k0)
+
+        # ★ 이 시험은 타임아웃을 **일부러** 수백만 번 만든다. 안 지우면 다음 실행의
+        #   `link` 항목이 그것을 보고 "ADC 가 죽었다" 로 잘못 잡는다. 실제로 그랬다.
+        #   시험이 만든 흔적은 시험이 지운다 — 설정·기준값과 같은 규율이다.
+        stat_clear(h)
         h.close()
 
 
@@ -898,6 +910,14 @@ def rule():
 
 def main():
     global VERBOSE
+
+    # ★ 줄마다 바로 흘린다. 파이프로 받으면 파이썬이 통째로 버퍼링해서, 6분 동안
+    #   아무것도 안 나오다가 끝에 한꺼번에 쏟아진다 — 도는 중인지 멈춘 건지 모른다.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
     args = [a for a in sys.argv[1:] if a != "-v"]
     VERBOSE = "-v" in sys.argv[1:]
     groups = set(args)
