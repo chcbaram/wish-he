@@ -458,6 +458,41 @@ def t_rt_no_bypass():
         rt_restore()
 
 
+@test("rt", "웹앱 경로로 RT 를 켜도 키가 안 떨어진다 (B3)")
+def t_rt_reseed():
+    """
+    ★ 같은 조작이 CLI 로는 멀쩡하고 웹앱으로는 키를 떨어뜨렸다.
+
+      peak 은 설정과 짝을 이루는 값이라 설정이 바뀌면 다시 잡아야 한다.
+      전역 setter(keysSetRtFlags)는 그렇게 했는데 키별 명령(0xC5)만 빠져 있었다.
+
+      RT 를 끈 채로 깊게 눌렀다 입력지점 바로 위까지 올리면 peak 이 깊은 자리에
+      남는다. 그 상태에서 RT 를 켜면 `peak - d` 가 이미 해제 문턱을 넘어 있어
+      **손을 전혀 안 움직였는데 그 자리에서 떼진다.**
+    """
+    idx = CELL_ST * 8 + CELL_CH
+    orig = keycfg(idx)
+    try:
+        say("keys rt off")
+        if not step(200)[0]:
+            return "깊게 눌렀는데 안 잡힌다"
+        if not step(105)[0]:
+            return "입력지점 위인데 떼졌다"
+
+        v = list(orig)
+        v[12] = orig[12] | 0x01          # RT ON — 웹앱이 쓰는 길
+        keycfg(idx, v)
+        time.sleep(0.6)
+
+        p, d = press_state()
+        if not p:
+            return f"RT 를 켠 순간 떨어졌다 (깊이 {d}) — 묵은 peak 이 남았다"
+        return None
+    finally:
+        keycfg(idx, orig)
+        say("keys inject off", "keys rt off")
+
+
 # ── 4. 기준값 래치 ───────────────────────────────────────────────────────
 
 @test("latch", "상향 글리치가 기준값을 영구히 끌어올린다 (A2)", xfail=True)

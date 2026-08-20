@@ -946,6 +946,7 @@ static void            keysCurveRecipInit(void);
 static uint16_t        keysTravelUmOf(uint32_t i);
 static void            keysCalRejectOutlier(void);
 static void            keysInject(uint32_t step, uint32_t *snap);
+static void            keysRtReseed(void);
 
 #if CLI_USE(HW_KEYS)
 static void cliKeys(cli_args_t *args);
@@ -3747,6 +3748,15 @@ bool keysSetKeyCfg(uint32_t idx, const uint8_t *p_buf, uint32_t len)
   }
 
   /*
+   * ★ RT 추적 상태도 다시 잡는다 — 웹앱이 쓰는 길이 여기다.
+   *
+   *   전역 setter(keysSetRtFlags)는 이미 그렇게 하는데 이 길만 빠져 있었다.
+   *   같은 조작(RT 켜기)이 CLI 로 하면 멀쩡하고 웹앱으로 하면 키가 떨어졌다 —
+   *   **두 길의 동작이 다른 것 자체가 버그의 증거였다.**
+   */
+  keysRtReseed();
+
+  /*
    * ★ 전 키에 쓸 때는 **전역 값도 같이 맞춘다.**
    *
    *   쓰기와 읽기가 서로 다른 곳을 보고 있었다.
@@ -4017,6 +4027,41 @@ void keysSetRtReleaseUm(uint16_t um) { P()->rt_release_um = keysClampUm(um); key
 void keysSetBottomUm(uint16_t um)    { P()->bottom_um     = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); keysCfgTouch(); }
 void keysSetDeadUm(uint16_t um)      { P()->dead_um       = keysClampUm(um); keysCfgFanout(); keysThrRebuild(); keysCfgTouch(); }
 
+/*
+ * RT 추적 상태를 **지금 깊이로 다시 잡는다.**
+ *
+ * peak 은 설정과 짝을 이루는 값이다. 설정이 바뀌면 그 전에 쌓인 peak 은 뜻이 없다.
+ *
+ * ★ 안 지우면 켜는 순간 키가 떨어진다.
+ *
+ *   RT 를 끈 채로 깊게 눌렀다 입력지점 바로 위까지 올리면 peak 이 깊은 자리에
+ *   남는다. 그 상태에서 RT 를 켜면 `peak - d` 가 이미 해제 문턱을 넘어 있어
+ *   **손을 전혀 안 움직였는데 그 자리에서 해제된다.** 재현했다 —
+ *   2.00mm 로 눌렀다 1.05mm 로 올린 뒤 웹앱 경로로 RT 를 켜니 즉시 떼졌다.
+ *
+ * ★ 0 으로 미는 것이 아니라 **지금 깊이로 다시 잡는다.**
+ *
+ *   0 으로 밀면 떼진 상태의 키는 peak 이 0 에 머문다(해제 국면은 최솟값 추적이라
+ *   더 안 내려간다). 연속 RT 가 켜져 있으면 rt_arm 과 무관하게 RT 가 살아 있으므로,
+ *   쉬는 자리에서 반응 행정만큼만 눌러도 **절대 입력지점을 건너뛰고** 입력이 난다.
+ *
+ * ★ rt_arm 은 푼다. 설정을 바꾼 스트로크에서는 RT 를 쉬고 다음 스트로크부터 건다 —
+ *   반쯤 걸린 상태로 판정하는 것보다 한 번 쉬는 쪽이 예측 가능하다.
+ */
+static void keysRtReseed(void)
+{
+  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
+  {
+    rt_arm[st] = 0;
+    for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
+    {
+      int32_t d = (int32_t)base[st][c] - (int32_t)raw[st][c];
+
+      peak[st][c] = (d > 0) ? (uint16_t)d : 0;
+    }
+  }
+}
+
 void keysSetRtFlags(uint8_t flags)
 {
   P()->rt_flags = flags & (KEYS_RT_ON | KEYS_RT_BOTTOM | KEYS_RT_CONT);
@@ -4028,11 +4073,7 @@ void keysSetRtFlags(uint8_t flags)
    * RT 를 끄거나 켤 때 상태를 초기화한다. 안 그러면 직전 peak 이 남아
    * 켜자마자 엉뚱한 판정이 한 번 난다.
    */
-  for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
-  {
-    rt_arm[st] = 0;
-    for (uint32_t c = 0; c < KEYS_CH_MAX; c++) peak[st][c] = 0;
-  }
+  keysRtReseed();
 }
 
 /* 물리 배치 한 항목 {x, y, w, h, row, col} — 1/4 키유닛. 웹 도구가 이걸로 그린다. */
