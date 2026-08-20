@@ -38,6 +38,8 @@ enum via_ghost_value
 void ghostInit(void);
 void ghostLoad(uint8_t prof);
 void ghostSetDefault(uint8_t prof);
+uint32_t ghostGetBeatCount(void);   /* 친 박자 수 — 나간 리포트와 견주라고 */
+
 /* ★ ghostProcess 는 없앴다 — 사건이 아니라 리포트에서 센다. ghost.c 주석 참고 */
 void ghostUpdate(void);                  /* 메인 루프에서 부른다 */
 

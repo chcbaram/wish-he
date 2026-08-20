@@ -513,6 +513,12 @@ def nkro_sent():
     return int(m.group(1)) if m else 0
 
 
+def ghost_stat():
+    """친 박자 수와 나간 NKRO 리포트 수. 둘을 견줘야 사라진 박자가 보인다."""
+    m = re.search(r"연타\s+: 박자 (\d+),\s+NKRO 전송 (\d+)", say("qmk info"))
+    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+
 def beats(sec):
     """그 시간 동안 나간 NKRO 리포트 수. 연타가 도는지 보는 자다."""
     a = nkro_sent()
@@ -570,6 +576,54 @@ def t_ghost_count():
         via_set(h, CH_SOCD_A, 1, 0)
         via_set(h, CH_SOCD_A, 2, 0, 0)
         via_set(h, CH_SOCD_A, 3, 0, 0)
+        say("keys inject off", "keys inject live off")
+        keycode(h, 0, CELL_ST, CELL_CH, k0)
+        keycode(h, 0, CELL_ST, CELL_CH + 1, k1)
+        h.close()
+
+
+@test("ghost", "박자가 하나도 안 사라진다 (B6)")
+def t_ghost_no_merge():
+    """
+    한 박자는 리포트 두 개다 — 빈 것, 원래대로. 아래 계층이 큐가 아니라 **최신 상태
+    한 칸**이라, 앞 전송이 나가 있을 때 뒤엣것이 덮으면 그 박자가 통째로 사라진다.
+
+    ★ 조사에서는 위험해 보였는데 **재서 보니 안 일어난다.**
+
+      슬롯 내용을 무장 시점에 tx_report 로 복사하므로 뒤에 슬롯을 덮어써도 나가는
+      전송이 안 상한다. 박자를 잃으려면 한 전송(약 125us) 안에 상태가 **세 번**
+      바뀌어야 하는데, 설정 가능한 가장 빠른 박자가 10ms 라 80배 여유다.
+
+      그래도 시험으로 못 박아 둔다 — 전송 경로를 손대다 그 복사를 없애면 바로 샌다.
+
+    가장 빠른 설정(반복 10ms)에서 본다. 느린 쪽은 더 여유로우므로 볼 것이 없다.
+    """
+    h = hid()
+    k0 = keycode(h, 0, CELL_ST, CELL_CH)
+    k1 = keycode(h, 0, CELL_ST, CELL_CH + 1)
+    try:
+        keycode(h, 0, CELL_ST, CELL_CH, KC_TEST_A)
+        keycode(h, 0, CELL_ST, CELL_CH + 1, KC_TEST_B)
+        via_set(h, CH_GHOST, 3, 1)                 # 반복 = 10ms (최소)
+        via_set(h, CH_GHOST, 1, 1)
+        say("keys inject live on")
+        say("keys inject %d %d d 150" % (CELL_ST, CELL_CH),
+            "keys inject %d %d d 150" % (CELL_ST, CELL_CH + 1))
+        time.sleep(1.0)
+
+        b0, n0 = ghost_stat()
+        time.sleep(5.0)
+        b1, n1 = ghost_stat()
+        db, dn = b1 - b0, n1 - n0
+
+        if db < 50:
+            return f"박자가 거의 안 돈다 ({db} 개) — 시험 조건이 안 됐다"
+        if dn != db * 2:
+            return f"박자 {db} 개인데 리포트가 {dn} 개다 — {(db * 2 - dn) / 2:.1f} 박자가 사라졌다"
+        return None
+    finally:
+        via_set(h, CH_GHOST, 1, 0)
+        via_set(h, CH_GHOST, 3, 8)                 # 기본값으로
         say("keys inject off", "keys inject live off")
         keycode(h, 0, CELL_ST, CELL_CH, k0)
         keycode(h, 0, CELL_ST, CELL_CH + 1, k1)

@@ -23,6 +23,7 @@
 #include "log.h"
 #include "usb/cherryusb/hid_kbd_if.h"
 #include "usb/cherryusb/hid_exk_if.h"
+#include "ghost.h"
 #include "matrix.h"
 #include "dynamic_keymap.h"
 #include "keycode_config.h"
@@ -277,6 +278,22 @@ static void cliQmk(cli_args_t *args)
               (int)rgb_us_last, (int)(rgb_us_cnt ? rgb_us_sum / rgb_us_cnt : 0),
               (int)rgb_us_max, (int)rgb_us_cnt, QMK_OVER_US, (int)rgb_over_cnt);
 #endif
+    /*
+     * 연타 — **친 박자**와 **나간 리포트**를 나란히 둔다.
+     *
+     * 한 박자는 리포트 두 개다(빈 것 -> 원래대로). 아래가 큐가 아니라 최신 상태
+     * 한 칸이라, 앞 전송이 나가 있으면 빈 리포트가 덮여 그 박자가 사라진다.
+     * 나간 것만 세면 안 나간 것이 안 보인다 — 두 값의 비가 진단이다.
+     */
+    {
+      uint32_t beat = ghostGetBeatCount();
+      uint32_t nk   = hidExkGetSentCountOf(EXK_REPORT_ID_NKRO);
+
+      cliPrintf("연타          : 박자 %d,  NKRO 전송 %d  (박자당 %d.%02d)\n",
+                (int)beat, (int)nk,
+                (int)(beat ? nk / beat : 0),
+                (int)(beat ? (nk * 100 / beat) % 100 : 0));
+    }
     cliPrintf("keymap_config : 0x%04X  (nkro %d, 매직 스왑 %s)\n",
               (unsigned)keymap_config.raw, keymap_config.nkro,
               (keymap_config.raw & ~0x0080u) ? "★ 켜짐 — 비정상" : "없음");

@@ -12,6 +12,20 @@ static uint32_t change_ms = 0;      /* 키 구성이 마지막으로 바뀐 때 
 static uint32_t beat_ms   = 0;      /* 마지막 연타를 보낸 때 */
 static bool     running   = false;
 
+/*
+ * 박자를 몇 번 쳤나 — **시도한 횟수**다.
+ *
+ * ★ 실제로 나간 리포트 수와 견주라고 둔다.
+ *
+ *   한 박자는 리포트 두 개다(빈 것 -> 원래대로). 그런데 아래 계층은 큐가 아니라
+ *   **최신 상태 한 칸**이라, 앞 전송이 아직 나가 있으면 빈 리포트가 원래 리포트로
+ *   덮여 **그 박자가 통째로 사라진다.** 호스트는 아무 변화도 못 본다.
+ *
+ *   그것을 가리려면 "몇 번 치려 했나" 와 "몇 개가 나갔나" 를 나란히 놓아야 한다.
+ *   나간 것만 세면 안 나간 것이 안 보인다.
+ */
+static uint32_t beat_cnt = 0;
+
 void ghostInit(void)
 {
   ghost.enable = 0;
@@ -127,6 +141,13 @@ static void ghostBeat(void)
   memcpy(nkro_report, &saved_nkro, sizeof(saved_nkro));
 #endif
   send_keyboard_report();
+
+  beat_cnt++;
+}
+
+uint32_t ghostGetBeatCount(void)
+{
+  return beat_cnt;
 }
 
 void ghostUpdate(void)
