@@ -94,7 +94,7 @@ ROM → 부트 헤더 → 부트로더(0x80003000) → 매직 확인 → 본 펌
       | B1 | **부트 프로토콜이 사실상 미구현.** `keyboard_protocol_get()` 이 늘 1, `SET_PROTOCOL` 은 weak 스텁이 삼킨다. `nkro=1`(기본)이면 QMK 는 6KRO 를 안 보낸다 → **BIOS·부트로더에서 키가 안 먹을 수 있다.** 실측: `usb stat` 이 `KBD sent 1` vs `EXK nkro 6440` | `driver_usb.c:84` | **실측** |
       | B2 | **부팅 보정 실패가 방치된다.** 1152 스캔 중 한 번의 타임아웃에도 포기하고 반환값을 버린다. `is_calibrated=false` 면 판정이 아예 안 돌아 **전 키 무반응**. 자동 재시도 없음 | `keys.c` `keysInit`/`keysCalibrate` | 코드 |
       | B3 | **RT 상태(`peak`/`rt_arm`)를 웹앱 경로가 안 지운다.** `keysSetRtFlags`(CLI)는 지우는데 `keysSetKeyCfg`(0xC5)는 `keysThrRebuild()` 만 부른다 | `keys.c` | 코드 |
-      | B4 | **`rt_arm` 해제 기준이 주석과 코드가 다르다.** 주석은 "입력지점", 코드는 `t->release`. `press − rt_release ≤ release` 면 RT 가 **스트로크당 한 번만 살고 죽는다.** 기본값이 정확히 경계 위다 (1.00−0.50 == 0.50) | `keys.c` `keysTrack` 끝 | 코드 |
+      | ~~B4~~ | ~~`rt_arm` 해제 기준이 주석과 코드가 다르다~~ — **고쳤다.** 원위치 판정에 사용자 설정을 안 쓴다. 스퀄치 문턱(0.12mm, 실측 잡음에서 나온 상수)을 본다 | `keys.c` `keysTrack` 끝 | **고침** |
       | B5 | **연타 카운트가 게이트 비대칭으로 어긋난다.** 누른 뒤 SOCD 묶음에 그 키를 넣으면 놓을 때 `key_cnt--` 가 안 돈다 → `running` 이 영영 안 꺼지고 **아무 키나 눌러도 연타가 걸린다** | `ghost.c:52` | 코드 |
       | B6 | **연타의 두 리포트가 섀도에서 합쳐진다.** "빈 것 → 원래대로" 를 마이크로초 간격으로 보내는데 아래가 큐가 아니라 **최신 상태 한 칸**이다. 전송 중이면 빈 리포트가 덮여 **그 박자가 사라진다** | `ghost.c:99`, `hid_kbd_if.c:115` | 코드 |
       | B7 | **`keysThrRebuild()` 가 ISR 에서 돌고 원자성 보호가 없다.** `keys.c` 전체에 크리티컬 섹션이 하나도 없다. **디바운스가 없어 1스캔 글리치가 그대로 HID 로 나간다** | `hid_if.c:315`, `matrix.c:102` | 코드 |

@@ -366,6 +366,98 @@ def t_socd_restore():
         h.close()
 
 
+# ── 3-d. 래피드 트리거 ───────────────────────────────────────────────────
+
+def press_state():
+    """주입 셀의 (눌림, 깊이). 주입 중이 아니면 (None, None)."""
+    d, p = depth()
+    return p, d
+
+
+def step(um):
+    say("keys inject %d %d d %d" % (CELL_ST, CELL_CH, um))
+    time.sleep(0.4)
+    return press_state()
+
+
+def rt_setup(press_um, release_um, rt_press_um, rt_release_um):
+    say("keys cfg press %d" % press_um, "keys cfg release %d" % release_um)
+    say("keys rt on",
+        "keys rt press %d" % rt_press_um,
+        "keys rt release %d" % rt_release_um)
+
+
+def rt_restore():
+    say("keys inject off", "keys rt off", "keys rt press 50", "keys rt release 50")
+
+
+@test("rt", "RT 가 스트로크 안에서 반복해 산다")
+def t_rt_repeat():
+    """
+    ★ 이동폭이 그 **구역**의 문턱을 넘어야 한다.
+
+      RT 문턱은 깊이 구역마다 다르고 구역 **한가운데** 값으로 굽는다. 그래서 얕은
+      쪽에서는 같은 mm 가 카운트로 덜 나온다 — 폭을 빠듯하게 잡으면 시험이 헛돈다.
+      실제로 여기서 세 번 헛짚었다. 넉넉히 잡는다.
+    """
+    try:
+        rt_setup(100, 50, 20, 20)
+        want = [True, False, True, False, True]
+        got  = []
+        for um in (200, 170, 200, 170, 200):
+            p, _ = step(um)
+            got.append(p)
+        if got != want:
+            return f"왕복이 안 맞는다 — {['눌림' if x else '떼짐' for x in got]}"
+        return None
+    finally:
+        rt_restore()
+
+
+@test("rt", "해제지점을 올려도 RT 재입력이 산다 (B4)")
+def t_rt_arm_release():
+    """
+    ★ `rt_arm` 을 푸는 기준에 **사용자 설정을 끌어들이면 안 된다.**
+
+      예전에는 `d < t->release` 로 판정했다. RT 해제가 난 자리가 해제지점보다
+      얕으면 같은 스캔에 RT 가 풀려, 절대 입력지점까지 눌러야만 다시 살아났다.
+      해제지점 0.50mm(기본)에서는 아슬아슬하게 살고 0.80mm 에서는 죽었다 —
+      사용자 눈에는 "가끔 리셋이 안 먹는다" 로만 보인다.
+    """
+    try:
+        rt_setup(100, 80, 10, 20)          # 해제지점을 올린 설정
+        if not step(105)[0]:
+            return "누름이 안 잡힌다"
+        if step(68)[0]:
+            return "RT 해제가 안 났다 — 이동폭이 구역 문턱보다 작다"
+        p, d = step(90)
+        if not p:
+            return f"RT 재입력이 안 산다 (깊이 {d}) — 해제지점 때문에 RT 가 죽었다"
+        return None
+    finally:
+        rt_restore()
+
+
+@test("rt", "쉬는 상태에서 입력지점을 건너뛰지 않는다")
+def t_rt_no_bypass():
+    """
+    ★ 위 수정의 위험한 쪽이다.
+
+      `rt_arm` 을 아예 안 풀면 쉬는 상태에서 살짝만 눌러도 RT 가 걸려 절대
+      입력지점을 건너뛴다. 원위치로 돌아오면 반드시 풀려야 한다.
+    """
+    try:
+        rt_setup(100, 50, 10, 20)
+        step(200); step(0)                 # 한 번 눌렀다 완전히 뗀다
+        for um in (20, 40, 60, 80):        # 입력지점(1.00mm) 아래로만 누른다
+            p, d = step(um)
+            if p:
+                return f"{um/100:.2f}mm(깊이 {d})에서 눌렸다 — 입력지점을 건너뛴다"
+        return None
+    finally:
+        rt_restore()
+
+
 # ── 4. 기준값 래치 ───────────────────────────────────────────────────────
 
 @test("latch", "상향 글리치가 기준값을 영구히 끌어올린다 (A2)", xfail=True)
