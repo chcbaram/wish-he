@@ -493,6 +493,80 @@ def t_rt_reseed():
         say("keys inject off", "keys rt off")
 
 
+# ── 3-e. 연타 ────────────────────────────────────────────────────────────
+
+CH_GHOST, CH_SOCD_A = 12, 10
+KC_F13, KC_F14 = 0x0068, 0x0069        # 무해한 키 — 호스트에 쳐 넣어도 아무 일 없다
+
+
+def nkro_sent():
+    m = re.search(r"EXK\s+ready \d+\s+sent (\d+)", say("usb stat"))
+    return int(m.group(1)) if m else 0
+
+
+def beats(sec):
+    """그 시간 동안 나간 NKRO 리포트 수. 연타가 도는지 보는 자다."""
+    a = nkro_sent()
+    time.sleep(sec)
+    return nkro_sent() - a
+
+
+@test("ghost", "두 키를 쥐면 연타가 돌고, 한 키에서는 안 돈다 (B5)")
+def t_ghost_count():
+    """
+    ★ 카운트를 **사건이 아니라 리포트에서** 센다.
+
+      예전에는 누름 +1 / 놓음 -1 이었는데 그 앞에 게이트가 셋 있었다(enable,
+      socdIsUsed, IS_BASIC_KEYCODE). 누름과 놓음 사이에 하나라도 바뀌면 짝이
+      영영 깨진다.
+
+      두 키로 연타를 돌리는 중에 하나를 SOCD 묶음에 넣고 둘 다 떼면, key_cnt 가
+      1 남아 running 이 안 꺼진다. 그 뒤로 **키 하나만 눌러도 연타가 걸렸다.**
+
+    ★ 시험 키를 F13/F14 로 바꿔 둔다. 연타는 리포트를 실제로 호스트에 쏘므로,
+      평소 키코드 그대로 두면 화면에 글자가 쏟아진다.
+    """
+    h = hid()
+    k0 = keycode(h, 0, CELL_ST, CELL_CH)
+    k1 = keycode(h, 0, CELL_ST, CELL_CH + 1)
+    try:
+        keycode(h, 0, CELL_ST, CELL_CH, KC_F13)
+        keycode(h, 0, CELL_ST, CELL_CH + 1, KC_F14)
+        via_set(h, CH_GHOST, 1, 1)                 # 연타 켬
+        say("keys inject live on")
+
+        say("keys inject %d %d d 150" % (CELL_ST, CELL_CH),
+            "keys inject %d %d d 150" % (CELL_ST, CELL_CH + 1))
+        time.sleep(0.5)
+        if beats(1.5) < 10:
+            return "두 키를 쥐었는데 연타가 안 돈다"
+
+        # 누른 채로 SOCD 묶음에 넣는다 — 게이트를 바꿔 짝을 깬다
+        via_set(h, CH_SOCD_A, 2, KC_F13 >> 8, KC_F13 & 0xFF)
+        via_set(h, CH_SOCD_A, 3, KC_F14 >> 8, KC_F14 & 0xFF)
+        via_set(h, CH_SOCD_A, 1, 1)
+
+        say("keys inject %d %d d 0" % (CELL_ST, CELL_CH)); time.sleep(0.5)
+        say("keys inject %d %d d 0" % (CELL_ST, CELL_CH + 1)); time.sleep(0.8)
+
+        via_set(h, CH_SOCD_A, 1, 0)
+        say("keys inject %d %d d 150" % (CELL_ST, CELL_CH + 1))
+        time.sleep(0.8)
+        n = beats(2.0)
+        if n > 10:
+            return f"한 키만 눌렀는데 연타가 돈다 ({n} 개/2초)"
+        return None
+    finally:
+        via_set(h, CH_GHOST, 1, 0)
+        via_set(h, CH_SOCD_A, 1, 0)
+        via_set(h, CH_SOCD_A, 2, 0, 0)
+        via_set(h, CH_SOCD_A, 3, 0, 0)
+        say("keys inject off", "keys inject live off")
+        keycode(h, 0, CELL_ST, CELL_CH, k0)
+        keycode(h, 0, CELL_ST, CELL_CH + 1, k1)
+        h.close()
+
+
 # ── 4. 기준값 래치 ───────────────────────────────────────────────────────
 
 @test("latch", "상향 글리치가 기준값을 영구히 끌어올린다 (A2)", xfail=True)

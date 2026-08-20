@@ -447,7 +447,6 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record)
    *   끊는 갈래가 있어서, 뒤에 두면 그 경우에 안 불린다.
    */
   socdProcess(keycode, record);
-  ghostProcess(keycode, record);
 
   if (record->event.pressed)
   {

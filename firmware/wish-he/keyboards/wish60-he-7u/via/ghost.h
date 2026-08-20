@@ -38,7 +38,7 @@ enum via_ghost_value
 void ghostInit(void);
 void ghostLoad(uint8_t prof);
 void ghostSetDefault(uint8_t prof);
-void ghostProcess(uint16_t keycode, keyrecord_t *record);
+/* ★ ghostProcess 는 없앴다 — 사건이 아니라 리포트에서 센다. ghost.c 주석 참고 */
 void ghostUpdate(void);                  /* 메인 루프에서 부른다 */
 
 void ghostViaSet(uint8_t *p_val);
