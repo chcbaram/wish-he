@@ -1016,6 +1016,34 @@ static uint32_t scan_over_cnt = 0;
 static uint32_t scan_cnt      = 0;
 static bool     is_init      = false;
 static uint32_t timeout_cnt  = 0;
+
+/*
+ * ── 스캔이 죽었을 때의 실패 방향 ────────────────────────────────────────
+ *
+ * ★ 안전한 쪽으로 실패해야 한다.
+ *
+ *   DMA 완료 대기가 실패하면 그 스텝부터 끝까지 판정이 안 돈다. 그러면 `pressed[]`
+ *   가 **직전 값으로 얼어붙는다** — 눌려 있던 키가 눌린 채로 굳고, 손을 떼도
+ *   호스트는 모른다. ADC 가 안 돌아오면 영원히 그 상태다.
+ *
+ *   "키보드가 안 먹는다" 는 알아채고 뽑았다 꽂으면 된다. **"키 하나가 계속 눌려
+ *   있다" 는 그 사이에 글자를 쏟아붓는다.** 같은 고장인데 피해가 다르다.
+ *
+ *   그래서 실패가 이어지면 전 키를 놓는다. 한 번의 실패로는 안 놓는다 — 스캔 한
+ *   바퀴가 26us 라 순간적인 것에 반응하면 멀쩡한 타건이 끊긴다.
+ *
+ * ★ 시간으로 잰다. 스캔 횟수로 세면 안 된다 — 진짜 타임아웃은 스핀 한도(10만 회)를
+ *   다 돌고 나서 실패하므로 한 바퀴가 훨씬 느리다. 횟수 기준은 상황마다 뜻이 달라진다.
+ */
+#define KEYS_TIMEOUT_SAFE_MS   50
+
+static uint32_t timeout_run_ms   = 0;      /* 연속 실패가 시작된 때 */
+static bool     timeout_run      = false;
+static uint32_t timeout_safe_cnt = 0;      /* 안전 해제가 걸린 횟수 */
+
+/* 보정이 안 된 채로 남지 않게 — 주기 재시도 (keysCfgUpdate) */
+#define KEYS_CAL_RETRY_MS   2000
+static uint32_t cal_retry_ms = 0;
 static uint32_t cal_time_ms  = 0;
 static uint32_t drift_ms     = 0;
 static bool     drift_due    = false;
@@ -1066,6 +1094,43 @@ static uint16_t inject_raw[KEYS_STEP_MAX][KEYS_CH_MAX];  /* 12비트 원시값 *
 static uint16_t inject_noise_pp   = 0;                   /* 0 = 잡음 없음 (12비트 눈금) */
 static bool     inject_noise_tail = false;               /* 꼬리 있는 분포를 쓴다 */
 static uint32_t inject_rng        = 0x2545F491;
+
+/*
+ * DMA 완료 대기를 일부러 실패시킨다 — 주입으로는 못 만드는 경로다.
+ *
+ * ★ 왜 필요한가.
+ *
+ *   타임아웃이 나면 그 스텝부터 끝까지 판정이 안 돌아 `pressed[]` 가 **직전 값으로
+ *   얼어붙는다.** 안전한 방향(전 키 해제)이 아니라 **눌린 채로 굳는 쪽**이다.
+ *   실제로 난 적이 있다 — 05편에 174회 연속 타임아웃 기록이 있다.
+ *
+ *   값 주입은 스캔 **뒤**를 시험한다. 이건 스캔 **자체**가 실패하는 경로라 따로 둔다.
+ */
+/*
+ * ★ .noinit 에 둔다 — **리셋을 넘어 살아남아야 한다.**
+ *
+ *   부팅 보정이 실패하는 경로를 시험하려면 부팅 **전에** 실패를 걸어 둬야 한다.
+ *   평범한 전역이면 BSS 초기화가 지워 버려서 그 경로는 영영 못 시험한다.
+ *   책상에서 재현할 수 없는 자리를 그냥 두면, 사용자가 겪고서야 알게 된다.
+ *
+ *   매직을 같이 둔다. 전원을 뽑았다 꽂으면 RAM 이 쓰레기라, 매직이 안 맞으면
+ *   꺼진 것으로 본다 — 시험 플래그가 우연히 켜진 채로 부팅하면 곤란하다.
+ */
+#define KEYS_FAIL_MAGIC   0x5A11EDU
+
+static __attribute__((section(".noinit"), used)) uint32_t inject_fail_magic;
+static __attribute__((section(".noinit"), used)) uint32_t inject_fail_raw;
+
+static inline bool keysInjectFail(void)
+{
+  return (inject_fail_magic == KEYS_FAIL_MAGIC) && (inject_fail_raw != 0);
+}
+
+static inline void keysInjectFailSet(bool on)
+{
+  inject_fail_magic = on ? KEYS_FAIL_MAGIC : 0;
+  inject_fail_raw   = on ? 1U : 0U;
+}
 
 /*
  * ★ 주입 중에는 리포트를 막는 것이 기본이다.
@@ -1154,7 +1219,24 @@ bool keysInit(void)
 
   if (ret)
   {
-    keysCalibrate();
+    /*
+     * ★ 한 번 실패했다고 포기하면 키보드가 통째로 죽는다.
+     *
+     *   keysCalibrate() 는 1152 스캔 중 **단 한 번의 DMA 타임아웃에도 즉시
+     *   포기**한다. 그러면 is_calibrated 가 false 로 남는데, 그 상태에서는
+     *   keysTrack 이 아예 안 돌아 **모든 키가 무반응**이다. 표시도 전부 0 이다.
+     *
+     *   사용자 눈에는 "USB 는 잡히는데 키가 하나도 안 먹는" 상태다. 원인을 알려면
+     *   콘솔에 붙어 로그를 봐야 한다. 복구 수단도 `keys cal` 을 손으로 치는 것뿐이다.
+     *
+     *   부팅 직후는 전원·클럭이 막 자리를 잡는 때라 한 번쯤 놓칠 수 있다.
+     *   몇 번 다시 해 본다 — 그래도 안 되면 아래 주기 재시도가 받는다.
+     */
+    for (uint32_t n = 0; n < 3 && is_calibrated == false; n++)
+    {
+      if (n > 0) logPrintf("[  ] 보정 재시도 %d\n", (int)n);
+      keysCalibrate();
+    }
   }
 
   logPrintf("[%s] keysInit()\n", ret ? "OK" : "E_");
@@ -1378,6 +1460,13 @@ static inline void keysDmaArm(void)
 static inline bool keysWaitDma(void)
 {
   uint32_t spin = 0;
+
+  /* 시험용 강제 실패 — 스핀을 돌지 않고 바로 실패로 본다 */
+  if (keysInjectFail())
+  {
+    timeout_cnt++;
+    return false;
+  }
 
   while (adc0_buf[KEYS_SEQ_LEN - 1] == 0 || adc1_buf[KEYS_SEQ_LEN - 1] == 0)
   {
@@ -2506,6 +2595,39 @@ ATTR_RAMFUNC bool keysUpdate(void)
     if (is_calibrated) keysTrack(hold);
   }
 
+  /*
+   * 스캔이 죽어 있으면 전 키를 놓는다 — 위 KEYS_TIMEOUT_SAFE_MS 주석 참고.
+   * 성공하면 즉시 잊는다.
+   */
+  if (ret == false)
+  {
+    uint32_t now = millis();
+
+    if (timeout_run == false)
+    {
+      timeout_run    = true;
+      timeout_run_ms = now;
+    }
+    else if ((now - timeout_run_ms) >= KEYS_TIMEOUT_SAFE_MS)
+    {
+      bool any = false;
+
+      for (uint32_t st = 0; st < KEYS_STEP_MAX; st++) if (pressed[st]) any = true;
+
+      if (any)
+      {
+        memset(pressed, 0, sizeof(pressed));
+        memset(rt_arm,  0, sizeof(rt_arm));
+        timeout_safe_cnt++;
+      }
+      timeout_run_ms = now;      /* 계속 죽어 있으면 새로 눌린 것도 계속 놓는다 */
+    }
+  }
+  else
+  {
+    timeout_run = false;
+  }
+
   /* 링 칸은 스캔 단위로 돈다 — 한 스캔 안에서는 64셀이 같은 칸을 덮는다 */
   if (++acc_idx >= KEYS_ACC_CNT) acc_idx = 0;
 
@@ -2579,7 +2701,8 @@ void keysClearStat(void)
   scan_us_max   = 0;
   scan_over_cnt = 0;
   scan_cnt      = 0;
-  timeout_cnt   = 0;
+  timeout_cnt      = 0;
+  timeout_safe_cnt = 0;
 
   /* 기준값 사건도 같이 — 깨끗한 창을 잡아야 시간당 몇 번인지 잴 수 있다 */
   latch_cnt     = 0;
@@ -3842,6 +3965,27 @@ void keysCfgUpdate(void)
    */
   keysProfUpdate_kb();
 
+  /*
+   * ★ 보정이 안 됐으면 계속 다시 해 본다.
+   *
+   *   is_calibrated 가 false 면 판정이 아예 안 돌아 **모든 키가 무반응**이다.
+   *   부팅 때 세 번 해 보고도 안 됐다면 그때 ADC 가 아직 안 섰던 것일 수 있다 —
+   *   가만두면 영영 죽어 있으므로 주기적으로 다시 잡는다.
+   *
+   *   보정은 1152 스캔이라 30ms 쯤 메인 루프를 막는다. 그런데 이 상태에서는
+   *   어차피 키보드가 죽어 있으므로 막을 것이 없다.
+   */
+  if (is_calibrated == false && is_init)
+  {
+    if (millis() - cal_retry_ms >= KEYS_CAL_RETRY_MS)
+    {
+      cal_retry_ms = millis();
+      logPrintf("[  ] 보정이 안 됐다 — 다시 잡는다\n");
+      keysCalibrate();
+    }
+    return;
+  }
+
   if (cfg_dirty == false)                                return;
   if (cal_active)                                        return;
   if (millis() - cfg_dirty_ms < KEYS_CFG_SAVE_QUIET_MS)  return;
@@ -4340,7 +4484,15 @@ void cliKeys(cli_args_t *args)
       inject_noise_pp   = 0;
       inject_noise_tail = false;
       inject_live       = false;
+      keysInjectFailSet(false);
       cliPrintf("주입 전부 해제\n");
+      ret = true;
+    }
+    else if (args->argc == 3 && args->isStr(1, "fail"))
+    {
+      keysInjectFailSet(args->isStr(2, "on"));
+      cliPrintf("DMA 완료 대기 강제 실패 %s%s\n", keysInjectFail() ? "켬" : "끔",
+                keysInjectFail() ? "  — 리셋을 넘어 남는다. 반드시 되돌릴 것" : "");
       ret = true;
     }
     else if (args->argc == 3 && args->isStr(1, "live"))
@@ -4409,6 +4561,7 @@ void cliKeys(cli_args_t *args)
       cliPrintf("keys inject <st> <ch> d <um>   깊이(0.01mm)로\n");
       cliPrintf("keys inject noise <pp> [tail]  잡음을 얹는다\n");
       cliPrintf("keys inject live on|off        호스트로 내보낼지 (기본 끔)\n");
+      cliPrintf("keys inject fail on|off        DMA 대기를 일부러 실패시킨다\n");
       cliPrintf("keys inject off                전부 해제\n");
       ret = true;
     }
@@ -4430,7 +4583,8 @@ void cliKeys(cli_args_t *args)
     cliPrintf("scan        : %d us  (max %d, %dus 초과 %d / %d 회)\n",
               (int)scan_time_us, (int)scan_us_max,
               KEYS_SCAN_OVER_US, (int)scan_over_cnt, (int)scan_cnt);
-    cliPrintf("timeout     : %d\n", (int)timeout_cnt);
+    cliPrintf("timeout     : %d  (안전 해제 %d 회)\n",
+              (int)timeout_cnt, (int)timeout_safe_cnt);
     cliPrintf("기준값 사건 : latch %d,  drift 위 %d / 아래 %d\n",
               (int)latch_cnt, (int)drift_up_cnt, (int)drift_dn_cnt);
     ret = true;

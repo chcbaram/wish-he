@@ -678,6 +678,65 @@ def t_boot_protocol():
         h.close()
 
 
+@test("fail", "스캔이 죽으면 전 키를 놓는다 (A4)")
+def t_scan_dead_release():
+    """
+    ★ 안전한 쪽으로 실패해야 한다.
+
+      DMA 완료 대기가 실패하면 그 스텝부터 끝까지 판정이 안 돌아 `pressed[]` 가
+      직전 값으로 얼어붙는다. 눌려 있던 키가 **눌린 채로 굳고 손을 떼도 호스트는
+      모른다.** ADC 가 안 돌아오면 영원히 그 상태다.
+
+      "키보드가 안 먹는다" 는 뽑았다 꽂으면 된다. **"키 하나가 계속 눌려 있다" 는
+      그 사이에 글자를 쏟아붓는다.** 같은 고장인데 피해가 다르다.
+    """
+    h = hid()
+    k0 = keycode(h, 0, CELL_ST, CELL_CH)
+    try:
+        keycode(h, 0, CELL_ST, CELL_CH, KC_TEST_A)
+        say("keys inject live on")
+        say("keys inject %d %d d 150" % (CELL_ST, CELL_CH))
+        time.sleep(0.6)
+        if not held():
+            return "누름이 호스트에 안 갔다"
+
+        say("keys inject fail on")          # ADC 가 죽은 상황
+        time.sleep(0.8)
+        k = held()
+        if k:
+            return f"스캔이 죽었는데 키가 눌린 채로 남았다 — {['0x%02X' % x for x in k]}"
+
+        say("keys inject fail off")         # 복구되면 다시 잡혀야 한다
+        time.sleep(0.8)
+        if not held():
+            return "ADC 가 돌아왔는데 다시 안 잡힌다"
+        return None
+    finally:
+        say("keys inject fail off")
+        say("keys inject off", "keys inject live off")
+        keycode(h, 0, CELL_ST, CELL_CH, k0)
+        h.close()
+
+
+@test("fail", "보정이 안 된 채로 남지 않는다 (B2)")
+def t_cal_alive():
+    """
+    ★ 부팅 보정 실패 경로는 **리셋을 거쳐야** 재현된다.
+
+      keysCalibrate 는 1152 스캔 중 한 번의 타임아웃에도 포기하고, is_calibrated 가
+      false 면 판정이 아예 안 돌아 모든 키가 무반응이다. 복구 수단이 `keys cal` 을
+      손으로 치는 것뿐이었다.
+
+      강제 실패 플래그를 .noinit 에 둬서 리셋을 넘어 살아남게 했고, 그 절차는
+      17편에 적어 뒀다 — 여기서는 **지금 보정돼 있는지**만 본다. 리셋은 USB 를
+      끊어 시험 흐름을 깨므로 자동 시험에 넣지 않는다.
+    """
+    o = say("keys info")
+    if "calibrated  : 1" not in o:
+        return "보정이 안 된 상태다 — 이 상태에서는 모든 키가 무반응이다"
+    return None
+
+
 # ── 4. 기준값 래치 ───────────────────────────────────────────────────────
 
 @test("latch", "상향 글리치가 기준값을 영구히 끌어올린다 (A2)", xfail=True)
