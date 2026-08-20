@@ -435,6 +435,33 @@ bool hidExkInit(void)
 
 bool     hidExkIsConfigured(void) { return is_configured; }
 uint32_t hidExkGetSentCount(void) { return sent_cnt; }
+/*
+ * NKRO 칸의 마지막 내용을 그대로 준다 — **호스트가 지금 눌린 것으로 아는 키**다.
+ *
+ * ★ `qmk log` 로는 이걸 못 본다. 그쪽은 부트 키보드(IF0) 섀도를 읽는데, NKRO 가
+ *   켜져 있으면 QMK 가 6KRO 를 아예 안 보내서 IF0 은 죽어 있다. 실측으로 KBD 는
+ *   sent 1, EXK NKRO 는 sent 6440 이었다 — 화면만 보면 아무 일도 없어 보인다.
+ *
+ * "키가 눌린 채로 남았다" 를 가리려면 이 자리를 봐야 한다. 매트릭스가 0 이어도
+ * 여기 비트가 서 있으면 호스트에는 눌려 있는 것이다 — 그 둘이 갈리는 것이 곧 버그다.
+ *
+ * 돌려주는 길이는 실제 리포트 길이다. 0 이면 아직 아무것도 안 실렸다.
+ */
+uint8_t hidExkGetReportRaw(uint8_t report_id, uint8_t *p_buf, uint8_t len)
+{
+  exk_slot_t id;
+  uint8_t    n;
+
+  if (p_buf == NULL)                      return 0;
+  if (exkSlotOf(report_id, &id) == false) return 0;
+
+  n = slot[id].len;
+  if (n > len) n = len;
+  for (uint8_t i = 0; i < n; i++) p_buf[i] = slot[id].buf[i];
+
+  return n;
+}
+
 uint32_t hidExkGetLostCount(void) { return lost_cnt; }
 
 /* 종류별로 몇 번 실었는지. 어느 칸이 도는지 눈으로 가르려고 둔다. */

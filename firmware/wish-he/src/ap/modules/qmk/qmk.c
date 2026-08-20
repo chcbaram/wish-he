@@ -22,6 +22,7 @@
 #include "cli.h"
 #include "log.h"
 #include "usb/cherryusb/hid_kbd_if.h"
+#include "usb/cherryusb/hid_exk_if.h"
 #include "matrix.h"
 #include "dynamic_keymap.h"
 #include "keycode_config.h"
@@ -305,6 +306,45 @@ static void cliQmk(cli_args_t *args)
    * 여기서 기대한 코드가 나오면 장치는 결백하고 호스트 해석 문제이며, 다른 코드가
    * 나오면 QMK 에서 리포트를 만드는 사이가 잘못된 것이다.
    */
+  /*
+   * 호스트가 지금 눌린 것으로 아는 키를 그대로 보여준다.
+   *
+   * ★ "키가 눌린 채로 남았다" 를 가리는 유일한 자리다.
+   *
+   *   매트릭스(`keys show`)는 장치가 보는 것이고, 이쪽은 **호스트가 보는 것**이다.
+   *   둘이 갈리면 그게 곧 버그다 — 손을 다 뗐는데 호스트에는 남아 있는 상태.
+   *
+   *   `qmk log` 로는 못 본다. 그쪽은 부트 키보드(IF0) 섀도를 읽는데 NKRO 가 켜져
+   *   있으면 QMK 가 6KRO 를 아예 안 보내서 IF0 이 죽어 있다. 실측으로 KBD 는
+   *   sent 1, EXK NKRO 는 sent 6440 이었다.
+   */
+  if (args->argc == 1 && args->isStr(0, "held"))
+  {
+    uint8_t  buf[32];
+    uint8_t  n = hidExkGetReportRaw(EXK_REPORT_ID_NKRO, buf, sizeof(buf));
+    uint32_t cnt = 0;
+
+    if (n == 0)
+    {
+      cliPrintf("NKRO 리포트가 아직 안 실렸다\n");
+    }
+    else
+    {
+      cliPrintf("mods 0x%02X   눌린 키 : ", buf[1]);
+      for (uint32_t b = 2; b < n; b++)
+      {
+        for (uint32_t i = 0; i < 8; i++)
+        {
+          if ((buf[b] & (1U << i)) == 0) continue;
+          cliPrintf("0x%02X ", (unsigned)((b - 2) * 8 + i));
+          cnt++;
+        }
+      }
+      cliPrintf("%s(%d 개)\n", cnt ? "" : "없음  ", (int)cnt);
+    }
+    ret = true;
+  }
+
   if (args->argc == 1 && args->isStr(0, "log"))
   {
     uint8_t  prev[8] = { 0, };
@@ -468,6 +508,8 @@ static void cliQmk(cli_args_t *args)
 #endif
     cliPrintf("qmk rate\n");
     cliPrintf("qmk log        USB 로 나가는 부트 리포트를 찍는다\n");
+
+    cliPrintf("qmk held      호스트가 눌린 것으로 아는 키 (NKRO 리포트)\n");
     cliPrintf("qmk reset\n");
     cliPrintf("qmk clear eeprom\n");
   }

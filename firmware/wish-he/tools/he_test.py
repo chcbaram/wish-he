@@ -235,6 +235,82 @@ def t_release_zero():
         say("keys inject off")
 
 
+# ── 3-c. 호스트가 보는 것 ────────────────────────────────────────────────
+
+def held():
+    """호스트가 지금 눌린 것으로 아는 키 (NKRO 리포트). 없으면 빈 목록."""
+    o = say("qmk held")
+    m = re.search(r"눌린 키 : (.*?)\((\d+) 개\)", o)
+    if not m:
+        return []                       # 아직 리포트가 안 실렸다 = 아무것도 없다
+    return [int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1))]
+
+
+def hid():
+    return dev._open()
+
+
+def profile(h, n=None):
+    r, _ = dev._cmd(h, [0xC8, 1, n] if n is not None else [0xC8, 0])
+    return r[2]
+
+
+def keycode(h, layer, row, col, kc=None):
+    if kc is not None:
+        dev._cmd(h, [0x05, layer, row, col, (kc >> 8) & 0xFF, kc & 0xFF])
+        time.sleep(0.2)
+    r, _ = dev._cmd(h, [0x04, layer, row, col])
+    return (r[4] << 8) | r[5]
+
+
+@test("host", "프로파일을 바꿔도 눌린 키가 안 남는다 (A5)")
+def t_prof_stuck():
+    """
+    ★ 매트릭스가 아니라 **호스트가 보는 것**을 봐야 잡힌다.
+
+      QMK 는 뗄 때 키코드를 (레이어,행,열)로 다시 읽는데, 프로파일마다 키맵이
+      따로라 같은 자리가 새 프로파일에서는 다른 키코드다. 해제는 새 키코드로
+      나가고 **원래 키는 아무도 안 떼서 호스트에 영원히 남는다.**
+
+      재현하려면 두 프로파일의 그 자리 키코드가 달라야 한다.
+    """
+    h = hid()
+    p0 = profile(h)
+    other = 1 if p0 != 1 else 0
+    orig = None
+
+    try:
+        profile(h, other); time.sleep(0.5)
+        orig = keycode(h, 0, CELL_ST, CELL_CH)
+        mine = keycode(h, 0, CELL_ST, CELL_CH, 0x001D if orig != 0x001D else 0x001B)
+        profile(h, p0); time.sleep(0.5)
+
+        if mine == keycode(h, 0, CELL_ST, CELL_CH):
+            return "두 프로파일의 키코드가 같아 시험이 안 된다"
+
+        say("keys inject live on")
+        say("keys inject %d %d d 150" % (CELL_ST, CELL_CH))
+        time.sleep(0.6)
+        if not held():
+            return "누름이 호스트에 안 갔다"
+
+        profile(h, other); time.sleep(0.8)
+        say("keys inject off")
+        time.sleep(0.8)
+
+        k = held()
+        if k:
+            return f"손을 뗐는데 호스트에 남아 있다 — {['0x%02X' % x for x in k]}"
+        return None
+    finally:
+        say("keys inject off", "keys inject live off")
+        if orig is not None:
+            profile(h, other); time.sleep(0.5)
+            keycode(h, 0, CELL_ST, CELL_CH, orig)
+        profile(h, p0); time.sleep(0.5)
+        h.close()
+
+
 # ── 4. 기준값 래치 ───────────────────────────────────────────────────────
 
 @test("latch", "상향 글리치가 기준값을 영구히 끌어올린다 (A2)", xfail=True)

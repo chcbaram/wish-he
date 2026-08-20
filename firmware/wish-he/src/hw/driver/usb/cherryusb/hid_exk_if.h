@@ -37,6 +37,9 @@ bool     hidExkIsConfigured(void);
 uint32_t hidExkGetSentCount(void);
 uint32_t hidExkGetSentCountOf(uint8_t report_id);   /* EXK_REPORT_ID_* 별 전송 횟수 */
 uint32_t hidExkGetLostCount(void);
+
+/* NKRO 칸의 마지막 내용 — 호스트가 지금 눌린 것으로 아는 키다. 길이를 돌려준다 */
+uint8_t  hidExkGetReportRaw(uint8_t report_id, uint8_t *p_buf, uint8_t len);
 void     hidExkUpdate(void);        /* 메인 루프에서 — 놓친 전송 완료를 되살린다 */
 
 
