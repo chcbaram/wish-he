@@ -126,12 +126,39 @@ void socdViaSet(uint8_t pair, uint8_t *p_val)
   switch (p_val[0])
   {
     case val_socd_enable:
+    {
+      bool was_on = (socd[pair].enable != 0);
+
       socd[pair].enable = p_val[1] ? 1 : 0;
 
-      /* 켜고 끌 때 눌림 기억을 지운다 — 끄는 순간 눌려 있던 키가 남으면 곤란하다 */
+      /*
+       * ★ 끌 때는 **억눌러 둔 키를 되살린다.**
+       *
+       *   억제는 리포트를 한 번 고치는 일이다(del_key). 되살리는 것은 상대 키를
+       *   뗄 때뿐인데, 여기서 눌림 기억을 지워 버리면 그 조건이 영영 거짓이 되어
+       *   **손은 누르고 있는데 호스트에는 없는** 상태가 된다.
+       *
+       *   재현했다 — X 를 누르고 W 를 눌러 X 가 억눌린 상태에서 SOCD 를 끄고 W 만
+       *   떼면 호스트에 아무 키도 안 남는다. X 를 뗐다 다시 눌러야 산다.
+       *
+       *   꺼진 뒤에는 두 키가 다 눌려 있는 것이 맞는 상태다. 지금 눌려 있는 것을
+       *   전부 다시 넣는다. 이미 들어 있는 키에 add_key 를 해도 무해하다.
+       */
+      if (was_on && socd[pair].enable == 0)
+      {
+        for (uint8_t i = 0; i < 2; i++)
+        {
+          if (socd_down[pair][i] && socd[pair].keycode[i] != KC_NO)
+            add_key(socd[pair].keycode[i]);
+        }
+        send_keyboard_report();
+      }
+
+      /* 눌림 기억은 지운다 — 켠 뒤의 판정은 다음 누름부터 새로 센다 */
       socd_down[pair][0] = false;
       socd_down[pair][1] = false;
       break;
+    }
 
     /* 키코드는 두 바이트, 큰 자리가 먼저다 */
     case val_socd_key1:

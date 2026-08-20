@@ -311,6 +311,61 @@ def t_prof_stuck():
         h.close()
 
 
+def via_set(h, ch, vid, *data):
+    dev._cmd(h, [0x07, ch, vid] + list(data))
+    time.sleep(0.25)
+
+
+@test("host", "SOCD 를 꺼도 억눌린 키가 살아난다 (A6)")
+def t_socd_restore():
+    """
+    ★ 억제는 리포트를 한 번 고치는 일이다.
+
+      되살리는 것은 상대 키를 뗄 때뿐인데, SOCD 를 끄면서 눌림 기억을 지워 버리면
+      그 조건이 영영 거짓이 되어 **손은 누르고 있는데 호스트에는 없는** 상태가 된다.
+
+      X 를 누르고 W 를 눌러 X 가 억눌린 상태에서 SOCD 를 끄고 W 만 떼면, 고치기
+      전에는 호스트에 아무 키도 안 남았다.
+    """
+    CH_SOCD_A = 10          # via_port.c 의 id_ch_socd_a
+    V_EN, V_K1, V_K2 = 1, 2, 3
+    KC_X, KC_W = 0x001B, 0x001A
+
+    h = hid()
+    try:
+        via_set(h, CH_SOCD_A, V_K1, KC_X >> 8, KC_X & 0xFF)
+        via_set(h, CH_SOCD_A, V_K2, KC_W >> 8, KC_W & 0xFF)
+        via_set(h, CH_SOCD_A, V_EN, 1)
+
+        say("keys inject live on")
+        say("keys inject 0 0 d 150"); time.sleep(0.6)
+        if KC_X not in held():
+            return "X 누름이 호스트에 안 갔다"
+
+        say("keys inject 0 1 d 150"); time.sleep(0.6)
+        k = held()
+        if KC_X in k or KC_W not in k:
+            return f"SOCD 억제가 안 됐다 — {['0x%02X' % x for x in k]}"
+
+        via_set(h, CH_SOCD_A, V_EN, 0)      # 끈다
+        time.sleep(0.6)
+        say("keys inject 0 1 d 0")          # W 만 뗀다
+        time.sleep(0.8)
+
+        k = held()
+        if KC_X not in k:
+            return f"X 를 누르고 있는데 호스트에 없다 — {['0x%02X' % x for x in k]}"
+        if KC_W in k:
+            return "뗀 W 가 남아 있다"
+        return None
+    finally:
+        via_set(h, CH_SOCD_A, V_EN, 0)
+        via_set(h, CH_SOCD_A, V_K1, 0, 0)
+        via_set(h, CH_SOCD_A, V_K2, 0, 0)
+        say("keys inject off", "keys inject live off")
+        h.close()
+
+
 # ── 4. 기준값 래치 ───────────────────────────────────────────────────────
 
 @test("latch", "상향 글리치가 기준값을 영구히 끌어올린다 (A2)", xfail=True)
