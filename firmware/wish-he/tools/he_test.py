@@ -749,6 +749,122 @@ def t_cal_alive():
     return None
 
 
+# ── 3-f. 설정 채널 ───────────────────────────────────────────────────────
+
+# 플래시를 안 쓰는 왕복만으로 루프가 이보다 오래 멎으면 어딘가 기다리는 것이다.
+# 실측 0.5ms. 예전 코드는 응답을 못 실으면 그 자리에서 100ms 를 돌았다 (B11).
+LOOP_STALL_US = 5000
+
+
+def loop_stat():
+    """메인 루프 한 바퀴의 최대 시간과 초과 횟수."""
+    m = re.search(r"루프 한 바퀴  : max (\d+) us,\s+\d+us 초과 (\d+) 회", say("qmk info"))
+    return (int(m.group(1)), int(m.group(2))) if m else (None, None)
+
+
+def hammer(h, rounds=4, switch=True):
+    """
+    설정 채널을 몰아친다.
+
+    ★ switch 를 켜면 프로파일 전환을 섞는다. 전환은 플래시를 쓰고 그동안 인터럽트가
+      꺼지므로, 그 사이에 전송 완료를 놓치면 응답 하나가 붕 뜬다 — 이 통로에서
+      응답이 사라지거나 늦게 나가면 호스트가 그것을 **다음 명령의 응답으로
+      읽는다** (16편). 응답 소실을 보는 시험은 이걸 켜야 뜻이 있다.
+
+    ★ 루프 정지를 보는 시험은 반드시 끈다. 플래시 쓰기는 **정상적으로** 루프를
+      36ms 멎게 한다(실측). 그걸 섞으면 무엇이 멎게 했는지 못 가린다.
+
+    돌려주는 것 : (왕복 수, 응답 없음, 명령 바이트 어긋남)
+    """
+    n = lost = bad = 0
+
+    for p in range(rounds):
+        if switch:
+            r, _ = dev._cmd(h, [0xC8, 1, p % 4])       # 전환 = 플래시 쓰기
+            n += 1
+            if not r:
+                lost += 1
+            time.sleep(0.05)
+
+        for i in range(48):                            # 키 설정
+            r, _ = dev._cmd(h, [0xC5, 0x00, i])
+            n += 1
+            if not r:
+                lost += 1
+            elif r[0] != 0xC5:
+                bad += 1
+
+        for off in range(0, 512, 28):                  # 키맵
+            r, _ = dev._cmd(h, [0x12, (off >> 8) & 0xFF, off & 0xFF, 28])
+            n += 1
+            if not r:
+                lost += 1
+            elif r[0] != 0x12:
+                bad += 1
+
+    return n, lost, bad
+
+
+@test("usb", "설정 왕복이 하나도 안 사라지고 안 어긋난다 (B9)")
+def t_via_roundtrip():
+    """
+    ★ 응답이 **어긋나는 것**까지 본다. 사라지는 것만 세면 반만 보는 것이다.
+
+      이 통로에는 순번이 없어 요청 하나에 응답 하나로만 짝을 맞춘다. 한 번 밀리면
+      그 뒤 모든 응답이 한 칸씩 밀리고 재시도로도 못 푼다. 되비친 명령 바이트가
+      유일한 태그라 그것을 대조한다.
+    """
+    h = hid()
+    p0 = profile(h)
+
+    try:
+        n, lost, bad = hammer(h)
+
+        if lost:
+            return f"{n} 왕복 중 {lost} 건이 응답이 없다"
+        if bad:
+            return f"{n} 왕복 중 {bad} 건이 다른 명령의 응답이다 — 줄이 밀렸다"
+        return None
+    finally:
+        profile(h, p0)
+        time.sleep(0.5)
+        h.close()
+
+
+@test("usb", "왕복이 몰려도 메인 루프가 안 멎는다 (B11)")
+def t_loop_not_stalled():
+    """
+    ★ 태스크 시간으로는 안 보인다.
+
+      keyboard_task 자체는 짧은데 **다음 호출이 안 오는** 종류의 정지가 있다.
+      설정 응답을 못 실으면 그 자리에서 최대 100ms 를 돌던 코드가 그랬다 —
+      그동안 스캔도 리포트도 멎지만 task_us 에는 한 글자도 안 남는다.
+
+      그래서 루프 간격을 따로 잰다. 플래시 쓰기(6ms)는 정상이므로 그보다 넉넉히
+      위를 기준으로 삼는다.
+    """
+    h = hid()
+    p0 = profile(h)
+
+    try:
+        say("qmk reset")                 # 창을 잡는다 — 굽기·부팅 잡음을 뺀다
+        hammer(h, switch=False)          # 플래시 쓰기를 섞지 않는다 (위 설명)
+        mx, over = loop_stat()
+
+        if mx is None:
+            return "qmk info 에서 루프 간격을 못 읽었다"
+        if mx > LOOP_STALL_US:
+            return (f"루프가 {mx}us 멎었다 — 왕복만으로는 {LOOP_STALL_US}us 를 "
+                    f"넘으면 안 된다 (실측 0.5ms)")
+        if over:
+            return f"루프가 {over} 번 크게 멎었다 (최대 {mx}us)"
+        return None
+    finally:
+        profile(h, p0)
+        time.sleep(0.5)
+        h.close()
+
+
 # ── 4. 기준값 래치 ───────────────────────────────────────────────────────
 
 @test("latch", "상향 글리치가 기준값을 영구히 끌어올린다 (A2)", xfail=True)
