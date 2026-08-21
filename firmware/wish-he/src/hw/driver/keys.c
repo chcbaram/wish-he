@@ -947,6 +947,8 @@ static uint16_t        keysTravelUmOf(uint32_t i);
 static void            keysCalRejectOutlier(void);
 static void            keysInject(uint32_t step, uint32_t *snap);
 static void            keysRtReseed(void);
+static void            keysDeferredWork(void);
+static bool            keysProfApply(uint8_t idx);
 
 #if CLI_USE(HW_KEYS)
 static void cliKeys(cli_args_t *args);
@@ -1068,6 +1070,72 @@ static bool     is_cfg_loaded = false;
 static uint32_t latch_cnt    = 0;
 static uint32_t drift_up_cnt = 0;
 static uint32_t drift_dn_cnt = 0;
+
+/*
+ * ── ISR 에서 들어온 명령은 표시만 하고 메인 루프가 처리한다 ──────────────
+ *
+ * ★ 무엇이 문제인가.
+ *
+ *   설정 채널의 우리 확장(0xC5 키설정 · 0xC8 프로파일 · 0xCB 스위치 정의)은 USB
+ *   **인터럽트 안에서** 처리된다. 그런데 그 셋은 전부 판정용 표를 다시 만들고,
+ *   그 표를 읽는 keysTrack 은 메인 루프다. 위험은 넷이다 —
+ *
+ *     ① ISR 이 상위 층을 부른다. keysProfChanged_kb() 안에서 clear_keyboard() 가
+ *        돈다. 메인 루프의 keyboard_task 와 **같은 리포트 상태**를 만지고, 층도
+ *        뒤집힌다 — 하드웨어 층이 QMK 를, 그것도 제어 전송 안에서.
+ *
+ *     ② 읽고-고치고-쓰기가 사라진다. 판정은 `rt_arm[step] &= ~bit` 로 읽고 고쳐
+ *        쓰는데, 그 사이에 keysRtReseed() 가 rt_arm 을 0 으로 밀면 **그 초기화가
+ *        통째로 없어진다.** peak[][] 도 같다 — B3 로 고친 것이 되살아난다.
+ *
+ *     ③ 한 번 판정하는 동안 표가 갈린다. keysTrack 은 t->dead 를 읽고, 조금 뒤
+ *        t->release 를, 또 조금 뒤 t->press 를 읽는다. 그 사이에 인터럽트가 표를
+ *        갈아 끼우면 **앞뒤 필드가 다른 판본에서 온다.**
+ *
+ *     ④ 표 만들기가 재진입된다. CLI 로 값을 바꾸면 메인 루프에서 리빌드가 도는데,
+ *        그때 0xC5 가 오면 ISR 이 리빌드를 한 번 더 돌린다. 돌아온 바깥쪽이 **옛
+ *        설정으로 계산해 둔 값**을 그 위에 덮어쓴다.
+ *
+ * ★ **"판정이 반쯤 고친 표를 읽는다" 는 아니다** — 처음에 그렇게 적었다가 재보고
+ *   고쳤다.
+ *
+ *   인터럽트는 메인 루프를 끊지만 **그 반대는 안 된다.** 그래서 ISR 안의 리빌드는
+ *   keysTrack 에 대해 원자적이다 — 중간 상태(release 가 아직 0, dead 가 아직 안
+ *   잘림, RT 문턱이 하한 전)는 밖에서 볼 수가 없다.
+ *
+ *   실제로 재봤다. 키를 주입해 눌러 둔 채 같은 값을 300번씩 세 차례 쏘고 나간
+ *   리포트를 셌다 — **고치기 전에도 0 장**이었다. 유령 입력은 재현되지 않는다.
+ *
+ * ★ 크리티컬 섹션으로 감싸지 않는다.
+ *
+ *   리빌드는 64키 x 8구역에 나눗셈이 잔뜩이라 수백 us 다. 통째로 막으면 그동안 USB
+ *   전송 완료를 놓친다 — 그게 키보드를 죽인다(B9 에서 겪었다). 그리고 26us 실시간
+ *   루프의 뜨거운 쪽에 비용을 붙이게 된다.
+ *
+ *   **미루면 넷이 한꺼번에 없어진다.** 만드는 쪽과 읽는 쪽이 같은 문맥이 되므로
+ *   크리티컬 섹션이 한 줄도 안 든다. 이 저장소가 이미 쓰는 패턴이다 —
+ *   cal_save_req · prof_save_req · raw_pending 이 전부 "ISR 은 표시만".
+ *
+ * ★ 늦어지는 것은 한 바퀴(26us)다. 슬라이더에 26us 는 안 보인다.
+ *   루프 정지 시간도 안 변한다 — 같은 일을 자리만 옮겨 하는 것이라 (실측 647us ->
+ *   658~772us, 유휴 편차 안).
+ *
+ * ★ 설정 구조체 자체는 ISR 이 그대로 쓴다. 그건 판정이 안 읽는다 — 판정은 표만
+ *   본다. 리빌드 도중에 새 설정이 들어오면 표시가 다시 서서 한 바퀴 뒤 수렴한다.
+ */
+#define KEYS_PROF_NONE   0xFF
+
+static volatile bool     isr_ctx   = false;   /* 지금 ISR 안에서 keys 를 부르는 중 */
+static volatile bool     thr_req   = false;   /* 표를 다시 만들어야 한다 */
+static volatile bool     rt_req    = false;   /* RT 상태를 다시 잡아야 한다 */
+static volatile uint8_t  prof_req  = KEYS_PROF_NONE;
+static volatile uint32_t sw_ref_req = 0;      /* 다시 풀어야 할 커스텀 슬롯 (비트) */
+
+/*
+ * 미룬 횟수. 0 이면 **이 길이 한 번도 안 걸렸다는 뜻**이라 시험이 그것을 본다 —
+ * "유령 입력이 안 나왔다" 는 확률이지만 "미루기가 N 번 걸렸다" 는 사실이다.
+ */
+static uint32_t defer_cnt = 0;
 
 /*
  * ── 값 주입 ─────────────────────────────────────────────────────────
@@ -2013,6 +2081,14 @@ static uint32_t keysCurveToUm(const keys_sw_ref_t *r, uint32_t u, uint32_t trave
  */
 static void keysThrRebuild(void)
 {
+  /* ISR 이면 표시만 — 판정과 같은 문맥에서 만들게 (위 "미룬다" 절) */
+  if (isr_ctx)
+  {
+    thr_req = true;
+    defer_cnt++;
+    return;
+  }
+
   for (uint32_t i = 0; i < KEYS_MAX; i++)
   {
     const keys_key_set_t *k = KS(i);
@@ -2834,6 +2910,12 @@ bool keysCalIsActive(void)
 
 void keysCalStart(void)
 {
+  /*
+   * ★ 지우기 **전에** 멈춘다. 이 함수는 ISR 에서도 불린다(0xC7). 켜 둔 채로 지우면
+   *   메인 루프의 수집(keysCalCollect)이 지워지는 중인 배열에 값을 넣는다.
+   */
+  cal_active = false;
+
   for (uint32_t i = 0; i < KEYS_MAX; i++)
   {
     cal_min_tmp[i] = 0xFFFF;
@@ -3436,6 +3518,34 @@ static bool keysCfgLoad(void)
  *---------------------------------------------------------------------------*/
 
 uint8_t keysProfGet(void)  { return set_st.active; }
+
+/*
+ * 예약이 걸려 있으면 그 값을, 아니면 지금 값을.
+ *
+ * ★ keysProfGet() 을 이렇게 만들지 않는다. 그쪽은 프로파일마다 나뉜 EEPROM 자리를
+ *   고르는 데 쓰여서(socd·taphold·ghost), 예약값을 주면 아직 안 바뀐 프로파일의
+ *   설정을 새 프로파일 자리에 쓰게 된다.
+ *
+ *   이건 **설정 채널 응답 전용**이다. 요청을 받아 놓고 옛 번호를 돌려주면 호스트는
+ *   전환이 실패한 줄 안다 — 실제로는 한 바퀴 뒤에 된다.
+ */
+uint8_t keysProfGetReq(void)
+{
+  return (prof_req != KEYS_PROF_NONE) ? prof_req : set_st.active;
+}
+
+/*
+ * ISR 안에서 keys API 를 부르는 구간을 표시한다.
+ *
+ * ★ 부르는 자리는 하나뿐이다 — hid_if.c 의 OUT 콜백이 우리 확장 명령을 처리하는
+ *   구간. 거기 말고 keys 를 만지는 ISR 경로는 없다. 새로 생기면 여기도 같이
+ *   감싸야 한다.
+ */
+void keysIsrEnter(void) { isr_ctx = true;  }
+void keysIsrExit(void)  { isr_ctx = false; }
+
+/* 미룬 횟수 — 시험이 "이 길이 실제로 걸렸다" 를 사실로 확인하는 자리 */
+uint32_t keysGetDeferCount(void) { return defer_cnt; }
 uint8_t keysProfCount(void){ return KEYS_PROF_CNT; }
 
 /*
@@ -3466,23 +3576,53 @@ __attribute__((weak)) void keysProfChanged_kb(uint8_t idx)
   (void)idx;
 }
 
-bool keysProfSelect(uint8_t idx)
+/*
+ * 실제로 갈아 끼우는 본체. **메인 루프에서만 부른다.**
+ *
+ * ★ 예약(prof_req)을 안 본다. 미뤄 둔 것을 처리할 때 이걸 부르는데, 예약을 보면
+ *   **자기가 걸어 둔 요청에 걸려** "이미 그 값이다" 로 빠져나간다. 실제로 그렇게
+ *   되어 전환이 통째로 안 먹었다 — 응답은 새 번호를 주는데 장치는 안 바뀌었다.
+ *
+ * ★ 바뀌기 **전에** 한 번, 바뀐 **뒤에** 한 번 알린다.
+ *
+ *   조명 설정처럼 RAM 에 들고 쓰는 값은 옮기기 전에 지금 프로파일 자리에
+ *   내려놓아야 한다. 바꾼 뒤에 내려놓으면 새 프로파일 자리에 옛 값을 덮어쓴다.
+ */
+static bool keysProfApply(uint8_t idx)
 {
   if (idx >= KEYS_PROF_CNT) return false;
   if (idx == set_st.active) return false;      /* 바뀐 게 없으면 남길 것도 없다 */
 
-  /*
-   * ★ 바뀌기 **전에** 한 번, 바뀐 **뒤에** 한 번 알린다.
-   *
-   *   조명 설정처럼 RAM 에 들고 쓰는 값은 옮기기 전에 지금 프로파일 자리에
-   *   내려놓아야 한다. 바꾼 뒤에 내려놓으면 새 프로파일 자리에 옛 값을 덮어쓴다.
-   */
   keysProfChanged_kb(0xFF);          /* 0xFF = "곧 바뀐다, 지금 것을 내려놓아라" */
   set_st.active = idx;
   keysThrRebuild();
   keysProfChanged_kb(idx);
 
   return true;
+}
+
+/*
+ * ISR 이면 통째로 미룬다 — 표만이 아니다.
+ *
+ * ★ keysProfChanged_kb() 가 clear_keyboard() 를 부른다. QMK 리포트 상태를 ISR 에서
+ *   만지면 메인 루프의 keyboard_task 와 겹친다. 층도 뒤집힌다 — 하드웨어 층이
+ *   상위를 부르고, 그것도 제어 전송 안에서.
+ *
+ * ★ "곧 바뀐다"(0xFF) 알림이 set_st.active 보다 먼저 나가야 해서 반만 미룰 수 없다.
+ */
+bool keysProfSelect(uint8_t idx)
+{
+  if (idx >= KEYS_PROF_CNT)    return false;
+  if (idx == keysProfGetReq()) return false;   /* 이미 그 값이거나 이미 예약됐다 */
+
+  if (isr_ctx)
+  {
+    prof_req = idx;
+    defer_cnt++;
+    return true;
+  }
+
+  return keysProfApply(idx);
 }
 
 /*
@@ -3957,8 +4097,47 @@ void keysCfgTouch(void)
  */
 __attribute__((weak)) void keysProfUpdate_kb(void) {}
 
+/*
+ * ISR 이 표시해 둔 일을 여기서 실제로 한다. 메인 루프다 — 판정과 같은 문맥이라
+ * 표를 만드는 동안 아무도 그것을 읽지 않는다.
+ *
+ * ★ 표시를 **일하기 전에** 내린다. 하는 도중에 새 요청이 들어오면 표시가 다시
+ *   서서 다음 바퀴에 한 번 더 한다. 반대로 하면 그 요청이 사라진다.
+ *
+ * ★ 프로파일만 "안 바뀌었으면 내린다" 로 한다. 값을 들고 있는 표시라, 하는 도중에
+ *   **다른 프로파일** 요청이 들어왔으면 그것을 지우면 안 된다.
+ */
+static void keysDeferredWork(void)
+{
+  uint8_t p = prof_req;
+
+  if (p != KEYS_PROF_NONE)
+  {
+    keysProfApply(p);                      /* 예약을 안 보는 본체를 직접 부른다 */
+    if (prof_req == p) prof_req = KEYS_PROF_NONE;
+  }
+
+  if (sw_ref_req)
+  {
+    uint32_t m = sw_ref_req;
+
+    sw_ref_req = 0;
+    for (uint32_t i = 0; i < KEYS_SW_CUSTOM_CNT; i++)
+    {
+      if (m & (1U << i)) keysSwRefCustomOne(i);
+    }
+    thr_req = true;                        /* 푼 값이 바뀌었으니 표도 다시 */
+  }
+
+  if (thr_req) { thr_req = false; keysThrRebuild(); }
+  if (rt_req)  { rt_req  = false; keysRtReseed();   }
+}
+
 void keysCfgUpdate(void)
 {
+  /* ISR 이 미뤄 둔 것부터 — 표를 만드는 유일한 자리다 */
+  keysDeferredWork();
+
   /*
    * 프로파일이 바뀐 뒤 미뤄 둔 일 — 조명 다시 켜기 같은 것.
    * ISR 에서 하면 USB 가 멈춘다 (실제로 그렇게 굳었다).
@@ -4100,7 +4279,20 @@ bool keysSwCustomSet(uint32_t slot, const keys_sw_info_t *p_info)
   d->flux_bottom_gs = p_info->flux_bottom_gs;
   d->kind           = p_info->kind;
 
-  keysSwRefCustomOne(slot);
+  /*
+   * ★ 푸는 것까지 미룬다. keysSwRefCustomOne() 이 cust_curve[slot] 을 새로 굽는데,
+   *   판정이 sw_ref[i]->curve 로 **그 표를 읽는 중**일 수 있다. 표만 미루고 이걸
+   *   두면 구멍이 그대로 남는다.
+   */
+  if (isr_ctx)
+  {
+    sw_ref_req |= (1U << slot);
+    defer_cnt++;
+  }
+  else
+  {
+    keysSwRefCustomOne(slot);
+  }
   keysThrRebuild();
   sw_dirty = true;
   return true;
@@ -4194,6 +4386,20 @@ void keysSetDeadUm(uint16_t um)      { P()->dead_um       = keysClampUm(um); key
  */
 static void keysRtReseed(void)
 {
+  /*
+   * ISR 이면 표시만.
+   *
+   * ★ 여기가 표보다 위험하다. 판정이 `rt_arm[st] &= ~bit` 로 읽고-고치고-쓰는데,
+   *   그 사이에 밀면 **이 초기화가 통째로 사라진다** — B3 로 고친 것이 되살아난다.
+   *   표와 달리 이건 ISR 이 원자적이어도 남는다(위 ②).
+   */
+  if (isr_ctx)
+  {
+    rt_req = true;
+    defer_cnt++;
+    return;
+  }
+
   for (uint32_t st = 0; st < KEYS_STEP_MAX; st++)
   {
     rt_arm[st] = 0;
@@ -4587,6 +4793,9 @@ void cliKeys(cli_args_t *args)
               (int)timeout_cnt, (int)timeout_safe_cnt);
     cliPrintf("기준값 사건 : latch %d,  drift 위 %d / 아래 %d\n",
               (int)latch_cnt, (int)drift_up_cnt, (int)drift_dn_cnt);
+    cliPrintf("ISR 미루기   : %d 회  (표 %d, RT %d, 프로파일 %d)\n",
+              (int)defer_cnt, thr_req ? 1 : 0, rt_req ? 1 : 0,
+              (prof_req == KEYS_PROF_NONE) ? -1 : (int)prof_req);
     ret = true;
   }
 

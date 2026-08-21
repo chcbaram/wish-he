@@ -510,7 +510,7 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
         default: break;                       /* 상태만 */
       }
 
-      p_tx[2] = keysProfGet();
+      p_tx[2] = keysProfGetReq();   /* 예약 포함 — 전환은 메인 루프가 한다 */
       p_tx[3] = keysProfCount();
       break;
     }
@@ -785,7 +785,17 @@ void hidIfUpdate(void)
     }
   }
 
-  if (prof_save_req)
+  /*
+   * ★ 전환이 실제로 적용된 뒤에 저장한다.
+   *
+   *   ISR 에서 온 전환은 메인 루프로 미뤄지는데(keys.c 의 "미룬다" 절), 그 처리는
+   *   keysCfgUpdate() 가 하고 그건 ap.c 에서 **이 함수보다 뒤에** 돈다. 그냥
+   *   저장하면 아직 안 바뀐 active 를 플래시에 남긴다 — 다음 부팅에 옛 프로파일로
+   *   돌아온다.
+   *
+   *   표시를 그대로 두면 다음 바퀴에 저장된다. 저장은 어차피 미뤄도 되는 일이다.
+   */
+  if (prof_save_req && keysProfGetReq() == keysProfGet())
   {
     prof_save_req = false;
     logPrintf("[  ] 프로파일 %d 저장 %s\n", (int)keysProfGet() + 1,
@@ -833,13 +843,29 @@ void hidIfUpdate(void)
  *---------------------------------------------------------------------------*/
 static void hidOutCallback(uint8_t busid, uint8_t ep, uint32_t nbytes)
 {
+  bool hid_cmd_ok;
+
   (void)ep;
 
   if (nbytes > 0)
   {
     rx_count++;
 
-    if (hidCmdHandler(rx_report, tx_stage))
+    /*
+     * ★ 여기가 ISR 이라고 keys 에 알린다.
+     *
+     *   우리 확장 명령(0xC5 키설정 · 0xC8 프로파일 · 0xCB 스위치 정의)은 전부
+     *   판정용 표를 다시 만든다. 그 표를 읽는 keysTrack 은 메인 루프라, 여기서
+     *   그냥 만들면 **반쯤 고친 표를 판정이 읽는다.** 표시만 해 두고 메인 루프가
+     *   만들도록 keys 가 알아서 미룬다 (keys.c 의 "미룬다" 절).
+     *
+     *   keys 를 만지는 ISR 경로는 이 하나뿐이다. 새로 생기면 거기도 감싸야 한다.
+     */
+    keysIsrEnter();
+    hid_cmd_ok = hidCmdHandler(rx_report, tx_stage);
+    keysIsrExit();
+
+    if (hid_cmd_ok)
     {
       /* 자리가 차 있으면 들고 있다가 보낸다 — 단 20ms 안에 (hidTxPendingTake) */
       hidTxSubmit(tx_stage, HID_EP_MPS);

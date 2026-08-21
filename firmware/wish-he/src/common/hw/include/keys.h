@@ -72,6 +72,25 @@ void     keysCfgTouch(void);
 void     keysCfgUpdate(void);           /* 메인 루프에서 — ISR 금지 (플래시) */
 
 bool     keysProfSelect(uint8_t idx);   /* 메모리에서 갈아 끼우기만 — 싸다 */
+
+/*
+ * 예약을 포함한 프로파일 번호 — **설정 채널 응답 전용**이다.
+ *
+ * ISR 에서 온 전환은 메인 루프로 미뤄지므로(keys.c 의 "미룬다" 절), 그 사이에
+ * keysProfGet() 은 아직 옛 번호를 준다. 응답에 그것을 실으면 호스트는 전환이
+ * 실패한 줄 안다. 프로파일별 저장 자리를 고르는 데는 쓰지 말 것.
+ */
+uint8_t  keysProfGetReq(void);
+
+/*
+ * ISR 안에서 keys API 를 부르는 구간 표시.
+ *
+ * 이 구간에서 들어온 표 재작성·RT 재파종·프로파일 전환은 **메인 루프로 미뤄진다.**
+ * 판정(keysTrack)이 반쯤 고친 표를 읽지 않게 하는 장치다 — 자세한 것은 keys.c.
+ */
+void     keysIsrEnter(void);
+void     keysIsrExit(void);
+uint32_t keysGetDeferCount(void);
 bool     keysProfSave(void);            /* 플래시에 남기기 — ISR 밖에서 */
 void     keysProfTouch(void);           /* 나중에 남겨라 (키로 바꿀 때) */
 void     keysProfChanged_kb(uint8_t idx);  /* 0xFF = 바뀌기 직전 — ISR 일 수 있다 */
