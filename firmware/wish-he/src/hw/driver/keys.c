@@ -948,6 +948,7 @@ static void            keysCalRejectOutlier(void);
 static void            keysInject(uint32_t step, uint32_t *snap);
 static void            keysRtReseed(void);
 static void            keysDeferredWork(void);
+static uint16_t        keysUmToCnt(uint32_t i, uint16_t um);
 static bool            keysProfApply(uint8_t idx);
 
 #if CLI_USE(HW_KEYS)
@@ -1070,6 +1071,124 @@ static bool     is_cfg_loaded = false;
 static uint32_t latch_cnt    = 0;
 static uint32_t drift_up_cnt = 0;
 static uint32_t drift_dn_cnt = 0;
+
+/*
+ * ── 눌림 -> 도착 지연 ────────────────────────────────────────────────────
+ *
+ * ★ 성능 지표에 없던 한 칸이다.
+ *
+ *   지금 재는 것은 전부 "한 바퀴가 얼마나 걸리나" 다 — 스캔 시간, 태스크 시간,
+ *   루프 간격. 그런데 사용자가 느끼는 것은 **키를 누른 순간부터 글자가 나올
+ *   때까지**이고, 그건 여러 단계가 이어 붙은 값이라 어느 지표에도 안 나온다.
+ *
+ * 네 시점을 찍는다.
+ *
+ *   T0  keysInject()          주입값이 파이프라인에 들어간 순간
+ *   T1  keysTrack()           pressed 비트가 뒤집힌 순간
+ *   T1a qmkUpdate 진입        판정 뒤 QMK 가 처음 불린 순간
+ *   T1c matrix_scan 진입      키변환이 시작된 순간
+ *   T1d matrix_scan 반환      키변환이 끝난 순간
+ *   T1b USB 에 실은 순간       리포트를 엔드포인트에 프라임한 순간
+ *   T2  USB IN 완료 콜백      호스트가 버스에서 리포트를 가져간 순간
+ *   T3  usbd_hid_set_report   OS 가 LED 상태를 되돌려 준 순간
+ *
+ *   T0->T1  데드밴드 필터 + 3탭 누적 + 판정
+ *   T1->T1a QMK 가 불릴 때까지 — 스캔의 남은 스텝 + 루프의 다른 일
+ *   T1a->T1c QMK 앞단 (프로토콜 검사·housekeeping)
+ *   T1c->T1d 키변환 — 매트릭스 비트맵으로 옮긴다
+ *   T1d->T1b 키처리 — 키맵·레이어·SOCD·연타 + 리포트 만들기
+ *   T1b->T2 **호스트가 가지러 올 때까지** — 폴링 주기가 그대로 여기 들어온다
+ *   T1->T2  둘을 합친 것
+ *   T2->T3  **OS 왕복** — 호스트가 실제로 인식했다는 유일한 증거
+ *
+ * ★ T3 가 값진 이유.
+ *
+ *   장치는 "버스에 실었다" 까지만 안다. 호스트가 그것을 언제 처리했는지는 알 길이
+ *   없다 — macOS 가 키보드 HID 를 안 열어 줘서 호스트 쪽에서 재지도 못한다.
+ *   그런데 Caps/Num/Scroll 을 누르면 **OS 가 LED 상태를 되돌려 보낸다.** 그
+ *   되돌아온 시각이 "OS 가 이 키를 처리했다" 는 도장이다.
+ *
+ * ★ 다만 T2->T3 은 **키 지연 그 자체가 아니다.**
+ *
+ *   LED 경로와 앱에 글자가 닿는 경로는 다르고 우선순위도 다를 수 있다. 그리고
+ *   OS 마다 락 키를 특별 취급한다 — 실제로 재보고 어느 키가 쓸 만한지 골라야 한다.
+ *   상한으로 읽을 것.
+ *
+ * ★ 주입이 아닌 **진짜 타건도 잰다.** T0 만 없을 뿐 나머지는 그대로 찍힌다.
+ *   그래서 평소에 쓰다가 `keys lat` 을 보면 실사용 지연이 나온다.
+ */
+typedef struct
+{
+  uint32_t n;
+  uint32_t min;
+  uint32_t max;
+  uint32_t sum;
+} keys_lat_t;
+
+enum { LAT_IDLE = 0, LAT_INJ, LAT_PRESS, LAT_SENT };
+
+static volatile uint8_t  lat_stage = LAT_IDLE;
+static volatile bool     lat_arm   = false;   /* 다음 스캔에서 T0 를 찍어라 */
+static volatile uint32_t lat_t0    = 0;
+static volatile uint32_t lat_t1    = 0;
+static volatile uint32_t lat_t2    = 0;
+
+static volatile uint32_t lat_t1a   = 0;
+static volatile uint32_t lat_t1c   = 0;
+static volatile uint32_t lat_t1d   = 0;
+static volatile uint32_t lat_t1e   = 0;
+static volatile uint32_t lat_t1b   = 0;
+
+static keys_lat_t lat_filt;   /* T0->T1  */
+static keys_lat_t lat_wait;   /* T1->T1a  루프 대기 */
+static keys_lat_t lat_pre;    /* T1a->T1c QMK 앞단 */
+static keys_lat_t lat_conv;   /* T1c->T1d 키변환 (matrix_scan) */
+static keys_lat_t lat_act;    /* T1d->T1e 키처리 앞 (action 분해·레이어) */
+static keys_lat_t lat_proc;   /* T1e->T1b 키처리 뒤 (훅·리포트 생성) */
+static keys_lat_t lat_bus;    /* T1b->T2 */
+static keys_lat_t lat_send;   /* T1->T2  */
+static keys_lat_t lat_all;    /* T0->T2 */
+static keys_lat_t lat_host;   /* T2->T3 */
+
+/*
+ * 표본 하나하나를 남긴다.
+ *
+ * ★ min/avg/max 로는 **모양**이 안 보인다. 폴링 대기가 0~125us 에 고르게 흩어지는지,
+ *   아니면 어딘가에 뭉치는지, 드물게 튀는 것이 있는지는 흩뿌린 그림으로만 보인다.
+ *   표준편차도 여기서 나온다.
+ *
+ * ★ 다 차면 멈춘다. 순환시키면 "몇 번째 표본" 이라는 축이 흐려진다 — 지우고, 정한
+ *   횟수만큼 두드리고, 읽는다.
+ */
+#define KEYS_LAT_LOG_MAX   400
+
+typedef struct
+{
+  uint16_t filt;   /* 주입 -> 판정 */
+  uint16_t wait;   /* 판정 -> QMK */
+  uint16_t conv;   /* QMK 앞단 + 키변환 */
+  uint16_t act;    /* 키코드까지 */
+  uint16_t proc;   /* 훅 + 리포트 */
+  uint16_t bus;    /* 리포트 -> ACK */
+} keys_lat_rec_t;
+
+static keys_lat_rec_t lat_log[KEYS_LAT_LOG_MAX];
+static uint32_t       lat_log_n = 0;
+
+/*
+ * 장치 안에서 스스로 두드린다 — `keys lat run <n> [ms]`.
+ *
+ * ★ CLI 로는 이걸 못 만든다. 왕복이 0.35초라 **누를 때마다 캐시가 식는다.**
+ *   "빠르게 이어 누르면 빨라지는가" 가 바로 XIP 명령어 캐시를 가리는 시험인데,
+ *   느린 간격으로만 재면 늘 식은 값만 나온다.
+ */
+static uint8_t  tap_st = 0, tap_ch = 0;
+static uint16_t tap_um = 0;
+static uint32_t tap_left = 0;
+static uint32_t tap_base = 0;   /* 평균 간격 (us) */
+static uint32_t tap_us   = 0;   /* 이번 간격 — 매번 새로 뽑는다 */
+static uint32_t tap_at   = 0;
+static bool     tap_on   = false;
 
 /*
  * ── ISR 에서 들어온 명령은 표시만 하고 메인 루프가 처리한다 ──────────────
@@ -1622,6 +1741,14 @@ static int32_t keysInjectNoise(void)
 static void keysInject(uint32_t step, uint32_t *snap)
 {
   uint16_t m = inject_mask[step];
+
+  /* T0 — 새 주입값이 처음 실리는 순간. 스텝당 분기 하나다 */
+  if (lat_arm)
+  {
+    lat_arm   = false;
+    lat_t0    = micros();
+    lat_stage = LAT_INJ;
+  }
 
   for (uint32_t i = 0; i < KEYS_CH_MAX; i++)
   {
@@ -2347,7 +2474,8 @@ ATTR_RAMFUNC static inline uint32_t keysRtZone(uint32_t idx, uint16_t cnt)
  */
 ATTR_RAMFUNC static void keysTrack(uint32_t step)
 {
-  bool do_drift = drift_due;
+  bool     do_drift = drift_due;
+  uint16_t was      = pressed[step];   /* T1 판정용 — 이 스텝에서 뒤집혔나 */
 
   for (uint32_t c = 0; c < KEYS_CH_MAX; c++)
   {
@@ -2564,6 +2692,25 @@ ATTR_RAMFUNC static void keysTrack(uint32_t step)
        */
       if (!rt_cont && d < (int32_t)squelch_cnt[idx]) rt_arm[step] &= (uint16_t)~bit;
     }
+  }
+
+  /*
+   * T1 — 이 스텝에서 눌림이 뒤집혔다.
+   *
+   * ★ 스텝 끝에서 한 번만 견준다. 뒤집는 자리가 넷이라 거기마다 찍으면 뜨거운
+   *   가지가 넷 늘어나는데, 스텝 하나는 3us 라 여기서 재도 오차가 그만큼이다.
+   *
+   * ★ 주입이 아니어도 찍는다 — 진짜 타건도 재려는 것이다. 그때는 T0 가 없다.
+   */
+  if (pressed[step] != was && lat_stage != LAT_PRESS)
+  {
+    lat_t1    = micros();
+    lat_t1a   = 0;
+    lat_t1c   = 0;
+    lat_t1d   = 0;
+    lat_t1e   = 0;
+    lat_t1b   = 0;
+    lat_stage = LAT_PRESS;
   }
 }
 
@@ -2789,6 +2936,214 @@ void keysClearStat(void)
 uint32_t keysGetScanTime(void)
 {
   return scan_time_us;
+}
+
+/*
+ * ── 지연 측정 ────────────────────────────────────────────────────────────
+ */
+static void keysLatAdd(keys_lat_t *p, uint32_t us)
+{
+  if (p->n == 0 || us < p->min) p->min = us;
+  if (us > p->max)              p->max = us;
+  p->sum += us;
+  p->n++;
+}
+
+/*
+ * 깊이(0.01mm)로 주입값을 정한다.
+ *
+ * 누적합 기준값에서 그만큼 뺀 뒤 표본 하나 몫으로 나눈다 — 필터가 KEYS_ACC_CNT 개를
+ * 더하므로 고정값을 넣으면 합이 그 배로 수렴한다.
+ */
+void keysInjectDepth(uint8_t st, uint8_t ch, uint16_t um)
+{
+  uint32_t i;
+  int32_t  v;
+
+  if (st >= KEYS_STEP_MAX || ch >= KEYS_CH_MAX) return;
+
+  i = st * KEYS_CH_MAX + ch;
+  v = ((int32_t)base[st][ch] - (int32_t)keysUmToCnt(i, um)) / KEYS_ACC_CNT;
+  if (v < 0) v = 0;
+
+  inject_raw[st][ch]  = (uint16_t)v;
+  inject_mask[st]    |= (uint16_t)(1U << ch);
+  keysLatArm();
+}
+
+/*
+ * 두드리기 — 메인 루프(keysCfgUpdate)가 돌린다.
+ *
+ * ★ 여기서 눌렀다 뗀다. CLI 안에서 돌리면 그동안 메인 루프가 멎어 리포트가 안 나간다.
+ */
+static void keysTapUpdate(void)
+{
+  if (tap_left == 0)                    return;
+  if (micros() - tap_at < tap_us)       return;
+
+  tap_at = micros();
+
+  /*
+   * ★ 간격을 매번 새로 뽑는다. 고정 간격이면 안 된다.
+   *
+   *   호스트 폴링은 125us 마다 온다. 두드리는 간격이 그 배수면(5ms = 125us x 40)
+   *   **매번 같은 위상에서 누르게 되어** 폴링 대기가 한 값에 묶인다. 그러면 실제로
+   *   흩어지는 것보다 좁게 나오거나, 운이 나쁘면 늘 최악만 잰다.
+   *
+   *   사람이 치는 것은 폴링과 아무 상관이 없다. 평균의 0.5~1.5배 사이에서 us 단위로
+   *   뽑아 위상을 흐트러뜨린다 — 그래야 실사용에 가깝다.
+   */
+  tap_us = tap_base / 2 + (keysInjectRand() % tap_base);
+  tap_on = !tap_on;
+  keysInjectDepth(tap_st, tap_ch, tap_on ? tap_um : 0);
+  tap_left--;
+
+  if (tap_left == 0) inject_mask[tap_st] &= (uint16_t)~(1U << tap_ch);
+}
+
+/* 다음 스캔에서 T0 를 찍어라 — 주입값을 바꾸는 자리에서 부른다 */
+void keysLatArm(void)
+{
+  lat_stage = LAT_IDLE;
+  lat_arm   = true;
+}
+
+/*
+ * T1b — 리포트를 엔드포인트에 실었다. arm 하는 자리(ISR 또는 인터럽트 막은 구간)에서.
+ *
+ * ★ 이걸 갈라야 "우리가 느린 것" 과 "호스트가 안 가져가는 것" 이 구분된다.
+ *   합쳐 놓으면 폴링 주기를 우리 탓으로 읽게 된다.
+ */
+/* T1c/T1d — 키변환(matrix_scan)의 앞뒤. port/matrix.c 에서. */
+void keysLatMarkScan(void)
+{
+  if (lat_stage == LAT_PRESS && lat_t1c == 0) lat_t1c = micros();
+}
+
+void keysLatMarkConv(void)
+{
+  if (lat_stage == LAT_PRESS && lat_t1d == 0) lat_t1d = micros();
+}
+
+/* T1e — 키코드까지 풀려 보드 훅에 닿은 순간. process_record_kb 맨 앞에서. */
+void keysLatMarkAct(void)
+{
+  if (lat_stage == LAT_PRESS && lat_t1e == 0) lat_t1e = micros();
+}
+
+/* T1a — 판정 뒤 QMK 가 처음 불렸다. qmkUpdate 맨 앞에서. */
+void keysLatMarkTask(void)
+{
+  if (lat_stage != LAT_PRESS) return;
+  if (lat_t1a   != 0)         return;
+
+  lat_t1a = micros();
+}
+
+void keysLatMarkArmed(void)
+{
+  if (lat_stage != LAT_PRESS) return;
+  if (lat_t1b   != 0)         return;   /* 첫 번째만 — 뒤에 이어 실리는 것은 다른 리포트 */
+
+  lat_t1b = micros();
+}
+
+/*
+ * T2 — 호스트가 리포트를 버스에서 가져갔다. USB IN 완료 콜백(ISR)에서 부른다.
+ *
+ * ★ 완료 콜백은 우리 리포트가 아닌 것에도 온다. 눌림이 뒤집힌 뒤 **처음 오는
+ *   완료**만 우리 것으로 본다 — 그래서 단계로 거른다.
+ */
+void keysLatMarkSent(void)
+{
+  if (lat_stage != LAT_PRESS) return;
+
+  lat_t2 = micros();
+  keysLatAdd(&lat_send, lat_t2 - lat_t1);
+
+  if (lat_t1b != 0)
+  {
+    keysLatAdd(&lat_bus, lat_t2 - lat_t1b);
+    if (lat_t1a != 0 && lat_t1c != 0 && lat_t1d != 0)
+    {
+      if (lat_log_n < KEYS_LAT_LOG_MAX)
+      {
+        keys_lat_rec_t *r = &lat_log[lat_log_n++];
+
+        r->filt = (uint16_t)((lat_t0 != 0) ? (lat_t1 - lat_t0) : 0);
+        r->wait = (uint16_t)(lat_t1a - lat_t1);
+        r->conv = (uint16_t)(lat_t1d - lat_t1a);
+        r->act  = (uint16_t)((lat_t1e != 0) ? (lat_t1e - lat_t1d) : 0);
+        r->proc = (uint16_t)((lat_t1e != 0) ? (lat_t1b - lat_t1e) : 0);
+        r->bus  = (uint16_t)(lat_t2 - lat_t1b);
+      }
+
+      keysLatAdd(&lat_wait, lat_t1a - lat_t1);
+      keysLatAdd(&lat_pre,  lat_t1c - lat_t1a);
+      keysLatAdd(&lat_conv, lat_t1d - lat_t1c);
+      if (lat_t1e != 0)
+      {
+        keysLatAdd(&lat_act,  lat_t1e - lat_t1d);
+        keysLatAdd(&lat_proc, lat_t1b - lat_t1e);
+      }
+    }
+    lat_t1a = lat_t1c = lat_t1d = lat_t1e = 0;
+    lat_t1b = 0;
+  }
+
+  /* 주입으로 시작한 것만 앞 구간이 뜻이 있다 — 진짜 타건은 T0 가 없다 */
+  if (lat_t0 != 0)
+  {
+    keysLatAdd(&lat_filt, lat_t1 - lat_t0);
+    keysLatAdd(&lat_all,  lat_t2 - lat_t0);
+    lat_t0 = 0;
+  }
+  lat_stage = LAT_SENT;
+}
+
+/*
+ * T3 — OS 가 LED 상태를 되돌려 줬다. SET_REPORT 를 받는 자리에서 부른다.
+ *
+ * ★ 이것만이 "호스트가 실제로 인식했다" 는 증거다. 장치는 버스에 실었다는 것까지만
+ *   알고, macOS 는 키보드 HID 를 안 열어 줘서 호스트 쪽에서 잴 수도 없다.
+ *
+ * ★ 키 지연 그 자체는 아니다. LED 경로와 앱에 글자가 닿는 경로는 다르고, OS 마다
+ *   락 키를 특별 취급한다. 상한으로 읽을 것.
+ */
+void keysLatMarkLed(void)
+{
+  if (lat_stage != LAT_SENT) return;
+
+  keysLatAdd(&lat_host, micros() - lat_t2);
+  lat_stage = LAT_IDLE;
+}
+
+void keysLatClear(void)
+{
+  memset(&lat_filt, 0, sizeof(lat_filt));
+  memset(&lat_wait, 0, sizeof(lat_wait));
+  memset(&lat_pre,  0, sizeof(lat_pre));
+  memset(&lat_conv, 0, sizeof(lat_conv));
+  memset(&lat_act,  0, sizeof(lat_act));
+  memset(&lat_proc, 0, sizeof(lat_proc));
+  memset(&lat_bus,  0, sizeof(lat_bus));
+  memset(&lat_send, 0, sizeof(lat_send));
+  memset(&lat_all,  0, sizeof(lat_all));
+  memset(&lat_host, 0, sizeof(lat_host));
+  lat_stage = LAT_IDLE;
+  lat_t0    = 0;
+  lat_t1a = lat_t1c = lat_t1d = lat_t1e = lat_t1b = 0;
+
+  /*
+   * ★ 기록 버퍼도 여기서 비운다.
+   *
+   *   이걸 빠뜨려서 두 번째 측정이 통째로 버려졌다 — 버퍼가 400 에서 꽉 찬 채라
+   *   새 표본이 안 들어갔고, dump 는 첫 번째 것을 그대로 내놨다. RGB 끔/켬 두
+   *   조건이 **소수점까지 똑같이** 나와서 알아챘다.
+   *
+   *   재는 도구가 거짓말하면 그 뒤는 전부 헛일이다. 지우는 자리는 한 곳이어야 한다.
+   */
+  lat_log_n = 0;
 }
 
 /* 리포트를 내보내도 되는가. keys 명령 중에는 false 다. */
@@ -4137,6 +4492,7 @@ void keysCfgUpdate(void)
 {
   /* ISR 이 미뤄 둔 것부터 — 표를 만드는 유일한 자리다 */
   keysDeferredWork();
+  keysTapUpdate();
 
   /*
    * 프로파일이 바뀐 뒤 미뤄 둔 일 — 조명 다시 켜기 같은 것.
@@ -4656,6 +5012,90 @@ void cliKeys(cli_args_t *args)
    *
    * ★ 마스크가 안 선 셀은 실물 그대로다. 그래야 시험 중에도 Ctrl+Esc 가 먹는다.
    */
+  if (args->argc >= 1 && args->argc <= 4 && args->isStr(0, "lat"))
+  {
+    static const char *name[10] = { "1 키스캔+누적", "  루프 대기  ",
+                                   "  QMK 앞단   ", "2 키변환    ",
+                                   "3a 키코드까지", "3b 훅+리포트",
+                                   "4 전송->ACK ", "= 판정->ACK ",
+                                   "  전체      ", "5 ACK->OS   " };
+    const keys_lat_t  *v[10]    = { &lat_filt, &lat_wait, &lat_pre, &lat_conv,
+                                   &lat_act,  &lat_proc, &lat_bus,
+                                   &lat_send, &lat_all,  &lat_host };
+
+    if (args->argc == 2 && args->isStr(1, "clear"))
+    {
+      keysLatClear();
+      cliPrintf("지연 통계를 지웠다\n");
+      return;
+    }
+
+    if (args->argc == 2 && args->isStr(1, "dump"))
+    {
+      cliPrintf("# n filt wait conv act proc bus  (us)\n");
+      for (uint32_t i = 0; i < lat_log_n; i++)
+      {
+        const keys_lat_rec_t *r = &lat_log[i];
+
+        cliPrintf("%d %d %d %d %d %d %d\n", (int)i, (int)r->filt, (int)r->wait,
+                  (int)r->conv, (int)r->act, (int)r->proc, (int)r->bus);
+      }
+      cliPrintf("# %d 표본\n", (int)lat_log_n);
+      return;
+    }
+
+    if (args->argc >= 3 && args->isStr(1, "run"))
+    {
+      uint32_t n = (uint32_t)args->getData(2);
+
+      tap_st   = 0;
+      tap_ch   = 0;
+      tap_um   = 150;
+      tap_base = ((args->argc >= 4) ? (uint32_t)args->getData(3) : 5) * 1000;
+      if (tap_base < 2000) tap_base = 2000;
+      tap_us   = tap_base;
+      tap_on   = false;
+      tap_at   = micros();
+      tap_left = n * 2;                 /* 누름·뗌 한 쌍 */
+      keysLatClear();
+      cliPrintf("s%d/ch%d 를 평균 %d ms (%d~%d) 간격으로 %d 번 두드린다\n",
+                (int)tap_st, (int)tap_ch, (int)(tap_base / 1000),
+                (int)(tap_base / 2000), (int)(tap_base * 3 / 2000), (int)n);
+      cliPrintf("  간격은 매번 새로 뽑는다 — 폴링 위상과 안 묶이게. `keys inject live on` 필요\n");
+      return;
+    }
+
+    /*
+     * ★ %-Ns 로 못 맞춘다 — 한글은 3바이트인데 두 칸을 차지한다. 이름 뒤 공백을
+     *   손으로 넣어 폭을 맞춰 두었다.
+     */
+    cliPrintf("                  n     min      avg      max   (us)\n");
+    for (uint32_t i = 0; i < 10; i++)
+    {
+      if (v[i]->n == 0)
+      {
+        cliPrintf("%s    0        -        -        -\n", name[i]);
+        continue;
+      }
+      cliPrintf("%s  %3d %7d  %7d  %7d\n", name[i], (int)v[i]->n,
+                (int)v[i]->min, (int)(v[i]->sum / v[i]->n), (int)v[i]->max);
+    }
+    cliPrintf("\n1 키스캔+누적  ADC 한 바퀴 + %d탭 이동합이 문턱을 넘을 때까지\n",
+              KEYS_ACC_CNT);
+    cliPrintf("  루프 대기    판정 뒤 QMK 가 불릴 때까지 (스캔의 남은 스텝)\n");
+    cliPrintf("  QMK 앞단     프로토콜 검사 · housekeeping\n");
+    cliPrintf("2 키변환      matrix_scan — 판정 비트를 매트릭스로\n");
+    cliPrintf("3a 키코드까지 QMK 가 매트릭스 변화를 키코드로 푸는 데까지\n");
+    cliPrintf("3b 훅+리포트  보드 훅(SOCD·연타·탭홀드) + 리포트 만들기\n");
+    cliPrintf("4 전송->ACK   호스트가 가지러 와서 ACK 할 때까지 (8kHz 폴링)\n");
+    cliPrintf("= 판정->ACK   눌린 것으로 **인식한 뒤**부터 ACK 까지\n");
+    cliPrintf("              ★ 다른 펌웨어와 견줄 때 쓰는 눈금이다. 보통 여기서\n");
+    cliPrintf("                시작한다 — 1번(누적)은 그쪽에 없는 우리 몫이다\n");
+    cliPrintf("  전체        주입한 순간부터 ACK 까지 (1번 포함)\n");
+    cliPrintf("5 ACK->OS     LED 리포트가 되돌아온 시각 (락 키에서만, 아직 못 믿는다)\n");
+    return;
+  }
+
   if (args->argc >= 1 && args->isStr(0, "inject"))
   {
     if (args->argc == 1)
@@ -4743,6 +5183,7 @@ void cliKeys(cli_args_t *args)
 
         inject_raw[st][ch]  = (uint16_t)v;
         inject_mask[st]    |= (uint16_t)(1U << ch);
+        keysLatArm();               /* 다음 스캔이 T0 다 — `keys lat` 참고 */
         cliPrintf("s%d/ch%d  깊이 %d (0.01mm) = %d 카운트  ->  raw %d\n",
                   (int)st, (int)ch, (int)um, (int)cnt, (int)v);
         ret = true;
@@ -4755,6 +5196,7 @@ void cliKeys(cli_args_t *args)
 
         inject_raw[st][ch]  = (uint16_t)v;
         inject_mask[st]    |= (uint16_t)(1U << ch);
+        keysLatArm();               /* 다음 스캔이 T0 다 — `keys lat` 참고 */
         cliPrintf("s%d/ch%d  raw %d 로 고정\n", (int)st, (int)ch, (int)v);
         ret = true;
       }
@@ -5795,6 +6237,7 @@ void cliKeys(cli_args_t *args)
     cliPrintf("keys led       누른 키의 LED 를 켠다 (매핑 확인)\n");
     cliPrintf("keys watch\n");
     cliPrintf("keys noise [ms]  잡음 측정 (기본 3000, 드문 사건은 길게)\n");
+    cliPrintf("keys lat [clear|run <n> [ms]|dump]  눌림 -> 도착 지연\n");
     cliPrintf("keys dump\n");
     cliPrintf("keys raw\n");
     cliPrintf("keys time\n");

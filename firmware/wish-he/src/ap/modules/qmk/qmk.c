@@ -25,6 +25,7 @@
 #include "usb/cherryusb/hid_exk_if.h"
 #include "ghost.h"
 #include "matrix.h"
+#include "keys.h"
 #include "dynamic_keymap.h"
 #include "keycode_config.h"
 #ifdef RGB_MATRIX_ENABLE
@@ -260,6 +261,7 @@ void qmkUpdate(void)
     }
   }
 
+  keysLatMarkTask();    /* T1a — 판정 뒤 QMK 가 처음 불렸다 (keys.c 의 지연 절) */
   keyboard_task();
 
 #if _USE_HW_PERF_STAT

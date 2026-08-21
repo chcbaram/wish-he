@@ -45,6 +45,7 @@
 #include "usbd_core.h"
 #include "usbd_hid.h"
 #include "usb/cherryusb/usb_desc.h"
+#include "keys.h"
 
 
 #define EXK_BUSID           0
@@ -271,6 +272,7 @@ static void exkArm(void)
     for (uint32_t j = 0; j < slot[i].len; j++) tx_report[j] = slot[i].buf[j];
 
     is_tx_busy = true;
+    keysLatMarkArmed();   /* T1b — 실은 순간 (keys.c 의 지연 절) */
     if (usbd_ep_start_write(EXK_BUSID, EXK_IN_EP, tx_report, slot[i].len) != 0)
     {
       /* 못 실었으면 dirty 를 그대로 남겨 다음 기회에 다시 시도한다. */
@@ -329,6 +331,8 @@ void hidExkUpdate(void)
 
 static void exkInCallback(uint8_t busid, uint8_t ep, uint32_t nbytes)
 {
+  keysLatMarkSent();      /* T2 — 호스트가 버스에서 가져갔다 (keys.c 의 지연 절) */
+
   (void)busid;
   (void)ep;
   (void)nbytes;

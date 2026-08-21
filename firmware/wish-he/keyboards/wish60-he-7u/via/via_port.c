@@ -442,6 +442,8 @@ enum {
 
 bool process_record_kb(uint16_t keycode, keyrecord_t *record)
 {
+  keysLatMarkAct();     /* 지연 눈금 3a 의 끝 (keys.c 의 지연 절) */
+
   /*
    * ★ 프로파일 키코드보다 **먼저** 흘린다. 아래는 자기 키를 처리하고 false 로
    *   끊는 갈래가 있어서, 뒤에 두면 그 경우에 안 불린다.

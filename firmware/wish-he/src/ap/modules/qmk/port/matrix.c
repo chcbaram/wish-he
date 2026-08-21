@@ -63,6 +63,8 @@ uint8_t matrix_scan(void)
   uint32_t     t0 = micros();
   uint32_t     dt;
 
+  keysLatMarkScan();      /* 지연 눈금 ②의 앞 (keys.c 의 지연 절) */
+
   /*
    * keys 명령(매핑·보정·관측)이 도는 동안에는 전부 안 눌린 것으로 준다.
    *
@@ -79,6 +81,8 @@ uint8_t matrix_scan(void)
   }
 
   if (changed) memcpy(matrix, curr, sizeof(matrix));
+
+  keysLatMarkConv();      /* 지연 눈금 ②의 뒤 */
 
   dt = micros() - t0;
   scan_us_last = dt;

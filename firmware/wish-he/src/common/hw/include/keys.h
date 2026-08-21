@@ -91,6 +91,27 @@ uint8_t  keysProfGetReq(void);
 void     keysIsrEnter(void);
 void     keysIsrExit(void);
 uint32_t keysGetDeferCount(void);
+
+/*
+ * ── 눌림 -> 도착 지연 ────────────────────────────────────────────────────
+ *
+ *   keysLatArm()       다음 스캔에서 T0 를 찍어라 (주입값을 바꾸는 자리)
+ *   keysLatMarkArmed() 리포트를 엔드포인트에 실은 자리에서
+ *   keysLatMarkSent()  USB IN 완료 콜백에서 — 호스트가 버스에서 가져갔다
+ *   keysLatMarkLed()   LED SET_REPORT 를 받는 자리에서 — OS 가 인식했다
+ *
+ * 자세한 것은 keys.c 의 "눌림 -> 도착 지연" 절.
+ */
+void     keysLatArm(void);
+void     keysInjectDepth(uint8_t st, uint8_t ch, uint16_t um);
+void     keysLatMarkTask(void);
+void     keysLatMarkScan(void);
+void     keysLatMarkConv(void);
+void     keysLatMarkAct(void);
+void     keysLatMarkArmed(void);
+void     keysLatMarkSent(void);
+void     keysLatMarkLed(void);
+void     keysLatClear(void);
 bool     keysProfSave(void);            /* 플래시에 남기기 — ISR 밖에서 */
 void     keysProfTouch(void);           /* 나중에 남겨라 (키로 바꿀 때) */
 void     keysProfChanged_kb(uint8_t idx);  /* 0xFF = 바뀌기 직전 — ISR 일 수 있다 */

@@ -30,6 +30,7 @@
 #include "usbd_core.h"
 #include "usbd_hid.h"
 #include "usb/cherryusb/usb_desc.h"
+#include "keys.h"
 
 
 #define KBD_BUSID           0
@@ -152,6 +153,7 @@ static void kbdArm(void)
    *
    *   같은 저장소의 EXK 는 처음부터 검사하고 되돌렸다 — 두 파일의 규칙이 달랐다.
    */
+  keysLatMarkArmed();   /* T1b — 실은 순간 (keys.c 의 지연 절) */
   if (usbd_ep_start_write(KBD_BUSID, KBD_IN_EP, tx_report, KBD_REPORT_LEN) != 0)
   {
     is_tx_busy = false;
@@ -238,6 +240,8 @@ void hidKbdUpdate(void)
 /* 완료 콜백(ISR) — 그 사이에 바뀐 게 있으면 곧바로 잇는다. */
 static void kbdInCallback(uint8_t busid, uint8_t ep, uint32_t nbytes)
 {
+  keysLatMarkSent();      /* T2 — 호스트가 버스에서 가져갔다 (keys.c 의 지연 절) */
+
   (void)busid;
   (void)ep;
   (void)nbytes;
@@ -340,7 +344,11 @@ void usbd_hid_set_report(uint8_t busid, uint8_t intf, uint8_t report_id,
   (void)report_id;
   (void)report_type;
 
-  if (intf == 0 && report_len > 0) kbd_leds = report[0];
+  if (intf == 0 && report_len > 0)
+  {
+    kbd_leds = report[0];
+    keysLatMarkLed();     /* T3 — OS 가 인식했다는 유일한 도장 (keys.c 의 지연 절) */
+  }
 }
 
 void hidKbdEventHandler(uint8_t busid, uint8_t event)
