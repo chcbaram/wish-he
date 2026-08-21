@@ -54,12 +54,27 @@
 #define HID_INTERVAL_FS   1       /* 1ms */
 
 
+/*
+ * 리모트 웨이크업.
+ *
+ * ★ 이 비트가 빠져 있으면 **키를 눌러도 호스트가 안 깨어난다.** 스택은 디스크립터의
+ *   이 비트를 보고 remote_wakeup_support 를 정하고, 그게 거짓이면 usbd_send_remote_wakeup()
+ *   이 아무것도 안 하고 돌아간다. 켜는 것은 호스트 몫이다(SET_FEATURE) — 우리는
+ *   "할 수 있다"고 말해 두기만 한다.
+ *
+ * ★ 전원은 버스에서 받는다. 자는 동안 500uA 를 넘지 않아야 하는데 LED 83개가 켜져
+ *   있으면 어림도 없다 — 서스펜드에서 rgb_matrix 를 끄는 것이 그 규격을 지키는
+ *   일이기도 하다 (suspend_power_down_quantum).
+ */
+#define USB_CONFIG_ATTR   (USB_CONFIG_BUS_POWERED | USB_CONFIG_REMOTE_WAKEUP)
+
+
 static const uint8_t device_descriptor[] = {
   USB_DEVICE_DESCRIPTOR_INIT(USB_2_0, 0xEF, 0x02, 0x01, USBD_VID, USBD_PID, 0x0100, 0x01)
 };
 
 static const uint8_t config_descriptor_hs[] = {
-  USB_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, USB_IF_COUNT, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
+  USB_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, USB_IF_COUNT, 0x01, USB_CONFIG_ATTR, USBD_MAX_POWER),
   HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_KBD, 0x01, KBD_REPORT_DESC_SIZE,
                                KBD_IN_EP, KBD_EP_MPS, KBD_INTERVAL_HS),
   HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_EXK, 0x00, EXK_REPORT_DESC_SIZE,
@@ -72,7 +87,7 @@ static const uint8_t config_descriptor_hs[] = {
 };
 
 static const uint8_t config_descriptor_fs[] = {
-  USB_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, USB_IF_COUNT, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
+  USB_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, USB_IF_COUNT, 0x01, USB_CONFIG_ATTR, USBD_MAX_POWER),
   HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_KBD, 0x01, KBD_REPORT_DESC_SIZE,
                                KBD_IN_EP, KBD_EP_MPS, KBD_INTERVAL_FS),
   HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_EXK, 0x00, EXK_REPORT_DESC_SIZE,
@@ -90,7 +105,7 @@ static const uint8_t device_quality_descriptor[] = {
 
 /* other-speed 는 "지금 속도의 반대쪽"을 기술한다. HS 로 동작 중이면 FS 규격을 담는 게 맞다. */
 static const uint8_t other_speed_config_descriptor_hs[] = {
-  USB_OTHER_SPEED_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, USB_IF_COUNT, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
+  USB_OTHER_SPEED_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, USB_IF_COUNT, 0x01, USB_CONFIG_ATTR, USBD_MAX_POWER),
   HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_KBD, 0x01, KBD_REPORT_DESC_SIZE,
                                KBD_IN_EP, KBD_EP_MPS, KBD_INTERVAL_FS),
   HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_EXK, 0x00, EXK_REPORT_DESC_SIZE,
@@ -103,7 +118,7 @@ static const uint8_t other_speed_config_descriptor_hs[] = {
 };
 
 static const uint8_t other_speed_config_descriptor_fs[] = {
-  USB_OTHER_SPEED_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, USB_IF_COUNT, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
+  USB_OTHER_SPEED_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, USB_IF_COUNT, 0x01, USB_CONFIG_ATTR, USBD_MAX_POWER),
   HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_KBD, 0x01, KBD_REPORT_DESC_SIZE,
                                KBD_IN_EP, KBD_EP_MPS, KBD_INTERVAL_HS),
   HID_KEYBOARD_DESCRIPTOR_INIT(USB_IF_EXK, 0x00, EXK_REPORT_DESC_SIZE,

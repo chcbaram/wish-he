@@ -142,8 +142,23 @@ static void kbdArm(void)
 
   is_pending = false;
   is_tx_busy = true;
+
+  /*
+   * ★ 싣는 데 실패하면 되돌린다.
+   *
+   *   반환값을 안 보고 있었다. 못 실었는데 is_tx_busy 가 참으로 남으면 완료
+   *   인터럽트가 영영 안 오므로, 되살리기(50ms)가 돌 때까지 **키보드가 죽는다.**
+   *   is_pending 은 이미 내려간 뒤라 그동안 눌린 것도 같이 사라진다.
+   *
+   *   같은 저장소의 EXK 는 처음부터 검사하고 되돌렸다 — 두 파일의 규칙이 달랐다.
+   */
+  if (usbd_ep_start_write(KBD_BUSID, KBD_IN_EP, tx_report, KBD_REPORT_LEN) != 0)
+  {
+    is_tx_busy = false;
+    is_pending = true;                  /* 다음 기회에 다시 싣는다 */
+    return;
+  }
   tx_busy_ms = millis();
-  usbd_ep_start_write(KBD_BUSID, KBD_IN_EP, tx_report, KBD_REPORT_LEN);
 }
 
 
@@ -394,6 +409,24 @@ bool hidKbdIsConfigured(void)
 bool hidKbdIsSuspended(void)
 {
   return is_suspended;
+}
+
+/*
+ * 자고 있는 호스트를 깨운다. 키가 눌렸을 때만 부른다.
+ *
+ * ★ 세 가지가 다 맞아야 나간다 — 디스크립터의 비트(usb_desc.c), 호스트가 켜 준
+ *   것(SET_FEATURE), 그리고 지금 정말 서스펜드인 것. 스택이 그 셋을 다 보고
+ *   아니면 -1 을 준다. 못 깨워도 조용히 넘어간다 — 리모트 웨이크업을 안 켜 주는
+ *   호스트가 있고, 그건 고장이 아니다.
+ *
+ * ★ 깨어나는 데 시간이 걸린다(재개 신호 자체가 1~15ms 다). 그 사이에 또 부르면
+ *   재개 신호가 겹치므로 부르는 쪽에서 간격을 둔다.
+ */
+bool hidKbdRemoteWakeup(void)
+{
+  if (is_suspended == false) return false;
+
+  return (usbd_send_remote_wakeup(KBD_BUSID) == 0);
 }
 
 uint32_t hidKbdGetSentCount(void)

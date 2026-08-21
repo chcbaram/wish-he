@@ -163,6 +163,19 @@ static volatile uint32_t tx_pending_ms = 0;
 static volatile uint32_t tx_busy_ms    = 0;
 
 /*
+ * 응답을 만드는 자리와 실제로 나가는 자리를 갈라 둔다.
+ *
+ * ★ 예전에는 둘 다 tx_report 였다. 나가 있는 중에 다음 응답을 만들면 **DMA 가
+ *   읽는 중인 버퍼를 덮어쓴다** — 호스트가 반쯤 섞인 프레임을 받는다. 창이 좁아
+ *   안 걸렸을 뿐이다.
+ *
+ *   tx_stage 에 만들고, 자리가 비어 있으면 tx_report 로 옮겨 싣는다. 차 있으면
+ *   tx_pend_buf 에 들고 있다가 완료 콜백에서 옮긴다.
+ */
+static uint8_t           tx_stage[HID_EP_MPS];
+static uint8_t           tx_pend_buf[HID_EP_MPS];
+
+/*
  * 들고 있던 응답을 지금 보낼지 정한다. 묵었으면 버린다.
  * 어느 쪽이든 tx_pending 은 내려간다.
  */
@@ -173,7 +186,39 @@ static bool hidTxPendingTake(void)
     return false;
   }
   tx_pending = false;
-  return (millis() - tx_pending_ms) <= HID_TX_PENDING_MAX_MS;
+  if ((millis() - tx_pending_ms) > HID_TX_PENDING_MAX_MS) return false;
+
+  memcpy(tx_report, tx_pend_buf, HID_EP_MPS);
+  return true;
+}
+
+
+/*
+ * 응답 하나를 내보낸다. 자리가 비었으면 지금, 차 있으면 들고 있다가 완료 콜백에서.
+ *
+ * ★ 인터럽트가 막힌 상태이거나 ISR 안에서 불러야 한다.
+ */
+static void hidTxSubmit(const uint8_t *p_data, uint32_t length)
+{
+  if (length > HID_EP_MPS) length = HID_EP_MPS;
+
+  if (is_tx_busy)
+  {
+    memset(tx_pend_buf, 0, HID_EP_MPS);
+    memcpy(tx_pend_buf, p_data, length);
+    tx_pending    = true;
+    tx_pending_ms = millis();
+    return;
+  }
+
+  memset(tx_report, 0, HID_EP_MPS);
+  memcpy(tx_report, p_data, length);
+  is_tx_busy = true;
+  tx_busy_ms = millis();
+  if (usbd_ep_start_write(HID_BUSID, HID_IN_EP, tx_report, HID_EP_MPS) != 0)
+  {
+    is_tx_busy = false;      /* 못 실었다 — 되살리기가 아니라 그냥 잃는다 */
+  }
 }
 
 static struct usbd_interface hid_intf;
@@ -667,28 +712,28 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
 /*
  * VIA 응답을 보낸다. raw_hid_send() 가 부른다 — 메인 루프 컨텍스트다.
  *
- * 이미 전송이 걸려 있으면 빌 때까지 기다린다. 명령 응답은 트래킹 프레임과 달리
- * 버리면 안 된다 — 호스트가 그 응답을 기다리고 있다.
+ * ★ 여기서 기다리면 안 된다.
+ *
+ *   예전에는 자리가 빌 때까지 최대 100ms 를 돌았다. 그동안 메인 루프가 멈추므로
+ *   keysUpdate() 도 qmkUpdate() 도 안 돈다 — **설정 도구를 열어 둔 채 타건하면
+ *   그 순간 키가 씹힌다.** 스캔이 26us 마다 도는 루프에서 100ms 는 4000 바퀴다.
+ *
+ *   그리고 기다려서 늦게 보내는 것 자체가 틀렸다. 이 통로에는 순번이 없어 요청
+ *   하나에 응답 하나로만 짝을 맞추므로, 호스트가 포기한 뒤에 나간 응답은 **다음
+ *   명령의 응답으로 읽힌다** — 그때부터 모든 응답이 한 칸씩 밀린다 (16편).
+ *   같은 이유로 OUT 쪽은 이미 "묵으면 버린다"로 가 있었는데 이쪽만 안 맞았다.
+ *
+ *   그래서 자리가 차 있으면 들고만 있는다. 20ms 안에 자리가 나면 나가고, 아니면
+ *   버린다. 버려진 응답은 호스트가 그 한 번만 실패하고 재시도로 회복한다.
  */
 void hidIfSendRaw(const uint8_t *p_data, uint8_t length)
 {
   uint32_t mask;
-  uint32_t timeout = millis();
 
   if (is_configured == false || p_data == NULL) return;
-  if (length > HID_EP_MPS) length = HID_EP_MPS;
-
-  while (is_tx_busy)
-  {
-    if (millis() - timeout > 100) return;      /* 호스트가 안 가져간다 */
-  }
 
   mask = disable_global_irq(CSR_MSTATUS_MIE_MASK);
-  memset(tx_report, 0, HID_EP_MPS);
-  memcpy(tx_report, p_data, length);
-  is_tx_busy = true;
-  tx_busy_ms = millis();      /* 되살리기 판정에 쓴다 */
-  usbd_ep_start_write(HID_BUSID, HID_IN_EP, tx_report, HID_EP_MPS);
+  hidTxSubmit(p_data, length);
   restore_global_irq(mask);
 }
 
@@ -794,20 +839,10 @@ static void hidOutCallback(uint8_t busid, uint8_t ep, uint32_t nbytes)
   {
     rx_count++;
 
-    if (hidCmdHandler(rx_report, tx_report))
+    if (hidCmdHandler(rx_report, tx_stage))
     {
-      if (is_tx_busy == false)
-      {
-        is_tx_busy = true;
-        tx_busy_ms = millis();
-        usbd_ep_start_write(busid, HID_IN_EP, tx_report, HID_EP_MPS);
-      }
-      else
-      {
-        /* 자리가 나면 보낸다 — 단 20ms 안에. 그 뒤엔 버린다 (hidTxPendingTake) */
-        tx_pending    = true;
-        tx_pending_ms = millis();
-      }
+      /* 자리가 차 있으면 들고 있다가 보낸다 — 단 20ms 안에 (hidTxPendingTake) */
+      hidTxSubmit(tx_stage, HID_EP_MPS);
     }
     else if (raw_recv != NULL)
     {

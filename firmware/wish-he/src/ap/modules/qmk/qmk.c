@@ -36,6 +36,9 @@
 /* 125us = 8kHz 마이크로프레임. 이걸 넘긴 회차는 리포트가 한 프레임 늦는다. */
 #define QMK_OVER_US   125
 
+/* 재개 신호를 겹치지 않게 두는 간격 (자는 호스트를 키로 깨울 때) */
+#define QMK_WAKE_RETRY_MS   100
+
 
 extern void viaPortInit(void);   /* keyboards/<보드>/via_port.c */
 
@@ -75,6 +78,25 @@ static volatile uint32_t task_over_cnt = 0;
 /* 넘긴 순간이 언제였나 — 부팅 직후만인지 계속인지 가른다 */
 static volatile uint32_t task_over_ms_first = 0;
 static volatile uint32_t task_over_ms_last  = 0;
+
+/*
+ * 메인 루프가 한 바퀴 도는 데 걸린 시간 — keyboard_task 만이 아니라 **전부**.
+ *
+ * ★ task_us 로는 안 보이는 것이 있다.
+ *
+ *   루프의 다른 일이 오래 붙들면 keyboard_task 자체는 짧은데 **다음 호출이 늦는다.**
+ *   그동안 스캔도 리포트도 멎는데 task_us 에는 한 글자도 안 나타난다. 실제로 설정
+ *   응답을 못 실으면 그 자리에서 최대 100ms 를 돌던 코드가 있었다(B11) — 스캔이
+ *   26us 마다 도는 루프에서 4000 바퀴다.
+ *
+ * ★ 플래시 쓰기는 정상적으로 넘긴다. XIP 라 쓰는 동안 인터럽트를 막아야 해서
+ *   설정 저장·프로파일 전환마다 6ms 가 통째로 멎는다. 그래서 초과 기준은 그보다
+ *   넉넉히 위에 둔다 — 여기서 잡고 싶은 것은 "수십 ms" 급이다.
+ */
+#define QMK_LOOP_OVER_US   20000
+
+static volatile uint32_t loop_us_max  = 0;
+static volatile uint32_t loop_over_cnt = 0;
 
 /* rgb_matrix_task 몫. keyboard_task 평균에 묻혀 안 보이므로 따로 센다. */
 static volatile uint32_t rgb_us_last = 0;
@@ -142,6 +164,8 @@ void qmkClearStat(void)
   task_us_sum   = 0;
   task_us_cnt   = 0;
   task_over_cnt = 0;
+  loop_us_max   = 0;
+  loop_over_cnt = 0;
   rgb_us_max    = 0;
   rgb_us_sum    = 0;
   rgb_us_cnt    = 0;
@@ -197,6 +221,20 @@ void qmkUpdate(void)
 #if _USE_HW_PERF_STAT
   uint32_t t0 = micros();
   uint32_t dt;
+
+  /* 지난 바퀴에서 여기까지 — 루프가 통째로 멎은 시간이 여기에만 남는다 */
+  {
+    static uint32_t loop_prev = 0;
+
+    if (loop_prev != 0)
+    {
+      uint32_t gap = t0 - loop_prev;
+
+      if (gap > loop_us_max)        loop_us_max = gap;
+      if (gap > QMK_LOOP_OVER_US)   loop_over_cnt++;
+    }
+    loop_prev = t0;
+  }
 #endif
 
   /*
@@ -256,8 +294,31 @@ void qmkUpdate(void)
  */
 static void qmkIdleTask(void)
 {
-  static bool prev = false;
-  bool        now  = hidKbdIsSuspended();
+  static bool     prev    = false;
+  static uint32_t wake_ms = 0;
+  bool            now     = hidKbdIsSuspended();
+
+  /*
+   * 자는 호스트를 키로 깨운다.
+   *
+   * ★ 재개 신호는 그 자체가 1~15ms 짜리라, 매 바퀴 부르면 신호가 겹친다. 눌려
+   *   있는 동안 계속 부르되 QMK_WAKE_RETRY_MS 간격을 둔다. 한 번에 안 깨어나는
+   *   호스트가 있어서 "한 번만" 은 모자란다.
+   *
+   * ★ 여기서 재는 것은 **매트릭스**다. 리포트가 아니다 — 자는 동안에는 리포트가
+   *   못 나가므로 리포트로 재면 영영 조건이 안 선다.
+   */
+  if (now && (millis() - wake_ms) >= QMK_WAKE_RETRY_MS)
+  {
+    for (uint8_t r = 0; r < MATRIX_ROWS; r++)
+    {
+      if (matrix_get_row(r) == 0) continue;
+
+      wake_ms = millis();
+      hidKbdRemoteWakeup();       /* 호스트가 안 켜 줬으면 거짓 — 고장이 아니다 */
+      break;
+    }
+  }
 
   if (now == prev) return;
   prev = now;
@@ -292,6 +353,8 @@ static void cliQmk(cli_args_t *args)
     cliPrintf("  %dus 초과   : %d 회  (첫 %d ms, 마지막 %d ms, 지금 %d ms)\n",
               QMK_OVER_US, (int)task_over_cnt,
               (int)task_over_ms_first, (int)task_over_ms_last, (int)millis());
+    cliPrintf("루프 한 바퀴  : max %d us,  %dus 초과 %d 회\n",
+              (int)loop_us_max, QMK_LOOP_OVER_US, (int)loop_over_cnt);
     /*
      * 매직 스왑이 켜져 있으면 매트릭스도 키맵도 맞는데 나가는 코드만 달라진다.
      * 한 번 당했으니 늘 보이게 둔다.
@@ -539,12 +602,17 @@ static void cliQmk(cli_args_t *args)
 
   if (args->argc == 1 && args->isStr(0, "reset"))
   {
-    task_us_last  = 0;
-    task_us_max   = 0;
-    task_us_sum   = 0;
-    task_us_cnt   = 0;
-    task_over_cnt = 0;
-    rgb_us_last = rgb_us_max = rgb_us_sum = rgb_us_cnt = rgb_over_cnt = 0;
+    /*
+     * ★ 여기서 필드를 손으로 지우지 않는다.
+     *
+     *   예전에는 이 자리와 qmkClearStat() 두 곳이 같은 목록을 따로 들고 있었다.
+     *   그래서 루프 간격 카운터를 넣었을 때 한쪽에만 들어가 **`qmk reset` 이
+     *   그것만 안 지웠다** — 재고 있는 값이 늘 옛날 최대치라 새로 잰 창인 줄
+     *   알고 한참 헤맸다. 목록은 한 곳에만 둔다.
+     */
+    qmkClearStat();
+    task_us_last       = 0;
+    rgb_us_last        = 0;
     task_over_ms_first = 0;
     task_over_ms_last  = 0;
     cliPrintf("통계 리셋\n");

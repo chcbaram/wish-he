@@ -199,6 +199,39 @@ static volatile uint32_t lost_cnt      = 0;
 static struct usbd_interface exk_intf;
 
 
+/*
+ * 재열거 뒤에 지금 상태를 다시 알린다.
+ *
+ * ★ 여기서 슬롯을 지우면 호스트가 상태를 영영 모른다.
+ *
+ *   호스트는 버스 리셋에서 키 상태를 비운다. 우리가 슬롯까지 비우면 다음에 QMK 가
+ *   같은 리포트를 만들어도 **위쪽에서 이미 "안 바뀌었다"고 걸러진다.** 그래서
+ *   무언가 실제로 바뀔 때까지 호스트는 옛 상태를 모르는 채로 있다. NKRO 가 켜져
+ *   있으면 키보드 본류가 이 엔드포인트라 그 사이 타건이 통째로 안 나간다.
+ *
+ *   IF0 은 처음부터 반대로 했다 — 열거 직후 is_pending 을 세워 현재 상태를 한 번
+ *   더 보낸다. 두 파일의 규칙이 달랐다.
+ *
+ * ★ 마우스 칸만 지운다. 그 칸의 x/y/휠은 "지난번에서 얼마나" 라, 다시 보내면 그만큼
+ *   커서가 한 번 더 움직인다. 나머지 셋은 절대 상태라 같은 것을 또 보내도 무해하다.
+ */
+static void exkSlotResend(void)
+{
+  for (uint32_t i = 0; i < EXK_SLOT_MAX; i++)
+  {
+    if (i == EXK_SLOT_MOUSE)
+    {
+      slot[i].len   = 0;
+      slot[i].dirty = false;
+      for (uint32_t j = 0; j < EXK_EP_MPS; j++) slot[i].buf[j] = 0;
+      continue;
+    }
+    slot[i].cnt   = 0;                      /* 열거마다 0 부터 — sent_cnt 와 맞춘다 */
+    slot[i].dirty = (slot[i].len > 0);
+  }
+}
+
+
 static void exkSlotClear(void)
 {
   for (uint32_t i = 0; i < EXK_SLOT_MAX; i++)
@@ -398,7 +431,11 @@ void hidExkEventHandler(uint8_t busid, uint8_t event)
       is_configured = false;
       is_tx_busy    = false;
       tx_slot       = -1;
-      exkSlotClear();
+      /*
+       * 내용은 남긴다 — 곧 이어질 CONFIGURED 에서 그대로 다시 보내야 한다.
+       * 나가다 만 것만 내린다 (안 그러면 재열거 직후 묵은 dirty 가 먼저 나간다).
+       */
+      for (uint32_t i = 0; i < EXK_SLOT_MAX; i++) slot[i].dirty = false;
       break;
 
     case USBD_EVENT_CONFIGURED:
@@ -407,8 +444,9 @@ void hidExkEventHandler(uint8_t busid, uint8_t event)
       tx_slot       = -1;
       sent_cnt      = 0;
       lost_cnt      = 0;
-      /* 끊기기 전 상태가 남아 있으면 첫 리포트가 같다고 눌러 없어진다 */
-      exkSlotClear();
+      /* 지우지 않고 다시 보낸다 — 호스트는 리셋에서 상태를 비웠다 (exkSlotResend) */
+      exkSlotResend();
+      exkArm();
       break;
 
     default:

@@ -131,11 +131,25 @@ void hidTrkUpdate(void)
   if (is_tx_busy == false)
   {
     is_tx_busy = true;
-    usbd_ep_start_write(TRK_BUSID, TRK_IN_EP, tx_report, TRK_EP_MPS);
 
-    track_idx += n;
-    if (track_idx >= KEYS_MAX) track_idx = 0;
-    frame_cnt++;
+    /*
+     * ★ 못 실었으면 되돌린다. 이 통로에는 되살리기가 없다 — is_tx_busy 가 굳으면
+     *   재열거 전까지 트래킹이 통째로 멎는다. 같은 자리를 놓고 KBD·EXK 와 규칙을
+     *   맞춘다.
+     *
+     *   프레임은 다시 안 만든다. 어차피 다음 호출이 지금 값으로 새로 만든다 —
+     *   트래킹은 관찰용이라 묵은 프레임보다 최신 것이 맞다.
+     */
+    if (usbd_ep_start_write(TRK_BUSID, TRK_IN_EP, tx_report, TRK_EP_MPS) != 0)
+    {
+      is_tx_busy = false;
+    }
+    else
+    {
+      track_idx += n;
+      if (track_idx >= KEYS_MAX) track_idx = 0;
+      frame_cnt++;
+    }
   }
   restore_global_irq(mask);
 }
