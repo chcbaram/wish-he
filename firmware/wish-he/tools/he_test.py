@@ -865,6 +865,68 @@ def t_loop_not_stalled():
         h.close()
 
 
+def defer_cnt():
+    """ISR 에서 온 일을 메인 루프로 미룬 횟수."""
+    m = re.search(r"ISR 미루기\s+: (\d+) 회", say("keys info"))
+    return int(m.group(1)) if m else None
+
+
+@test("usb", "설정 명령이 ISR 에서 표를 안 만든다 (B7)")
+def t_cfg_race():
+    """
+    설정 채널의 우리 확장은 USB **인터럽트**에서 처리되는데, 그 명령들이 판정용
+    표를 다시 만든다. 표를 읽는 판정은 메인 루프다. 그래서 미룬다 — 만드는 쪽과
+    읽는 쪽이 같은 문맥이 되면 경합이 아예 없어진다 (keys.c 의 "미룬다" 절).
+
+    ★ **이 시험은 재현이 아니라 보증이다.** 솔직히 적어 둔다.
+
+      유령 입력을 실제로 만들어 보려 했지만 **고치기 전 펌웨어에서도 안 났다.**
+      인터럽트는 메인 루프를 끊지만 그 반대는 안 되므로, ISR 안의 리빌드는 판정에
+      대해 원자적이다 — 중간 상태를 밖에서 볼 수가 없다. 키를 눌러 둔 채 같은 값을
+      300번씩 세 차례 쏘고 리포트를 셌는데 전후 모두 0 장이었다.
+
+      그래서 확률(유령이 안 났다)이 아니라 **사실(ISR 이 표를 안 만든다)** 을 본다.
+      미루기 카운터가 늘면 그 길이 실제로 걸린 것이고, 늘지 않으면 어디선가 ISR 이
+      표를 직접 만들고 있다는 뜻이다.
+
+    ★ 리포트 수는 그대로 본다. 늘면 그건 그것대로 파고들 자리다.
+    """
+    idx  = CELL_ST * 8 + CELL_CH
+    vals = keycfg(idx)                      # 지금 값 — 그대로 되쏜다
+    h    = hid()                            # ★ keycfg 가 제 핸들을 열므로 그 뒤에 연다
+
+    try:
+        say("keys inject live on")
+        say("keys inject %d %d d 150" % (CELL_ST, CELL_CH))
+        time.sleep(0.8)
+
+        if not press_state()[0]:
+            return "주입한 키가 안 눌렸다 — 시험이 안 된다"
+
+        d0     = defer_cnt()
+        before = nkro_sent()
+
+        for _ in range(200):
+            dev._cmd(h, [0xC5, 0x01, idx] + list(vals))
+
+        time.sleep(0.8)
+        after = nkro_sent()
+        d1    = defer_cnt()
+
+        if d0 is None or d1 is None:
+            return "keys info 에서 미루기 수를 못 읽었다"
+        if d1 <= d0:
+            return (f"미루기가 한 번도 안 걸렸다 ({d0} -> {d1}) — "
+                    f"ISR 이 표를 직접 만들고 있다")
+        if after != before:
+            return (f"같은 값을 되쏘는 동안 리포트가 {after - before} 장 나갔다 "
+                    f"— 설정이 안 바뀌었는데 판정이 흔들렸다")
+        return None
+    finally:
+        say("keys inject off", "keys inject live off")
+        h.close()
+
+
 # ── 4. 기준값 래치 ───────────────────────────────────────────────────────
 
 @test("latch", "상향 글리치가 기준값을 영구히 끌어올린다 (A2)", xfail=True)
