@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """이미지에 태그를 심는다 — 굽다 만 앱이 그대로 도는 것을 막기 위한 것.
 
-    python3 tools/fw_tag.py build-<키보드>/<키보드>.bin build-<키보드>/<키보드>-tag.bin
+    python3 tools/fw_tag.py build/<키보드>/<키보드>.bin build/<키보드>/<키보드>-tag.bin
 
 ★ 왜 필요한가.
 

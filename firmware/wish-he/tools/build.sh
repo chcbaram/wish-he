@@ -11,8 +11,8 @@
 #   두 보드가 같은 이름을 내면 엉뚱한 것을 굽기 쉽다. 부트로더가 형식을 검사해
 #   벽돌이 되진 않지만 "왜 안 뜨지" 로 한참 헤맬 자리다.
 #
-#     build-wish60-he-7u/wish60-he-7u-tag.bin
-#     build-wish61-he/wish61-he-image.bin
+#     build/wish60-he-7u/wish60-he-7u-tag.bin
+#     build/wish61-he/wish61-he-tag.bin
 #
 set -e
 
@@ -25,7 +25,7 @@ case "$KB" in
   *) echo "모르는 키보드: $KB  (keyboards/ 를 볼 것)" >&2; exit 1 ;;
 esac
 
-DIR="build-$KB"
+DIR="build/$KB"
 [ "$2" = "-c" ] && rm -rf "$DIR"
 
 cmake -DHW_KEYBOARD="$KB" -DHW_BOARD="$BOARD" -S . -B "$DIR" >/dev/null

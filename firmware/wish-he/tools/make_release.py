@@ -47,7 +47,7 @@ HW_DEF = ROOT / "src/hw/hw_def.h"
 # ★ 보드마다 폴더와 이름이 다르다 (tools/build.sh 참조).
 #   기본은 wish60-he-7u 이고, 다른 보드는 WISH_KB 로 고른다.
 _KB   = os.environ.get("WISH_KB", "wish60-he-7u")
-BUILD = ROOT / ("build-%s/%s.bin" % (_KB, _KB))
+BUILD = ROOT / ("build/%s/%s.bin" % (_KB, _KB))
 
 # 웹앱(via-he)의 public/firmware/ 아래 이 보드가 쓰는 칸.
 # 거기 manifest.json 은 **보드 목록**이고, 이 파일이 만드는 목록은 그 아래로 들어간다.
