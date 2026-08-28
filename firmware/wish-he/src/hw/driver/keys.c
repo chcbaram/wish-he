@@ -33,7 +33,9 @@
 
 /* keyboards/<모델>/layout.h — tools/gen_keymap.py 가 KLE 에서 생성한다 */
 #include "layout.h"
+#if defined(_USE_HW_WS2812)
 #include "ws2812.h"
+#endif
 #include "flash.h"
 #include "hpm_crc32.h"
 
@@ -52,22 +54,26 @@ static const uint8_t mux_addr[KEYS_STEP_MAX + 1] =
 };
 
 /*
- * ADC 시퀀스 채널.
+ * ADC 시퀀스 채널 · 아날로그 패드 · MUX 주소 핀.
  *
- * ★ 채널 번호는 패드 번호와 다르다. PB00~PB07 -> ch8~ch15, PB08~PB15 -> ch0~ch7 로
- *   8만큼 돌아가 있다. 순서도 오름차순이 아니므로 이 배열 그대로 써야 한다.
+ * ★ 전부 keyboards/<모델>/config.h 에서 온다. **여기에 값을 적지 않는다.**
+ *
+ *   보드마다 센서가 다른 핀에 붙고 MUX 주소 폭도 다르다. 드라이버에 값을 박아 두면
+ *   모델을 늘릴 때마다 이 파일이 #if 로 갈라진다. 핀은 보드가 아니라 그 키보드의
+ *   성질이므로 키보드 폴더에 둔다.
+ *
+ * ★ 채널 번호는 패드 번호와 다르다 — 대응은 실리콘이 정한다. config.h 의 표에
+ *   근거와 함께 적혀 있다.
  */
-static const uint8_t adc0_seq_ch[KEYS_SEQ_LEN] = { 15, 14, 12,  8 };  /* PB07 PB06 PB04 PB00 */
-static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB05 PB01 PB02 */
+static const uint8_t adc0_seq_ch[KEYS_SEQ_LEN] = HW_KEYS_ADC0_SEQ_CH;
+static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = HW_KEYS_ADC1_SEQ_CH;
 
-/* 아날로그로 잡을 패드. 실제 등록은 8개지만 16개 전부를 잡아 둔다. */
-#define KEYS_ANALOG_PAD_FIRST   IOC_PAD_PB00
-#define KEYS_ANALOG_PAD_CNT     16
+#define KEYS_ANALOG_PAD_FIRST   HW_KEYS_ANALOG_PAD_FIRST
+#define KEYS_ANALOG_PAD_CNT     HW_KEYS_ANALOG_PAD_CNT
 
-/* MUX 주소 핀 — PY00~PY03. 주소는 3비트지만 4번째 핀도 출력으로 고정한다. */
-#define KEYS_MUX_GPIO_PORT      GPIO_DO_GPIOY
-#define KEYS_MUX_PAD_FIRST      IOC_PAD_PY00
-#define KEYS_MUX_PIN_CNT        4
+#define KEYS_MUX_GPIO_PORT      HW_KEYS_MUX_PORT
+#define KEYS_MUX_PAD_FIRST      HW_KEYS_MUX_PAD_FIRST
+#define KEYS_MUX_PIN_CNT        HW_KEYS_MUX_PIN_CNT
 #define KEYS_MUX_PIN_MASK       ((1U << KEYS_MUX_PIN_CNT) - 1U)
 
 /* PIOC 의 ALT3 = "패드를 SoC 쪽에 넘긴다". PIOC 를 안 건드리면 IOC 설정이 먹지 않는다. */
@@ -76,10 +82,13 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
 /*
  * 세틀링 — 주소를 쓴 뒤 아날로그가 안정될 때까지.
  *
- * 홀 센서 자체의 응답은 0.1us 미만이고 MUX 스위칭도 그 수준이라 매우 짧다.
- * 400MHz 에서 16 사이클 = 40ns.
+ * 홀 센서 자체의 응답은 0.1us 미만이지만 **MUX 와 배선은 보드마다 다르다.**
+ * 값은 keyboards/<모델>/config.h 에 있고, `keys settle <n>` 으로 굽지 않고 바꾼다 —
+ * 모자라면 한 키가 스캔 순서로 이웃한 칸에 번진다.
  */
-#define KEYS_SETTLE_CYCLES      16
+#define KEYS_SETTLE_CYCLES      HW_KEYS_SETTLE_CYCLES
+
+static uint32_t settle_cycles = KEYS_SETTLE_CYCLES;
 
 /* 완료를 기다리다 이만큼 돌면 포기한다. 스핀이 영원히 걸리는 것만 막으면 된다. */
 #define KEYS_WAIT_LIMIT         100000
@@ -290,9 +299,15 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = {  0, 13,  9, 10 };  /* PB08 PB
  * 부팅 캘리브레이션 이상치 판정.
  *
  * 기준값이 전체 중앙값보다 이만큼 아래면 "그 키는 눌린 채로 측정됐다"고 본다.
- * 스트로크(838)와 정상 편차(360) 사이라 양쪽 모두와 안전한 거리가 있다.
+ *
+ * ★ 값은 keyboards/<모델>/config.h 에 있다. **보드마다 다르다.**
+ *
+ *   문턱은 정상 편차와 스트로크 사이에 놓여야 하는데, 정상 편차는 센서 배치와
+ *   자석 개체차라 보드가 바뀌면 통째로 달라진다. wish60-he 는 360 이고 wish61-he 는
+ *   499 라, wish60-he 값(500)을 wish61-he 에 쓰면 여유가 1카운트밖에 안 남는다.
+ *   근거와 재는 법은 config.h 에 적혀 있다.
  */
-#define KEYS_CAL_OUTLIER        (500 * KEYS_ACC_CNT)
+#define KEYS_CAL_OUTLIER        (HW_KEYS_CAL_OUTLIER_12B * KEYS_ACC_CNT)
 
 /* 원시 16비트를 이만큼 내려 12비트 영역으로 쓴다 */
 #define KEYS_RAW_SHIFT          4
@@ -1610,7 +1625,7 @@ static bool keysInitAdc(ADC16_Type *ptr, const uint8_t *seq_ch, volatile uint32_
 
 static inline void keysSettle(void)
 {
-  for (uint32_t i = 0; i < KEYS_SETTLE_CYCLES; i++)
+  for (uint32_t i = 0; i < settle_cycles; i++)
   {
     __asm volatile ("nop");
   }
@@ -5529,6 +5544,7 @@ void cliKeys(cli_args_t *args)
    *
    *   ESC 를 눌렀는데 다른 자리가 켜지면 그 어긋난 방향이 곧 답이다.
    */
+#if defined(_USE_HW_WS2812)
   if (args->argc == 1 && args->isStr(0, "led"))
   {
     cliPrintf("키를 누르면 그 키의 LED 가 켜진다. 전 키를 한 번씩 눌러 본다.\n");
@@ -5554,6 +5570,7 @@ void cliKeys(cli_args_t *args)
     ws2812Refresh();
     ret = true;
   }
+#endif   /* _USE_HW_WS2812 — RGB 를 되살릴 때 `keys led` 도 같이 돌아온다 */
 
   /*
    * 입력지점·해제지점을 CLI 에서 바꾼다.
@@ -6217,8 +6234,27 @@ void cliKeys(cli_args_t *args)
     ret = true;
   }
 
+  /*
+   * 세틀링을 굽지 않고 바꾼다.
+   *
+   * 모자라면 한 키가 스캔 순서로 이웃한 칸에 번진다. 값을 쓸어 보며 번짐이 사라지는
+   * 최소를 찾고, 찾으면 config.h 에 적는다. 스텝마다 도는 값이라 스캔 시간에
+   * 8배로 들어온다 — `keys info` 로 같이 본다.
+   */
+  if (args->argc >= 1 && args->isStr(0, "settle"))
+  {
+    if (args->argc == 2)
+    {
+      settle_cycles = args->getData(1);
+    }
+    cliPrintf("settle %d nop  (config.h 기본값 %d)\n",
+              (int)settle_cycles, (int)KEYS_SETTLE_CYCLES);
+    ret = true;
+  }
+
   if (ret == false)
   {
+    cliPrintf("keys settle [n]  MUX 세틀링 nop 수 — 번짐이 있으면 올린다\n");
     cliPrintf("keys info\n");
     cliPrintf("keys adc\n");
     cliPrintf("keys show      눌린 키 표시 (8x8 격자)\n");
@@ -6234,7 +6270,9 @@ void cliKeys(cli_args_t *args)
     cliPrintf("keys map\n");
     cliPrintf("keys bar       눌린 깊이를 막대로 (최대 6개)\n");
     cliPrintf("keys key <st> <ch>   한 키만 — 누름마다 최대깊이와 판정 여부\n");
+#if defined(_USE_HW_WS2812)
     cliPrintf("keys led       누른 키의 LED 를 켠다 (매핑 확인)\n");
+#endif
     cliPrintf("keys watch\n");
     cliPrintf("keys noise [ms]  잡음 측정 (기본 3000, 드문 사건은 길게)\n");
     cliPrintf("keys lat [clear|run <n> [ms]|dump]  눌림 -> 도착 지연\n");

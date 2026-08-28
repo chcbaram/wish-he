@@ -7,7 +7,11 @@
 
 
 #define _DEF_FIRMWATRE_VERSION    "V260822R1"
+#if defined(HW_BOARD_WISH61_HE)
+#define _DEF_BOARD_NAME           "WISH61-HE"
+#else
 #define _DEF_BOARD_NAME           "WISH60-HE"
+#endif
 #define _DEF_MCU_NAME             "HPM5361 (RISC-V)"
 #define _DEF_AUTHOR_NAME          "BARAM"
 
@@ -37,7 +41,18 @@
  */
 #define _USE_HW_PERF_STAT       1
 
+/*
+ * 표시 LED — **wish60-he 에만 있다.**
+ *
+ * ★ led.c 가 PA23 을 GPIO 로 잡는데, wish61-he 에서 PA23 은 RGB 오른쪽 채널의
+ *   SPI2_MOSI 다 (keyboards/wish61-he/config.h). 그대로 켜면 표시 LED 드라이버가
+ *   RGB 데이터 선을 리먹싱하고 토글한다.
+ *
+ *   그 보드에 단색 표시 LED 가 있는지도 아직 모른다. 모르면 안 건드린다.
+ */
+#if !defined(HW_BOARD_WISH61_HE)
 #define _USE_HW_LED
+#endif
 #define      HW_LED_MAX_CH          1
 
 /* IAP 부트로더 진입 / 소프트 리셋. docs/README.md 6.3 참조 */
@@ -48,7 +63,8 @@
  * 드라이버가 각자 임의 번호를 잡으면 조용히 서로 덮어쓴다(실제로 겪었다).
  */
 #define      HW_DMA_CH_UART0_RX     0
-#define      HW_DMA_CH_WS2812       2
+#define      HW_DMA_CH_WS2812_0     2   /* RGB 체인 0 */
+#define      HW_DMA_CH_WS2812_1     4   /* RGB 체인 1 (체인이 하나면 안 쓴다) */
 /*           HW_DMA_CH_ADC          3~  (예정) */
 
 /*
@@ -60,9 +76,24 @@
  *   UART   : LOW
  */
 
-/* WS2812 (PA29 = SPI1.MOSI). 이 보드의 유일한 시각 표시 수단이다. */
+/*
+ * WS2812.
+ *
+ * ★ 핀 · SPI · DMA · 개수는 전부 keyboards/<모델>/config.h 에서 온다.
+ *   보드마다 체인 수가 다르다 — wish60-he 는 1개(PA29/SPI1), wish61-he 는
+ *   2개(PA13/SPI3 + PA23/SPI2)다. 드라이버에 값을 박지 않는다.
+ */
 #define _USE_HW_WS2812
-#define      HW_WS2812_MAX_CH       83
+#define      HW_WS2812_MAX_CH       (HW_RGB_LED_CNT_CH0 + HW_RGB_LED_CNT_CH1)
+
+
+/*
+ * QMK — 키맵 · 레이어 · 매크로 · VIA.
+ *
+ * 원래는 스위치 없이 늘 들어 있었다. hid_if.c 가 QMK 통계·제원을 이걸로 가르므로
+ * (QMK 를 뺀 채로 올릴 수 있어야 한다) 이름을 준다.
+ */
+#define _USE_HW_QMK
 
 /* 키 스캔 (ADC 시퀀스 + 아날로그 MUX). 8채널 x 8스텝 = 64키 */
 #define _USE_HW_KEYS
@@ -80,10 +111,21 @@
 /*
  * 내장 플래시 (XPI NOR 1MB).
  *
- *   0x00000 ~ 0x20000   부트로더·예약      건드리면 안 됨
- *   0x20000 ~ 0x80000   본 펌웨어
- *   0x80000 ~ 0xC0000   기존 데이터 영역 (e2p)  ★ 건드리면 안 됨
- *   0xC0000 ~ 0x100000  우리 몫 (256KB)
+ *   wish60-he
+ *     0x00000 ~ 0x20000   부트로더·예약      건드리면 안 됨
+ *     0x20000 ~ 0x80000   본 펌웨어 (384KB)
+ *     0x80000 ~ 0xC0000   기존 데이터 영역 (e2p)  ★ 건드리면 안 됨
+ *
+ *   wish61-he — 벤더 IAP 가 이중 이미지라 앞쪽 배치가 다르다
+ *     0x00000 ~ 0x20000   부트로더·devinfo   ★ 복구 경로다. 건드리면 안 됨
+ *     0x20000 ~ 0x60000   App1 (본 펌웨어)   헤더 4KB + 본문 252KB
+ *     0x60000 ~ 0xA0000   App2 (벤더 백업)   ★ 벽돌 탈출구다. 건드리면 안 됨
+ *     0xA0000 ~ 0xC0000   빈 곳 128KB
+ *
+ *   0xC0000 ~ 0x100000  우리 몫 (256KB)  — 두 보드 공통
+ *
+ *   ★ 우리 몫을 0xC0000 로 맞춰 둔다. wish61-he 는 0xA0000 부터 써도 되지만
+ *     (IAP 가 안 건드린다) 두 보드가 같은 자리를 쓰면 저장 코드가 갈리지 않는다.
  *
  *   그 안의 배치 —
  *     0xC0000 / 0xC1000   보정 핑퐁 (4KB x 2)
@@ -96,7 +138,11 @@
 #define      HW_FLASH_SECTOR_SIZE   4096         /* 소거 단위 */
 #define      HW_FLASH_PAGE_SIZE     256          /* 기록 단위 */
 #define      HW_FLASH_APP_BEGIN     0x020000UL   /* 본 펌웨어가 사는 자리 */
+#if defined(HW_BOARD_WISH61_HE)
+#define      HW_FLASH_APP_SIZE      0x040000UL   /* App1 슬롯 256KB (헤더 4KB + 본문 252KB) */
+#else
 #define      HW_FLASH_APP_SIZE      0x060000UL   /* 384KB (ldscript 와 같아야 한다) */
+#endif
 #define      HW_FLASH_USER_BEGIN    0x0C0000UL   /* 이 아래로는 쓰지 않는다 */
 #define      HW_FLASH_CAL_A         0x0C0000UL   /* 보정 핑퐁 A */
 #define      HW_FLASH_CAL_B         0x0C1000UL   /* 보정 핑퐁 B */

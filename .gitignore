@@ -29,6 +29,8 @@ CMakeUserPresets.json
 #   CMake 후처리가 .asm 과 두 벌의 .bin 을 만들고, 다 합쳐 150MB 쯤 된다.
 #
 build/
+# 보드별 빌드 디렉토리 — cmake -DHW_BOARD=... -B build61 처럼 쓴다
+build*/
 
 __pycache__/
 .DS_Store

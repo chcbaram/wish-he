@@ -32,6 +32,13 @@ ROOT = Path(__file__).resolve().parent.parent
 BOARDS = ROOT / "keyboards"
 DEFAULT_BOARD = "wish60-he-7u"
 
+# ★ 기본값일 뿐이다. **실제 값은 layout-kle.json 의 메타데이터에서 온다.**
+#
+#   VIA 는 VID/PID 로 장치를 찾는다. 여기 박아 두면 보드를 늘릴 때마다 엉뚱한
+#   정의가 만들어진다 — 실제로 wish61-he 정의에 wish60-he 의 PID(0x5304)가 박혀
+#   나왔다. 그러면 웹앱이 새 보드를 못 알아보고 옛 보드 정의를 덮어쓴다.
+#
+#   PID 는 usb_config.h 가 보드별로 가르는 값과 반드시 같아야 한다.
 VID, PID = "0x0483", "0x5304"
 ROWS, COLS = 8, 8
 
@@ -103,6 +110,23 @@ DEFAULT_ROWS = [
     ["LSFT", "Z", "X", "C", "V", "B", "N", "M", "COMM", "DOT", "SLSH", "RSFT", "FN"],
     ["LCTL", "LGUI", "LALT", "SPC", "RALT", "RGUI", "RCTL"],
 ]
+
+"""
+바닥줄만은 키 수로 고른다.
+
+  60% 는 바닥줄이 보드마다 다르다. 7키(wish60-he-7u)는 Fn 이 넷째 줄 오른쪽에 있고,
+  61키 표준 ANSI 는 바닥줄이 8키라 오른쪽 Win 과 Ctrl 사이에 Fn 이 하나 더 들어간다.
+
+  ★ 마지막 자리는 반드시 RCTL 이어야 한다. 길이만 보고 뒤에 덧붙이면 8키 보드에서
+    RCTL 이 밀려나 오른쪽 Ctrl 이 사라진다 — 그래서 줄 전체를 갈아 끼운다.
+
+  ★ Fn 을 넣는 이유. 60% 는 F키도 방향키도 Fn 없이는 못 친다. 여기에 Menu 를 두면
+    상자에서 꺼낸 상태로 쓸 수 없는 키보드가 된다.
+"""
+DEFAULT_BOTTOM = {
+    7: ["LCTL", "LGUI", "LALT", "SPC", "RALT", "RGUI", "RCTL"],
+    8: ["LCTL", "LGUI", "LALT", "SPC", "RALT", "RGUI", "FN", "RCTL"],
+}
 LEARN_RE = re.compile(r"#(\d+)\s+(\d+),(\d+)")
 
 
@@ -192,58 +216,108 @@ def parse_geometry(kle):
 #   - 스플릿 백스페이스처럼 **스위치가 안 꽂힌 자리에도 LED 는 있다.** 그 자리는
 #     배치에 매트릭스 좌표로 이미 들어 있으므로 따로 처리할 것이 없다
 #
-LED_WIDE_U   = 6.0   # 이 폭 이상이면 좌·중·우 3개 (7u 스페이스바에서 실측)
+LED_WIDE_U   = 6.0   # 이 폭 이상이면 좌·중·우 여러 개 (wish60-he 에서 실측)
 LED_WIDE_CNT = 3
 
 # 언더글로우 — 상단 뒤에 이어 붙는다. **오른쪽 아래 Ctrl 근처에서 시작해 왼쪽으로**
-# 가며 판 외곽을 한 바퀴 돈다 (아래 → 왼쪽 → 위 → 오른쪽).
-#
-# 변마다 몇 개씩인지도 눈으로 셌다 — 아래 6, 좌 3, 위 6, 우 3.
-#
-# ★ 변별 개수까지가 실측이고 **한 변 안에서의 간격은 아니다.** 각 변을 균등하게
-#   나눠 놓았다. 효과가 어색하면 `ws2812 walk 65` 로 하나씩 짚어 고친다.
-#
-#   둘레를 통째로 균등 분할하면 안 된다 — 짧은 변(5u)과 긴 변(15u)에 같은 간격을
-#   주면 아래가 7개, 옆이 2개가 되어 실제(6/3)와 어긋난다.
+# 가며 판 외곽을 한 바퀴 돈다 (아래 -> 왼쪽 -> 위 -> 오른쪽).
 LED_UNDER_SIDES = (6, 3, 6, 3)   # 아래, 왼쪽, 위, 오른쪽 (합 = 언더글로우 개수)
 
+# ── 보드별 LED 모델 ─────────────────────────────────────────────────────────
+#
+# ★ 위 기본값은 wish60-he-7u 를 잰 것이다. 보드가 다르면 체인 순서도 개수도 다르다.
+#   keyboards/<모델>/leds.json 이 있으면 그것으로 덮어쓴다.
+#
+#   {
+#     "wide":          [ {"width_u": 6.25, "leds": 5} ],   폭이 이 이상인 키의 LED 수
+#     "first_row_dir": "left" | "right",                   첫 줄이 어느 쪽으로 가나
+#     "under": {
+#       "start_x":  14.0,                                  윗변에서 출발하는 x (키유닛)
+#       "segments": [2, 4, 17, 4, 12]                      시계방향: 윗변오른쪽,
+#     }                                                    우, 아래, 좌, 윗변왼쪽
+#   }
+#
+#   ★ 값은 전부 실측이다. 짐작으로 채우지 말 것 — `ws2812 range` 로 구간을 켜 보면
+#     몇 개가 어디에 있는지 눈으로 확인된다.
+LEDS = None
 
-def led_under(geo):
-    """언더글로우 (x, y) 근사 좌표. 키 단위, 판 왼쪽 위가 원점."""
-    xs = [x for x, y, w, h, _, _ in geo if x < 15.5]     # 판 밖 대체 자리는 뺀다
-    ws = [(x, w) for x, y, w, h, _, _ in geo if x < 15.5]
-    x1 = max(x + w for x, w in ws)
-    y1 = max(y + h for _, y, _, h, _, _ in geo)
 
-    # 둘레를 한 바퀴 — 오른쪽 아래에서 왼쪽으로 출발한다
-    legs = [((x1, y1), (0.0, y1)),      # 아래 : 오른쪽 -> 왼쪽
-            ((0.0, y1), (0.0, 0.0)),    # 왼쪽 : 아래 -> 위
-            ((0.0, 0.0), (x1, 0.0)),    # 위   : 왼쪽 -> 오른쪽
-            ((x1, 0.0), (x1, y1))]      # 오른쪽 : 위 -> 아래
+def load_leds():
+    """보드 폴더의 leds.json. 없으면 None (wish60-he 기본 모델을 쓴다)."""
+    global LEDS
+    f = BOARD_DIR / "leds.json"
+    LEDS = json.loads(f.read_text()) if f.exists() else None
+    return LEDS
 
-    out = []
-    for ((ax, ay), (bx, by)), n in zip(legs, LED_UNDER_SIDES):
-        for i in range(n):
-            t = (i + 0.5) / n           # 변 안에서 균등
-            out.append((ax + (bx - ax) * t, ay + (by - ay) * t))
-    return out
+
+def led_count_of(w):
+    """폭 w(키유닛)인 키가 갖는 LED 수."""
+    if LEDS:
+        for rule in sorted(LEDS.get("wide", []), key=lambda r: -r["width_u"]):
+            if w >= rule["width_u"] - 1e-9:
+                return rule["leds"]
+        return 1
+    return LED_WIDE_CNT if w >= LED_WIDE_U else 1
 
 
 def led_chain(geo):
-    """geo -> LED 순서대로의 (row, col) 목록."""
+    """geo -> LED 순서대로의 (row, col) 목록. 지그재그다."""
     rows = {}
     for x, y, w, h, s_, c_ in geo:
         rows.setdefault(round(y * 4), []).append((x, w, s_, c_))
 
+    # 첫 줄이 오른쪽에서 시작하면 홀짝을 뒤집는다
+    flip = 1 if (LEDS and LEDS.get("first_row_dir") == "left") else 0
+
     out = []
     for i, ry in enumerate(sorted(rows)):
         ks = sorted(rows[ry])              # 왼쪽 -> 오른쪽
-        if i % 2:
-            ks = list(reversed(ks))        # 홀수 행은 되돌아온다
+        if (i + flip) % 2:
+            ks = list(reversed(ks))        # 되돌아온다
         for x, w, s_, c_ in ks:
-            for _ in range(LED_WIDE_CNT if w >= LED_WIDE_U else 1):
+            for _ in range(led_count_of(w)):
                 out.append((s_, c_))
     return out
+
+
+def led_under(geo):
+    """언더글로우 (x, y) 근사 좌표. 키 단위, 판 왼쪽 위가 원점."""
+    ws = [(x, w) for x, y, w, h, _, _ in geo if x < 15.5]   # 판 밖 대체 자리는 뺀다
+    x1 = max(x + w for x, w in ws)
+    y1 = max(y + h for _, y, _, h, _, _ in geo)
+
+    if LEDS and "under" in LEDS:
+        """
+        시계방향 한 바퀴 — **윗변 중간에서 출발한다.**
+
+        wish60-he 는 오른쪽 아래에서 왼쪽으로 돌지만 보드마다 다르다. 여기서는
+        출발 x 와 구간별 개수를 leds.json 이 준다.
+
+            윗변(출발x -> 오른쪽), 우변(위 -> 아래),
+            아랫변(오른쪽 -> 왼쪽), 좌변(아래 -> 위), 윗변(왼쪽 -> 출발x)
+        """
+        sx = LEDS["under"]["start_x"]
+        legs = [((sx, 0.0), (x1, 0.0)),
+                ((x1, 0.0), (x1, y1)),
+                ((x1, y1), (0.0, y1)),
+                ((0.0, y1), (0.0, 0.0)),
+                ((0.0, 0.0), (sx, 0.0))]
+        counts = LEDS["under"]["segments"]
+    else:
+        # wish60-he 기본 — 오른쪽 아래에서 왼쪽으로 출발한다
+        legs = [((x1, y1), (0.0, y1)),      # 아래 : 오른쪽 -> 왼쪽
+                ((0.0, y1), (0.0, 0.0)),    # 왼쪽 : 아래 -> 위
+                ((0.0, 0.0), (x1, 0.0)),    # 위   : 왼쪽 -> 오른쪽
+                ((x1, 0.0), (x1, y1))]      # 오른쪽 : 위 -> 아래
+        counts = LED_UNDER_SIDES
+
+    out = []
+    for ((ax, ay), (bx, by)), n in zip(legs, counts):
+        for i in range(n):
+            f = (i + 0.5) / n           # 변 안에서 균등
+            out.append((ax + (bx - ax) * f, ay + (by - ay) * f))
+    return out
+
 
 
 # 드롭다운에 쓸 이름.
@@ -327,24 +401,32 @@ def gen_rgb(kle, geo, leds, und):
     pos, i = [], 0
     rows = {}
     for x, y, w, h, s_, c_ in geo: rows.setdefault(round(y * 4), []).append((x, w, h, s_, c_))
+    # ★ led_chain() 과 **같은 규칙**을 써야 한다. 여기만 옛 상수를 쓰다가
+    #   키 LED 가 63 대 65 로 어긋나 언더글로우 뒤 2개가 통째로 빠졌다.
+    flip = 1 if (LEDS and LEDS.get("first_row_dir") == "left") else 0
     for ri, ry in enumerate(sorted(rows)):
         ks = sorted(rows[ry])
-        if ri % 2: ks = list(reversed(ks))
+        if (ri + flip) % 2: ks = list(reversed(ks))
         for x, w, h, s_, c_ in ks:
-            n = LED_WIDE_CNT if w >= LED_WIDE_U else 1
+            n = led_count_of(w)
             for k in range(n):
                 pos.append((x + w * (k + 0.5) / n, ry / 4 + h / 2))
 
+    #
+    # matrix_co — 키 하나에 LED 하나를 대표로 준다. 넓은 키는 **가운데**를 준다.
+    #
+    # ★ 연속 구간의 한가운데를 고른다. 개수가 보드마다 다르므로(여기는 Space 가
+    #   5개) 고정 상수로 세면 안 된다.
     co = [[255] * COLS for _ in range(ROWS)]
-    for i, (s_, c_) in enumerate(leds):
-        mid = LED_WIDE_CNT // 2
-        # 넓은 키는 가운데 것만 대표로 — 같은 (row,col) 이 연속으로 나오는 구간이다
-        if i and leds[i - 1] == (s_, c_):
-            if i + 1 < len(leds) and leds[i + 1] == (s_, c_):
-                co[s_][c_] = i          # 가운데
-            continue
+    i = 0
+    while i < len(leds):
+        j = i
+        while j + 1 < len(leds) and leds[j + 1] == leds[i]:
+            j += 1
+        s_, c_ = leds[i]
         if co[s_][c_] == 255:
-            co[s_][c_] = i
+            co[s_][c_] = (i + j) // 2
+        i = j + 1
 
     L = [
         "/*",
@@ -444,6 +526,7 @@ def cmd_apply(learn_file):
 
 
 def cmd_gen():
+    load_leds()
     kle = load_kle()
     keys = [addr_of(legend) for _, _, legend in iter_keys(kle)]
     if not keys:
@@ -473,10 +556,11 @@ def cmd_gen():
             print(f"[  ] {LABELS_PATH.relative_to(ROOT)} 가 없어 자리표시자를 넣었다")
         layouts["labels"] = labels
 
+    meta = next((it for it in kle if isinstance(it, dict) and "name" in it), {})
     via = {
         "name": name_of(kle),
-        "vendorId": VID,
-        "productId": PID,
+        "vendorId": meta.get("vid", VID),
+        "productId": meta.get("pid", PID),
         "matrix": {"rows": ROWS, "cols": COLS},
         "layouts": layouts,
         # 키 선택기에 RGB 키코드(RGB_TOG · RGB_MODE_*)를 띄운다. 이게 없으면 웹앱에서
@@ -557,7 +641,12 @@ def cmd_gen():
       한참 헤맸다. 자동으로 잇지 않는 것은 두 저장소가 따로 움직여서다.
     """
     print(f"     ↳ 웹앱에도 복사해야 한다:")
-    print(f"       cp {VIA_PATH.relative_to(ROOT)} <via-he>/local-kbs/{VIA_PATH.name}")
+    """
+    ★ 보드 이름으로 넣는다. `layout-via.json` 그대로 두면 두 번째 보드가 첫 번째를
+      덮는다 — local-kbs/ 는 한 폴더다. 등록 키는 파일명이 아니라 VID/PID 이므로
+      파일만 갈라 두면 둘이 공존한다.
+    """
+    print(f"       cp {VIA_PATH.relative_to(ROOT)} <via-he>/local-kbs/{BOARD_DIR.name}.json")
     print(f"       (그다음 via-he 에서  bun scripts/add-local-kbs.ts)")
     print(f"생성: {VIA_PATH.relative_to(ROOT)}")
 
@@ -607,6 +696,10 @@ def cmd_gen():
     n = 0
     for r, row in enumerate(rows_of(kle)):
         base = DEFAULT_ROWS[r] if r < len(DEFAULT_ROWS) else []
+        if r == len(rows_of(kle)) - 1:                     # 바닥줄은 키 수로 고른다
+            cnt = sum(1 for it in row
+                      if isinstance(it, str) and ADDR_RE.match(it.split("\n")[0]))
+            base = DEFAULT_BOTTOM.get(cnt, base)
         k = 0
         for item in row:
             if not (isinstance(item, str) and ADDR_RE.match(item.split("\n")[0])):

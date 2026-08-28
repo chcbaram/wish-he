@@ -149,4 +149,73 @@
  * QMK 는 보통 <보드>.h 에 두지만 우리는 config.h 하나만 QMK 에 알려주면 되게
  * 여기서 끌어온다. 매크로라 여기서 펼쳐지지 않는다.
  */
+
+/* ------------------------------------------------------------------ *
+ *  하드웨어 — 핀 · ADC · RGB
+ * ------------------------------------------------------------------ *
+ *  ★ 드라이버(keys.c · ws2812.c)는 값을 갖지 않는다. 전부 여기서 온다.
+ *    핀은 보드가 아니라 **그 키보드의 성질**이다. 모델을 늘릴 때마다 드라이버가
+ *    #if 로 갈리면 안 된다.
+ *
+ *  ★ 아래 값은 전부 이 보드의 기존 동작을 그대로 옮긴 것이다. 바꾼 것이 없다.
+ * ------------------------------------------------------------------ */
+
+/* 아날로그 입력 — PB00~PB15 를 전부 ANALOG 로 잡는다 (실제로 쓰는 것은 8개) */
+#define HW_KEYS_ANALOG_PAD_FIRST    IOC_PAD_PB00
+#define HW_KEYS_ANALOG_PAD_CNT      16
+
+/*
+ * ADC 시퀀스 채널.
+ *
+ * ★ 채널 번호는 패드 번호와 다르다. PB00~PB07 -> ch8~ch15, PB08~PB15 -> ch0~ch7 로
+ *   8만큼 돌아가 있다. 순서도 오름차순이 아니므로 이 배열 그대로 써야 한다.
+ */
+#define HW_KEYS_ADC0_SEQ_CH         { 15, 14, 12,  8 }   /* PB07 PB06 PB04 PB00 */
+#define HW_KEYS_ADC1_SEQ_CH         {  0, 13,  9, 10 }   /* PB08 PB05 PB01 PB02 */
+
+/* MUX 주소 — PY00~PY03. 주소는 3비트지만 4번째 핀도 출력으로 고정한다. */
+#define HW_KEYS_MUX_PORT            GPIO_DO_GPIOY
+#define HW_KEYS_MUX_PAD_FIRST       IOC_PAD_PY00
+#define HW_KEYS_MUX_PIN_CNT         4
+
+/* MUX 세틀링 nop 수. `keys settle <n>` 으로 굽지 않고 바꿔 볼 수 있다 */
+#define HW_KEYS_SETTLE_CYCLES       16
+
+/*
+ * 부팅 보정 이상치 문턱 (12비트 눈금).
+ * 정상 편차(360)와 스트로크(838) 사이여야 한다 — 보드마다 다시 잰다.
+ */
+#define HW_KEYS_CAL_OUTLIER_12B     500
+
+/*
+ * RGB — 체인 1개. PA29 = SPI1.MOSI (ALT5).
+ *
+ * 표의 한 줄이 체인 하나다 — { SPI, 클럭, DMA 채널, DMAMUX 소스, 패드, ALT,
+ * 전역 LED 시작 번호, 개수 }.
+ */
+#define HW_RGB_CHAIN_CNT            1
+#define HW_RGB_LED_CNT_CH0          83
+#define HW_RGB_LED_CNT_CH1          0
+#define HW_RGB_CHAINS                                                          \
+{                                                                              \
+  { HPM_SPI1, clock_spi1, HW_DMA_CH_WS2812_0, HPM_DMA_SRC_SPI1_TX,             \
+    IOC_PAD_PA29, 5, 0, HW_RGB_LED_CNT_CH0 },                                  \
+}
+
+/* LED 전원 스위치가 없는 보드다 (wish61-he 는 PA09~PA11 을 쓴다) */
+#define HW_RGB_PWR_PIN_CNT          0
+
+/*
+ * 무리 경계 — 앞에서부터 이만큼이 키 LED, 나머지가 언더글로우.
+ *
+ * 키가 63개인데 위쪽 LED 가 65개인 것은 7u 스페이스바 밑에만 3개가 들어가서다.
+ * 전류계와 눈으로 확정했다.
+ */
+#define HW_RGB_KEY_LED_CNT          65
+
+/* 전류 모델 — 전류계 실측 (docs/14-led-limiter.md) */
+#define HW_RGB_IDLE_MA              269     /* LED 소등 시 보드 전체 */
+#define HW_RGB_CH_FULL_UA_KEY      11510    /* 키 LED 채널 1개 풀스케일 */
+#define HW_RGB_CH_FULL_UA_UNDER     4660    /* 언더글로우 채널 1개 풀스케일 */
+
 #include "layout_qmk.h"

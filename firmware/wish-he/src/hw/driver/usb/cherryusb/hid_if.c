@@ -38,7 +38,10 @@
 #include "usb/cherryusb/usb_desc.h"
 #include "reset.h"
 #include "keys.h"
+#include "layout.h"
+#if defined(_USE_HW_QMK)
 #include "qmk.h"
+#endif
 #include "usb/cherryusb/hid_trk_if.h"
 
 
@@ -410,14 +413,27 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
       v[1]  = (uint32_t)&__etext - fw_begin;   /* 펌웨어 크기 (코드+상수) */
       v[2]  = fw_begin;
       v[3]  = HW_FLASH_APP_SIZE;
+      /*
+       * ★ QMK 가 아직 없는 보드에서는 그쪽 상수가 없다.
+       *
+       *   매트릭스 크기는 layout.h 가 갖고 있으므로 그대로 쓴다 — QMK 의
+       *   MATRIX_ROWS/COLS 도 같은 값이다. 레이어 수 · EEPROM 크기 · LED 수는
+       *   QMK 쪽에서만 정해지므로 **0 으로 둔다. 지어내지 않는다.**
+       */
+#if defined(_USE_HW_QMK)
       v[4]  = TOTAL_EEPROM_BYTE_COUNT;
+      v[10] = DYNAMIC_KEYMAP_LAYER_COUNT;
+      v[11] = RGB_MATRIX_LED_COUNT;
+#else
+      v[4]  = 0;
+      v[10] = 0;
+      v[11] = 0;
+#endif
       v[5]  = HW_FLASH_CAL_A;
       v[6]  = HW_FLASH_SET_A;
       v[7]  = keysGetKeyCount();
-      v[8]  = MATRIX_ROWS;
-      v[9]  = MATRIX_COLS;
-      v[10] = DYNAMIC_KEYMAP_LAYER_COUNT;
-      v[11] = RGB_MATRIX_LED_COUNT;
+      v[8]  = KEYS_LAYOUT_ROWS;
+      v[9]  = KEYS_LAYOUT_COLS;
 
       if (page == HID_HW_PAGE_MCU || page == HID_HW_PAGE_AUTHOR)
       {
@@ -452,8 +468,14 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
     case HID_CMD_STAT:
     {
       keys_stat_t k;
-      qmk_stat_t  q;
       uint32_t    v[HID_STAT_CNT];
+#if defined(_USE_HW_QMK)
+      qmk_stat_t  q;
+#else
+      /* QMK 가 아직 없다 — 그쪽 칸은 0 으로 둔다. 있는 척하지 않는다. */
+      const struct { uint32_t task_us, task_us_max, task_us_avg, task_over,
+                              task_cnt, rgb_us_max, rgb_us_avg; } q = { 0 };
+#endif
 
       /*
        * ★ 지우고 나서 읽는다.
@@ -464,11 +486,15 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
       if (p_rx[1] == HID_STAT_CLEAR)
       {
         keysClearStat();
+#if defined(_USE_HW_QMK)
         qmkClearStat();
+#endif
       }
 
       keysGetStat(&k);
+#if defined(_USE_HW_QMK)
       qmkGetStat(&q);
+#endif
 
       v[0]  = k.scan_us;       v[1]  = k.scan_us_max;
       v[2]  = k.scan_over;     v[3]  = k.scan_cnt;
