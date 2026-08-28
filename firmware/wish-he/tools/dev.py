@@ -31,12 +31,74 @@
 필요한 것:  pip3 install pyserial hidapi
 """
 
+import os
 import sys
 import time
 
-VID, PID = 0x0483, 0x5304
+"""
+★ 보드는 **PID 로 고른다.** 이름으로 넘겨짚지 않는다.
+
+  포트 이름(/dev/cu.usbmodemXXXXX)은 꽂는 순서와 재열거마다 바뀐다 — 오늘 하루에도
+  00011 -> 3 -> 00015 로 세 번 바뀌었다. 박아 두면 엉뚱한 보드에 붙는데, 그 보드에
+  `reset boot` 이라도 보내면 남의 키보드를 부트로더에 처박는다.
+
+  두 대 이상 꽂고 쓰므로 기본값만으로는 부족하다. 환경변수로 고른다 —
+
+      WISH_PID=0x5305 python3 tools/he_test.py      wish61-he 에 시험
+      python3 tools/he_test.py                      기본 wish60-he
+"""
+VID = 0x0483
+PID = int(os.environ.get("WISH_PID", "0x5304"), 0)
 USAGE_CFG = 0xFF60          # VIA 설정 채널
-PORT = "/dev/cu.usbmodem00015"
+
+
+def find_port():
+    """VID/PID 로 CDC 포트를 찾는다. 못 찾으면 무엇이 붙어 있는지 알려주고 멈춘다."""
+    import serial.tools.list_ports as lp
+
+    for p in lp.comports():
+        if p.vid == VID and p.pid == PID:
+            return p.device
+    have = ", ".join("%04x:%04x" % (p.vid, p.pid) for p in lp.comports() if p.vid) or "없음"
+    sys.exit("[E_] %04x:%04x 를 못 찾았다. 붙어 있는 것: %s" % (VID, PID, have))
+
+
+PORT = find_port()
+
+
+"""
+★ 한 장치에 두 도구가 동시에 붙으면 안 된다.
+
+  `keys inject` 로 값을 갈아 끼우는 도중에 다른 프로세스가 또 주입하면 결과가
+  뒤섞인다. 2026-08-29 에 시험이 도는 중에 측정 스크립트를 띄워서 실패 5건을
+  만들었다 — 전부 가짜였다. **조심해서 될 일이 아니라 도구가 막아야 한다.**
+
+  잠금은 보드마다 따로 건다 (PID 별). 두 보드를 동시에 시험하는 것은 괜찮다.
+"""
+_LOCK = None
+
+
+def lock(what="도구"):
+    """이 보드를 독점한다. 이미 누가 쓰고 있으면 누군지 알려주고 멈춘다."""
+    global _LOCK
+    import fcntl
+    import tempfile
+
+    path = "%s/wish-%04x.lock" % (tempfile.gettempdir(), PID)
+    _LOCK = open(path, "w")
+    try:
+        fcntl.flock(_LOCK, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        prev = ""
+        try:
+            prev = open(path).read().strip()
+        except OSError:
+            pass
+        sys.exit("[E_] %04x:%04x 를 이미 다른 도구가 쓰고 있다%s\n"
+                 "     끝나기를 기다리거나 그쪽을 멈출 것 — 같이 붙으면 결과가 섞인다"
+                 % (VID, PID, (" (%s)" % prev) if prev else ""))
+    _LOCK.write("%s pid=%d" % (what, os.getpid()))
+    _LOCK.flush()
 
 
 # ── CLI (CDC) ────────────────────────────────────────────────────────────
