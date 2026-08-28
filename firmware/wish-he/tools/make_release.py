@@ -29,6 +29,7 @@
   장치는 A 라 하는데 목록에는 B 로 올라가면 사용자가 뭘 깔았는지 알 수 없다.
 """
 
+import os
 import argparse
 import binascii
 import json
@@ -43,7 +44,10 @@ from fw_tag import fill_tag           # noqa: E402  (태그 규칙은 그쪽 한
 
 ROOT = Path(__file__).resolve().parent.parent
 HW_DEF = ROOT / "src/hw/hw_def.h"
-BUILD = ROOT / "build/wish-he.bin"
+# ★ 보드마다 폴더와 이름이 다르다 (tools/build.sh 참조).
+#   기본은 wish60-he-7u 이고, 다른 보드는 WISH_KB 로 고른다.
+_KB   = os.environ.get("WISH_KB", "wish60-he-7u")
+BUILD = ROOT / ("build-%s/%s.bin" % (_KB, _KB))
 
 # 웹앱(via-he)의 public/firmware/ 아래 이 보드가 쓰는 칸.
 # 거기 manifest.json 은 **보드 목록**이고, 이 파일이 만드는 목록은 그 아래로 들어간다.

@@ -4,9 +4,52 @@ set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/tools")
 include(hpmicro-riscv-gcc)
 
 
-# 프로젝트 이름은 최종 출력 파일 이름으로 사용된다.
+# 키보드 모델 선택. keyboards/<모델>/ 에 레이아웃 원본과 생성물이 들어 있다.
+#   cmake -DHW_KEYBOARD=<모델> -S . -B build  으로 전환
+if(NOT DEFINED HW_KEYBOARD)
+  set(HW_KEYBOARD wish60-he-7u)
+endif()
+message(STATUS "Keyboard: ${HW_KEYBOARD}")
+
+# 보드(플랫폼) 선택. 키보드와 다른 축이다 — 이쪽은 **부트로더 계약**이 정한다.
+#   cmake -DHW_BOARD=<보드> -S . -B build  으로 전환
 #
-set(PRJ_NAME wish-he)
+#   wish60-he : 자체 IAP.  매직 4B, 진입점 ORIGIN+4,        앱 384KB (0x80020000~)
+#   wish61-he : 벤더 IAP.  20B 헤더 + CRC32, 진입점 슬롯+0x1000, 앱 252KB (0x80021000~)
+#
+# ★ 키보드 축과 헷갈리지 말 것. 키보드는 "어떤 키가 어디 있나"(레이아웃·핀맵)이고,
+#   보드는 "이 이미지를 누가 어떻게 굽나"(부트로더 계약)다. 지금은 1:1 이지만
+#   같은 보드에 다른 레이아웃을 얹는 일이 생기면 갈라진다.
+if(NOT DEFINED HW_BOARD)
+  set(HW_BOARD wish60-he)
+endif()
+message(STATUS "Board: ${HW_BOARD}")
+
+if(HW_BOARD STREQUAL "wish61-he")
+  set(HW_LDSCRIPT HPM5361_WISH61_APP.ld)
+  set(HW_BOARD_DEF HW_BOARD_WISH61_HE)
+elseif(HW_BOARD STREQUAL "wish60-he")
+  set(HW_LDSCRIPT HPM5361_IAP_APP.ld)
+  set(HW_BOARD_DEF HW_BOARD_WISH60_HE)
+else()
+  message(FATAL_ERROR "알 수 없는 HW_BOARD: ${HW_BOARD}")
+endif()
+
+# 프로젝트 이름은 곧 **출력 파일 이름**이다.
+#
+# ★ 키보드 이름을 그대로 쓴다. 두 보드가 같은 이름을 내면 안 된다 —
+#   `build/wish-he.bin` 과 `build61/wish-he.bin` 처럼 디렉토리로만 갈리면
+#   엉뚱한 것을 굽기 쉽다. 부트로더가 형식을 검사해 벽돌이 되진 않지만
+#   "왜 안 뜨지" 로 한참 헤맬 자리다.
+#
+#     wish60-he-7u.bin / -tag.bin        wish61-he.bin / -tag.bin
+#
+# ★ 후처리 산출물은 보드가 달라도 `-tag.bin` 으로 통일한다. 둘 다 "순수
+#   바이너리에 부트로더가 요구하는 표식을 붙인 것" 이고, 형태만 다르다 —
+#   wish60 은 매직 4바이트를 제자리에 찍고, wish61 은 헤더 4KB 를 앞에 붙인다.
+#   굽는 쪽은 그 차이를 알 필요가 없다. **파일 하나만 기억하면 된다.**
+#
+set(PRJ_NAME ${HW_KEYBOARD})
 
 
 project(${PRJ_NAME}
@@ -96,37 +139,6 @@ if(NOT DEFINED HW_OPT)
   set(HW_OPT -O2)
 endif()
 message(STATUS "Optimize: ${HW_OPT}")
-
-# 키보드 모델 선택. keyboards/<모델>/ 에 레이아웃 원본과 생성물이 들어 있다.
-#   cmake -DHW_KEYBOARD=<모델> -S . -B build  으로 전환
-if(NOT DEFINED HW_KEYBOARD)
-  set(HW_KEYBOARD wish60-he-7u)
-endif()
-message(STATUS "Keyboard: ${HW_KEYBOARD}")
-
-# 보드(플랫폼) 선택. 키보드와 다른 축이다 — 이쪽은 **부트로더 계약**이 정한다.
-#   cmake -DHW_BOARD=<보드> -S . -B build  으로 전환
-#
-#   wish60-he : 자체 IAP.  매직 4B, 진입점 ORIGIN+4,        앱 384KB (0x80020000~)
-#   wish61-he : 벤더 IAP.  20B 헤더 + CRC32, 진입점 슬롯+0x1000, 앱 252KB (0x80021000~)
-#
-# ★ 키보드 축과 헷갈리지 말 것. 키보드는 "어떤 키가 어디 있나"(레이아웃·핀맵)이고,
-#   보드는 "이 이미지를 누가 어떻게 굽나"(부트로더 계약)다. 지금은 1:1 이지만
-#   같은 보드에 다른 레이아웃을 얹는 일이 생기면 갈라진다.
-if(NOT DEFINED HW_BOARD)
-  set(HW_BOARD wish60-he)
-endif()
-message(STATUS "Board: ${HW_BOARD}")
-
-if(HW_BOARD STREQUAL "wish61-he")
-  set(HW_LDSCRIPT HPM5361_WISH61_APP.ld)
-  set(HW_BOARD_DEF HW_BOARD_WISH61_HE)
-elseif(HW_BOARD STREQUAL "wish60-he")
-  set(HW_LDSCRIPT HPM5361_IAP_APP.ld)
-  set(HW_BOARD_DEF HW_BOARD_WISH60_HE)
-else()
-  message(FATAL_ERROR "알 수 없는 HW_BOARD: ${HW_BOARD}")
-endif()
 
 # QMK — 소스 목록(QMK_SRC_FILES)과 인클루드 경로(QMK_INC_DIR)를 채워준다
 include(src/ap/modules/qmk/CMakeLists.txt)
@@ -434,7 +446,7 @@ if(HW_BOARD STREQUAL "wish61-he")
   add_custom_command(TARGET ${EXECUTABLE}
     POST_BUILD
     COMMAND python3 ARGS ${CMAKE_CURRENT_SOURCE_DIR}/tools/mkimage.py
-                         ${PROJECT_NAME}.bin ${PROJECT_NAME}-image.bin
+                         ${PROJECT_NAME}.bin ${PROJECT_NAME}-tag.bin
     COMMENT "Invoking: Make Slot Image (wish61-he)"
     )
 else()

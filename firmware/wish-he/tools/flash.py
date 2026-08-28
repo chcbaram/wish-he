@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """wish61-he 벤더 IAP USB 플래셔.
 
-    ./flash.py image.bin
+    ./flash.py build-<키보드>/<키보드>-tag.bin
 
 앱 모드면 부트로더로 넘긴 뒤 굽고, 다 굽고 나면 앱으로 되돌린다.
 
@@ -232,7 +232,7 @@ def flash(h, img):
 
 def main(argv):
     if len(argv) != 2:
-        raise SystemExit(f"사용법: {argv[0]} <image.bin>")
+        raise SystemExit(f"사용법: {argv[0]} <키보드-tag.bin>")
     img = open(argv[1], 'rb').read()
 
     if not enter_boot():

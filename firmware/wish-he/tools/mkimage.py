@@ -4,7 +4,7 @@
 링커가 뽑은 순수 바이너리(0x80021000 에 놓일 것) 앞에 4KB 헤더 페이지를 붙여
 벤더 IAP 가 받아들이는 슬롯 이미지를 만든다.
 
-    ./mkimage.py app.bin image.bin
+    ./mkimage.py app.bin <키보드>-tag.bin
 
 슬롯 배치
     +0x0000  이미지 헤더 20 B
@@ -46,7 +46,7 @@ def build(body: bytes) -> bytes:
 
 def main(argv):
     if len(argv) != 3:
-        raise SystemExit(f"사용법: {argv[0]} <app.bin> <image.bin>")
+        raise SystemExit(f"사용법: {argv[0]} <app.bin> <out-tag.bin>")
     body = open(argv[1], 'rb').read()
     img = build(body)
     open(argv[2], 'wb').write(img)
