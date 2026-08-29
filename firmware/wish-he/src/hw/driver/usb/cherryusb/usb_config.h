@@ -48,7 +48,23 @@ void logPrintf(const char *fmt, ...);
  * WISH60-HE 는 겹치지 않는 0x5304 를 쓴다.
  */
 #define USBD_VID           0x0483
+/*
+ * PID 는 보드마다 달라야 한다. 같으면 호스트도, 웹 도구도, 우리 도구(flash.py ·
+ * dev.py)도 두 보드를 구분하지 못한다. 계열에서 이미 PID 로 가르고 있다.
+ *
+ *   0x5209  WISH65-74F9
+ *   0x5304  WISH60-HE
+ *   0x5305  WISH61-HE
+ *
+ * ★ 벤더 앱(1ca6:300b)과도 달라지므로, 우리 앱이 뜬 뒤에는 tools/flash.py 의
+ *   AppToBoot 가 보드를 못 찾는다. 앱에 부트로더로 돌아가는 길을 반드시 둘 것.
+ *   (App1 헤더 페이지를 지우고 0xA9B8C7D6 을 쓴 뒤 PPOR 리셋 — README.md 4절)
+ */
+#if defined(HW_BOARD_WISH61_HE)
+#define USBD_PID           0x5305      /* WISH61-HE */
+#else
 #define USBD_PID           0x5304      /* WISH60-HE */
+#endif
 #define USBD_MAX_POWER     500      /* bMaxPower 0xFA. WS2812 83개 구동분 포함 */
 #define USBD_LANGID_STRING 1033
 

@@ -34,6 +34,7 @@
 필요한 것:  pyserial (dev.py 와 같다).  장치가 붙어 있어야 한다.
 """
 
+import os
 import re
 import sys
 import time
@@ -43,7 +44,26 @@ import dev
 
 VERBOSE = False
 
-CELL_ST, CELL_CH = 0, 0          # 시험에 쓸 셀
+"""
+시험에 쓸 셀.
+
+★ **모디파이어가 아닌 보통 키여야 한다.** 모디파이어는 NKRO 리포트의 키 배열이
+  아니라 mods 바이트로 들어가므로, 호스트 도달을 키 배열에서 확인하는 시험(A5·A6)이
+  "누름이 호스트에 안 갔다" 로 헛짚는다.
+
+★ **보드마다 다르다.** 같은 (0,0) 이 wish60-he 에서는 X 지만 wish61-he 에서는
+  RCtrl 이다. 2026-08-29 에 이것으로 두 항목이 실패했다 — 펌웨어가 아니라 시험의
+  전제가 보드에 묶여 있었다.
+
+      WISH_CELL=6,3 python3 tools/he_test.py     그 보드의 보통 키를 지정한다
+"""
+_cell = os.environ.get("WISH_CELL")
+if _cell:
+    CELL_ST, CELL_CH = (int(x) for x in _cell.split(","))
+elif int(os.environ.get("WISH_PID", "0x5304"), 0) == 0x5305:
+    CELL_ST, CELL_CH = 6, 3      # wish61-he 의 A 키 (s0/ch0 은 RCtrl 이라 못 쓴다)
+else:
+    CELL_ST, CELL_CH = 0, 0      # wish60-he-7u 의 X 키
 DRIFT_TICK_MS    = 512           # keys.c 의 KEYS_DRIFT_MS
 DRIFT_STEP       = 3             # KEYS_DRIFT_STEP
 DRIFT_BAND       = 150           # KEYS_DRIFT_BAND
@@ -263,6 +283,20 @@ def keycode(h, layer, row, col, kc=None):
     return (r[4] << 8) | r[5]
 
 
+def cell_of(h, kc, layer=0):
+    """키코드가 어느 셀에 있나 — 장치의 키맵에서 찾는다.
+
+    ★ 셀 번호를 박으면 안 된다. 같은 (0,0) 이 wish60-he 에서는 X 지만 wish61-he
+      에서는 RCtrl 이다. 시험이 "X 를 누른다" 를 뜻한다면 **그 보드에서 X 인 셀**을
+      찾아야 한다.
+    """
+    for r in range(8):
+        for c in range(8):
+            if keycode(h, layer, r, c) == kc:
+                return r, c
+    return None
+
+
 @test("host", "프로파일을 바꿔도 눌린 키가 안 남는다 (A5)")
 def t_prof_stuck():
     """
@@ -340,23 +374,27 @@ def t_socd_restore():
 
     h = hid()
     try:
+        cx, cw = cell_of(h, KC_X), cell_of(h, KC_W)
+        if not cx or not cw:
+            return "이 보드의 키맵에 X 나 W 가 없다"
+
         via_set(h, CH_SOCD_A, V_K1, KC_X >> 8, KC_X & 0xFF)
         via_set(h, CH_SOCD_A, V_K2, KC_W >> 8, KC_W & 0xFF)
         via_set(h, CH_SOCD_A, V_EN, 1)
 
         say("keys inject live on")
-        say("keys inject 0 0 d 150"); time.sleep(0.6)
+        say("keys inject %d %d d 150" % cx); time.sleep(0.6)
         if KC_X not in held():
             return "X 누름이 호스트에 안 갔다"
 
-        say("keys inject 0 1 d 150"); time.sleep(0.6)
+        say("keys inject %d %d d 150" % cw); time.sleep(0.6)
         k = held()
         if KC_X in k or KC_W not in k:
             return f"SOCD 억제가 안 됐다 — {['0x%02X' % x for x in k]}"
 
         via_set(h, CH_SOCD_A, V_EN, 0)      # 끈다
         time.sleep(0.6)
-        say("keys inject 0 1 d 0")          # W 만 뗀다
+        say("keys inject %d %d d 0" % cw)    # W 만 뗀다
         time.sleep(0.8)
 
         k = held()
@@ -437,7 +475,24 @@ def t_rt_arm_release():
             return "누름이 안 잡힌다"
         if step(68)[0]:
             return "RT 해제가 안 났다 — 이동폭이 구역 문턱보다 작다"
-        p, d = step(90)
+
+        """
+        ★ 되눌림을 **넉넉히** 준다. 형제 시험(`RT 가 스트로크 안에서 반복해 산다`)에
+          적어 둔 것과 같은 이유다 — RT 문턱은 깊이 구역 한가운데 값으로 굽히므로
+          얕은 쪽에서는 같은 mm 가 카운트로 덜 나온다.
+
+          예전에는 90 이었는데 그건 0.68 -> 0.90 = 0.22mm 를 움직여 0.10mm 문턱을
+          넘으려는 것이었고, 실제로는 **57 카운트만 올라가 문턱(약 74)에 못 미쳤다.**
+          wish61-he 에서는 5/5 로 결정적으로 실패하고 wish60-he 에서는 키별 보정값에
+          따라 가끔 통과해 "들쭉날쭉한 시험" 으로 보였다 (2026-08-29).
+
+          실측 — 되눌림 90um:57카운트 안 걸림 / 95um:78 걸림 / 100um:99 걸림.
+          100 으로 두면 여유가 25 카운트다.
+
+        ★ **검사하려는 것은 그대로다.** 해제지점 0.80mm 가 rt_arm 을 죽이면 여기서
+          여전히 못 걸린다 — 되눌림 깊이와는 무관한 조건이다.
+        """
+        p, d = step(100)
         if not p:
             return f"RT 재입력이 안 산다 (깊이 {d}) — 해제지점 때문에 RT 가 죽었다"
         return None
@@ -1100,6 +1155,19 @@ def main():
     VERBOSE = "-v" in sys.argv[1:]
     groups = set(args)
 
+    """
+    ★★ 시험 중에는 **키보드를 만지면 안 된다.**
+
+      `keys inject` 로 값을 갈아 끼워 보는데, 그 사이 실제로 키를 누르면 판정이
+      섞인다. 특히 `clean`(끝난 뒤 눌린 키가 없다)은 문자 그대로 "아무도 안 치는데
+      리포트가 나가나" 를 보므로 **치면 반드시 실패한다.**
+
+      2026-08-29 에 이걸로 두 번 헛짚었다 — 한 번은 rt B4, 한 번은 clean 이 깨져서
+      이식이 뭔가 깼다고 의심했는데, 그 사이에 그 키보드로 타이핑하고 있었다.
+      실패 항목이 실행마다 다르면 오염을 먼저 의심할 것.
+    """
+    dev.lock("he_test.py")      # 다른 도구가 같은 보드에 붙는 것을 막는다
+    print("★ 시험이 끝날 때까지 이 키보드를 만지지 말 것 (누르면 판정이 섞인다)")
     print("시험 전 설정을 적어 둔다 — 끝나면 되돌린다")
     try:
         press0, release0 = cfg_um()

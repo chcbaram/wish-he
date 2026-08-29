@@ -30,12 +30,26 @@ static void cliReset(cli_args_t *args);
 #endif
 
 
-/* IAP 가 확인하는 플래그. 주소는 플래시 오프셋(실행 주소 0x8001D000). */
+/*
+ * IAP 가 확인하는 플래그. 주소는 플래시 오프셋이다.
+ *
+ * ★ 보드마다 IAP 가 다르니 자리와 값도 다르다. 나머지 절차(섹터 소거 -> 워드 기록
+ *   -> 되읽어 확인 -> PPOR 소프트 리셋)는 똑같다.
+ *
+ *   wish60-he : 0x1D000 의 워드가 0xFFFFFFFF 가 아니면 부트로더에 머문다
+ *   wish61-he : App1 헤더(0x20000)의 매직이 0xA9B8C7D6 이면 "Prepare to update" 로
+ *               머문다. 즉 **헤더 페이지를 지우는 것이 곧 신호**다 — 파괴적이라
+ *               다시 굽기 전에는 앱으로 못 돌아온다.
+ *               (../../docs/README.md 4절, wish61-he-flash-dump.md 7.5절)
+ */
+#if defined(HW_BOARD_WISH61_HE)
+#define BOOT_FLAG_ADDR        0x00020000UL
+#define BOOT_REQUEST_MAGIC    0xA9B8C7D6UL
+#else
 #define BOOT_FLAG_ADDR        0x0001D000UL
-#define BOOT_FLAG_XIP_ADDR    (0x80000000UL + BOOT_FLAG_ADDR)
-
-/* IAP 는 != 0xFFFFFFFF 만 본다. */
 #define BOOT_REQUEST_MAGIC    0x0000FFFFUL
+#endif
+#define BOOT_FLAG_XIP_ADDR    (0x80000000UL + BOOT_FLAG_ADDR)
 
 /* ppor_sw_reset() 카운터. 24MHz 기준이다. */
 #define RESET_SW_COUNTER      10
@@ -85,6 +99,7 @@ static uint32_t resetGetBootFlag(void)
  * ISR 본체가 XIP 영역에 있어서 소거 중에 인출하면 죽는다.
  * ROM API 자체는 RAM/ROM 에서 도므로 안전하다.
  */
+#if !defined(HW_BOARD_WISH61_HE)     /* wish61-he 는 헤더 페이지라 지우지 않는다 */
 static bool resetEraseBootFlag(void)
 {
   xpi_nor_config_t        nor_cfg;
@@ -109,6 +124,7 @@ static bool resetEraseBootFlag(void)
 
   return (status == status_success);
 }
+#endif
 
 static bool resetWriteBootFlag(uint32_t data)
 {
@@ -161,12 +177,26 @@ bool resetInit(void)
   /*
    * 플래그가 남아 있으면 업데이트 모드를 거쳐 돌아온 것이다.
    * 지우지 않으면 다음 부팅에도 IAP 가 앱으로 안 넘어온다.
+   *
+   * ★★ wish61-he 에서는 지우면 안 된다.
+   *
+   *   이 보드의 플래그 자리는 **App1 헤더 페이지 그 자체**(0x20000)다. 구운 직후
+   *   거기엔 우리 이미지의 헤더(0xBEAF5AA5)가 들어 있고 0xFFFFFFFF 가 아니므로,
+   *   여기서 지우면 **자기 이미지의 헤더를 날린다.** 이번 부팅은 이미 앱으로
+   *   넘어왔으니 멀쩡하지만, 다음 부팅에서 IAP 가 App1[0] != 0xBEAF5AA5 를 보고
+   *   App2(벤더 백업)로 복원해 버린다 — USB 를 뺐다 꽂으면 벤더 펌웨어가 돌아온다.
+   *
+   *   지울 필요도 없다. IAP 가 매직(0xA9B8C7D6)을 보는 즉시 스스로 헤더 페이지를
+   *   지우고 부트로더에 머문다 (verify() 2단계, wish61-he-flash-dump.md 7.4절).
+   *   즉 **플래그 청소는 이미 IAP 쪽에서 끝나 있다.**
    */
+#if !defined(HW_BOARD_WISH61_HE)
   if (resetGetBootFlag() != 0xFFFFFFFFUL)
   {
     boot_mode = (1 << MODE_BIT_BOOT);
     resetEraseBootFlag();
   }
+#endif
 
   is_init = true;
 

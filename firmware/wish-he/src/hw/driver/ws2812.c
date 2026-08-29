@@ -1,33 +1,38 @@
 /*
  * ws2812.c
  *
- * WS2812(NeoPixel) 드라이버 — SPI1 MOSI 비트패턴 방식.
+ * WS2812(NeoPixel) 드라이버 — SPI MOSI 비트패턴 + HDMA, **체인 2개**.
  *
- * 이 보드에는 외부 디버깅용 LED 도, UART 헤더도 없다. 네오픽셀이 유일한
- * 시각적 상태 표시 수단이라 일찍 올린다.
+ * 하드웨어 (keyboards/<모델>/config.h):
+ *   체인 0 : PA13 = SPI3.MOSI (ALT5)
+ *   체인 1 : PA23 = SPI2.MOSI (ALT5)
+ *   SCLK   : 8 MHz  -> SPI 1 바이트 = 1.0us = WS2812 1 비트
  *
- * 하드웨어 (docs/00-hardware.md):
- *   - 데이터 핀 : PA29 = SPI1.MOSI (ALT5)
- *   - SCLK      : 8 MHz  → SPI 1 바이트 = 1.0us = WS2812 1 비트
- *   - LED 개수  : 83
+ * ★ 왜 두 체인인가 — **키 입력 지연 때문이다.**
  *
- *   PA29 먹싱은 IAP 부트로더가 이미 해주지만(0x8000EDD2), 우리 앱만으로도
- *   서도록 여기서 다시 설정한다.
+ *   한 줄로 이으면 프레임 전송이 LED 수에 비례해 길어진다. 81개면 24바이트 x 1us
+ *   x 81 = 약 2ms 다. 두 체인으로 나누면 **동시에** 나가므로 절반이다.
+ *   벤더도 이 보드를 그렇게 짰다.
+ *
+ *   전송 자체는 DMA 라 CPU 를 안 쓴다. CPU 가 내는 비용은 ws2812Encode() 한 번뿐이고
+ *   그것은 LED **총** 개수에 비례하므로 체인을 나눠도 변하지 않는다. 즉 나누는 것은
+ *   공짜로 전송 시간만 줄인다.
+ *
+ *   ws2812Refresh() 는 **절대 기다리지 않는다** — 이전 프레임이 나가는 중이면 즉시
+ *   false 로 돌아가고, 색이 안 바뀌었으면 인코딩도 건너뛴다. 스캔 루프를 막는 지점이
+ *   하나도 없어야 한다.
  *
  * 비트 인코딩 (125ns/SPI비트 기준, WS2812B 규격 T0H 0.4us / T1H 0.8us):
  *   0 -> 0xE0 (상위 3비트 high = 0.375us)
  *   1 -> 0xFC (상위 6비트 high = 0.750us)
- *   주기는 1.0us 로 규격(1.25us ±600ns) 안이다.
- *
- * 전송은 SPI TX + HDMA 논블로킹이다. CPU 는 프레임버퍼만 채우고 바로 빠져나오므로
- * 키 스캔 루프를 막지 않는다 — 고속 스캔과 LED 가 공존하려면 이래야 한다.
+ *   주기는 1.0us 로 규격(1.25us +-600ns) 안이다.
  *
  * 주의: DMA 는 D-cache 를 보지 않는다. 전송 전에 프레임버퍼를 라이트백해야 한다.
  *
- * 전류 리미터 (docs/00-hardware.md 5절):
- *   83개를 밝게 켜면 USB 예산을 훌쩍 넘겨 브라운아웃된다. 그래서 색은 원본 그대로
- *   rgb_buf 에 담아 두고, ws2812Refresh() 에서 프레임 전체 전류를 합산해 넘치면
- *   전 채널을 같은 비율로 줄인 뒤에 비트패턴으로 펼친다.
+ * 전류 리미터:
+ *   전부 밝게 켜면 USB 예산을 넘겨 브라운아웃된다. 색은 원본 그대로 rgb_buf 에 담고,
+ *   ws2812Refresh() 에서 프레임 전체 전류를 합산해 넘치면 전 채널을 같은 비율로 줄인
+ *   뒤에 비트패턴으로 펼친다. 리미터는 **체인과 무관하게 전체 합**으로 건다.
  */
 #include "ws2812.h"
 
@@ -36,6 +41,7 @@
 #include "cli.h"
 
 #include "hpm_spi_drv.h"
+#include "hpm_gpio_drv.h"
 #include "hpm_clock_drv.h"
 #include "hpm_iomux.h"
 #include "hpm_dmav2_drv.h"
@@ -49,9 +55,36 @@ static void cliWs2812(cli_args_t *args);
 #endif
 
 
-#define WS2812_SPI            HPM_SPI1
-#define WS2812_DMA_CH         HW_DMA_CH_WS2812   /* 채널 배분은 hw_def.h 참조 */
 #define WS2812_SPI_HZ         8000000U
+#define WS2812_CHAIN_MAX      HW_RGB_CHAIN_CNT
+
+/*
+ * 체인 표. 값은 전부 keyboards/<모델>/config.h 에서 온다 —
+ * 드라이버에 핀도 개수도 박지 않는다. 보드마다 체인이 하나일 수도 둘일 수도 있다.
+ *
+ *   led_first  전역 LED 인덱스의 시작. rgb_buf 는 하나고 체인이 그것을 나눠 갖는다
+ */
+typedef struct
+{
+  SPI_Type    *spi;
+  clock_name_t clk;
+  uint8_t      dma_ch;
+  uint8_t      dmamux_src;
+  uint16_t     pad;
+  uint16_t     pad_alt;
+  uint16_t     led_first;
+  uint16_t     led_cnt;
+} ws2812_chain_t;
+
+static const ws2812_chain_t chain[WS2812_CHAIN_MAX] = HW_RGB_CHAINS;
+
+/*
+ * 체인 하나가 감당할 최대 LED — 버퍼 크기용.
+ *
+ * 체인이 하나뿐인 보드에서는 CH1 이 0 이므로 CH0 가 그대로 최대다.
+ */
+#define WS2812_CH_LED_MAX     \
+  ((HW_RGB_LED_CNT_CH0 > HW_RGB_LED_CNT_CH1) ? HW_RGB_LED_CNT_CH0 : HW_RGB_LED_CNT_CH1)
 
 #define WS2812_BIT_0          0xE0
 #define WS2812_BIT_1          0xFC
@@ -76,7 +109,7 @@ static void cliWs2812(cli_args_t *args);
  */
 #define WS2812_LEAD_BYTES     64
 #define WS2812_DATA_OFF       WS2812_LEAD_BYTES
-#define WS2812_DATA_LEN       (HW_WS2812_MAX_CH * WS2812_BYTES_PER_LED)
+#define WS2812_DATA_LEN       (WS2812_CH_LED_MAX * WS2812_BYTES_PER_LED)
 
 #define WS2812_BUF_LEN        (WS2812_LEAD_BYTES + WS2812_DATA_LEN + WS2812_RESET_BYTES)
 
@@ -96,7 +129,7 @@ static void cliWs2812(cli_args_t *args);
  * 필요한 건 **반대 방향**이다 — 언더글로우를 켰다고 각인이 어두워지지 않게 하려면
  * 순서를 정해야 한다 (ws2812_prio_t).
  */
-#define WS2812_KEY_CNT        65
+#define WS2812_KEY_CNT        HW_RGB_KEY_LED_CNT
 #define WS2812_GRP_MAX        2
 #define WS2812_GRP_KEY        0
 #define WS2812_GRP_UNDER      1
@@ -130,9 +163,14 @@ static void cliWs2812(cli_args_t *args);
  *
  * uA 로 두는 이유는 4.66mA 를 정수 mA 로 반올림하면 7% 가 날아가기 때문이다.
  */
-#define WS2812_CH_FULL_UA_KEY    11510   /* 위쪽 채널 1개 풀스케일. 실측 */
-#define WS2812_CH_FULL_UA_UNDER   4660   /* 언더글로우 채널 1개 풀스케일. 실측 */
-#define WS2812_IDLE_MA             269   /* LED 소등 시 보드 전체. 실측 */
+/*
+ * ★ 값은 keyboards/<모델>/config.h 에 있다. **보드마다 다르다** — LED 개수도,
+ *   한 자리에 물린 물리 LED 수도, 보드 자체 소비도 다르다. 근거와 재는 법은
+ *   그쪽에 적혀 있다.
+ */
+#define WS2812_CH_FULL_UA_KEY    HW_RGB_CH_FULL_UA_KEY
+#define WS2812_CH_FULL_UA_UNDER  HW_RGB_CH_FULL_UA_UNDER
+#define WS2812_IDLE_MA           HW_RGB_IDLE_MA
 
 /*
  * 보드 전체 전류 상한. USB 선언 500mA 에 50mA 여유를 뒀다.
@@ -163,7 +201,7 @@ static bool     is_init = false;
  *   곳에서 왔기 때문에 찾는 데 JTAG 이 필요했다.
  */
 static __attribute__((aligned(HPM_L1C_CACHELINE_SIZE)))
-uint8_t         frame_buf[HPM_L1C_CACHELINE_ALIGN_UP(WS2812_BUF_LEN)];
+uint8_t         frame_buf[WS2812_CHAIN_MAX][HPM_L1C_CACHELINE_ALIGN_UP(WS2812_BUF_LEN)];
 
 /*
  * 호출자가 준 색 원본. frame_buf 는 비트패턴이라 되읽어 합산할 수 없으므로
@@ -173,7 +211,7 @@ uint8_t         frame_buf[HPM_L1C_CACHELINE_ALIGN_UP(WS2812_BUF_LEN)];
 static uint8_t  rgb_buf[HW_WS2812_MAX_CH][3];
 
 static spi_control_config_t ctrl_config;
-static volatile bool is_busy = false;
+static volatile bool is_busy[WS2812_CHAIN_MAX];   /* 체인 수가 보드마다 다르다 — 0 초기화에 맡긴다 */
 
 /*
  * 색이 바뀌었나. 안 바뀌었으면 프레임을 안 만든다.
@@ -411,7 +449,20 @@ static void ws2812Encode(void)
 
   for (uint16_t i = 0; i < HW_WS2812_MAX_CH; i++)
   {
-    uint8_t *p_buf = &frame_buf[WS2812_DATA_OFF + i * WS2812_BYTES_PER_LED];
+    /*
+     * 전역 LED 인덱스를 체인과 그 안의 자리로 가른다.
+     * 체인은 앞에서부터 잘라 쓰므로 경계 하나만 보면 된다.
+     */
+    uint8_t  c     = 0;
+    uint16_t local;
+
+    /* 체인 수가 보드마다 다르므로 경계를 박지 않고 표를 훑는다 */
+    for (uint8_t k = WS2812_CHAIN_MAX; k-- > 0; )
+    {
+      if (i >= chain[k].led_first) { c = k; break; }
+    }
+    local = i - chain[c].led_first;
+    uint8_t *p_buf = &frame_buf[c][WS2812_DATA_OFF + local * WS2812_BYTES_PER_LED];
     uint32_t s     = scale[WS2812_GRP_OF(i)];
     uint8_t  r     = rgb_buf[i][0];
     uint8_t  g     = rgb_buf[i][1];
@@ -440,37 +491,57 @@ bool ws2812Init(void)
   spi_timing_config_t timing_config = {0};
   spi_format_config_t format_config = {0};
 
-  /* PA29 = SPI1.MOSI. IAP 가 이미 설정하지만 자립을 위해 다시 잡는다. */
-  HPM_IOC->PAD[IOC_PAD_PA29].FUNC_CTL = IOC_PA29_FUNC_CTL_SPI1_MOSI;
+#if HW_RGB_PWR_PIN_CNT > 0
+  /*
+   * ★ LED 전원부터 세운다. 안 하면 SPI 는 나가는데 아무것도 안 켜진다.
+   *   어느 핀이 무엇을 켜는지는 keyboards/<모델>/config.h 에 적혀 있다.
+   *   전원 스위치가 없는 보드도 있다 (wish60-he).
+   */
+  for (uint8_t i = 0; i < HW_RGB_PWR_PIN_CNT; i++)
+  {
+    uint8_t pin = HW_RGB_PWR_PIN_FIRST + i;
 
-  clock_add_to_group(clock_spi1, 0);
+    HPM_IOC->PAD[pin].FUNC_CTL = IOC_PAD_FUNC_CTL_ALT_SELECT_SET(0);   /* GPIO */
+    gpio_set_pin_output_with_initial(HPM_GPIO0, HW_RGB_PWR_PORT, pin, 1);
+  }
+#endif
 
   /*
-   * IAP 도 SPI1 로 LED 를 켠다. 넘어온 직후에는 전송이 아직 안 끝나 SPI 가
-   * active 일 수 있고, 그러면 첫 spi_setup_dma_transfer() 가 busy 로 거부된다.
-   * 실제로 부팅 시 소등만 안 되고 나중의 'ws2812 off' 는 되는 증상이 있었다.
+   * 체인마다 같은 절차를 밟는다. 핀·SPI·클럭·DMA 는 표에서 온다.
+   *
+   * ★ 벤더 IAP 도 이 SPI 들로 LED 를 켠다. 넘어온 직후에는 전송이 아직 안 끝나
+   *   SPI 가 active 일 수 있고, 그러면 첫 spi_setup_dma_transfer() 가 busy 로
+   *   거부된다. 그래서 유휴를 기다렸다가 리셋하고 시작한다.
    */
-  (void)spi_wait_for_idle_status(WS2812_SPI);
-  (void)spi_poll_reset_complete(WS2812_SPI, spi_reset_all, 1000);
-
-  spi_master_get_default_timing_config(&timing_config);
-  timing_config.master_config.clk_src_freq_in_hz = clock_get_frequency(clock_spi1);
-  timing_config.master_config.sclk_freq_in_hz    = WS2812_SPI_HZ;
-  if (spi_master_timing_init(WS2812_SPI, &timing_config) != status_success)
+  for (uint8_t c = 0; c < WS2812_CHAIN_MAX; c++)
   {
-    cliPrintf("[E_] ws2812Init() timing\n");
-    return false;
-  }
+    HPM_IOC->PAD[chain[c].pad].FUNC_CTL =
+      IOC_PAD_FUNC_CTL_ALT_SELECT_SET(chain[c].pad_alt);
 
-  spi_master_get_default_format_config(&format_config);
-  format_config.common_config.data_len_in_bits = 8;
-  format_config.common_config.data_merge       = false;
-  format_config.common_config.mosi_bidir       = false;
-  format_config.common_config.lsb              = false;   /* MSB first */
-  format_config.common_config.mode             = spi_master_mode;
-  format_config.common_config.cpol             = spi_sclk_low_idle;
-  format_config.common_config.cpha             = spi_sclk_sampling_odd_clk_edges;
-  spi_format_init(WS2812_SPI, &format_config);
+    clock_add_to_group(chain[c].clk, 0);
+
+    (void)spi_wait_for_idle_status(chain[c].spi);
+    (void)spi_poll_reset_complete(chain[c].spi, spi_reset_all, 1000);
+
+    spi_master_get_default_timing_config(&timing_config);
+    timing_config.master_config.clk_src_freq_in_hz = clock_get_frequency(chain[c].clk);
+    timing_config.master_config.sclk_freq_in_hz    = WS2812_SPI_HZ;
+    if (spi_master_timing_init(chain[c].spi, &timing_config) != status_success)
+    {
+      cliPrintf("[E_] ws2812Init() timing (체인 %d)\n", c);
+      return false;
+    }
+
+    spi_master_get_default_format_config(&format_config);
+    format_config.common_config.data_len_in_bits = 8;
+    format_config.common_config.data_merge       = false;
+    format_config.common_config.mosi_bidir       = false;
+    format_config.common_config.lsb              = false;   /* MSB first */
+    format_config.common_config.mode             = spi_master_mode;
+    format_config.common_config.cpol             = spi_sclk_low_idle;
+    format_config.common_config.cpha             = spi_sclk_sampling_odd_clk_edges;
+    spi_format_init(chain[c].spi, &format_config);
+  }
 
   /* 매 전송마다 쓰는 제어 설정. 커맨드/주소 없이 데이터만 보낸다. */
   spi_master_get_default_control_config(&ctrl_config);
@@ -484,22 +555,33 @@ bool ws2812Init(void)
    * IAP 도 WS2812 를 SPI1+DMA 로 돌린다. 채널이 살아있는 채로 넘어올 수 있으므로
    * 쓰기 전에 정리한다.
    */
-  dma_abort_channel(HPM_HDMA, 1u << WS2812_DMA_CH);
-  dma_disable_channel(HPM_HDMA, WS2812_DMA_CH);
-  (void)dma_check_transfer_status(HPM_HDMA, WS2812_DMA_CH);   /* 남은 플래그 W1C */
-  is_busy = false;
+  for (uint8_t c = 0; c < WS2812_CHAIN_MAX; c++)
+  {
+    dma_abort_channel(HPM_HDMA, 1u << chain[c].dma_ch);
+    dma_disable_channel(HPM_HDMA, chain[c].dma_ch);
+    (void)dma_check_transfer_status(HPM_HDMA, chain[c].dma_ch);   /* 남은 플래그 W1C */
+    is_busy[c] = false;
+  }
 
   /*
    * 앞뒤 리셋 구간은 항상 low 이고 데이터가 아니다. Encode() 는 데이터 구간만
    * 손대므로 여기서 한 번만 깔아 둔다.
    */
-  for (int i = 0; i < WS2812_LEAD_BYTES; i++)
+  for (uint8_t c = 0; c < WS2812_CHAIN_MAX; c++)
   {
-    frame_buf[i] = 0x00;
+    for (int i = 0; i < WS2812_LEAD_BYTES; i++)
+    {
+      frame_buf[c][i] = 0x00;
+    }
   }
-  for (int i = 0; i < WS2812_RESET_BYTES; i++)
+  for (uint8_t c = 0; c < WS2812_CHAIN_MAX; c++)
   {
-    frame_buf[WS2812_DATA_OFF + WS2812_DATA_LEN + i] = 0x00;
+    uint32_t off = WS2812_DATA_OFF + chain[c].led_cnt * WS2812_BYTES_PER_LED;
+
+    for (int i = 0; i < WS2812_RESET_BYTES; i++)
+    {
+      frame_buf[c][off + i] = 0x00;
+    }
   }
 
   ws2812Clear();
@@ -513,7 +595,8 @@ bool ws2812Init(void)
   ws2812Refresh();
 
   cliPrintf("[OK] ws2812Init()\n");
-  cliPrintf("     ch : %d\n", HW_WS2812_MAX_CH);
+  cliPrintf("     ch : %d  (체인 %d + %d)\n",
+            HW_WS2812_MAX_CH, HW_RGB_LED_CNT_CH0, HW_RGB_LED_CNT_CH1);
 
 #if CLI_USE(HW_WS2812)
   cliAdd("ws2812", cliWs2812);
@@ -627,20 +710,33 @@ uint16_t ws2812GetFrameMa(bool limited, uint8_t grp)
  * ONGOING 을 돌려준다. 즉 "한 번도 안 쓴 채널" 도 진행 중으로 보인다.
  * 그래서 유휴 판정에 그대로 쓰면 안 되고, 시작 시점을 우리가 기억해야 한다.
  */
-bool ws2812IsBusy(void)
+static bool ws2812ChainBusy(uint8_t c)
 {
   uint32_t status;
 
-  if (is_init != true) return false;
-  if (is_busy != true) return false;
+  if (is_busy[c] != true) return false;
 
-  status = dma_check_transfer_status(HPM_HDMA, WS2812_DMA_CH);
+  status = dma_check_transfer_status(HPM_HDMA, chain[c].dma_ch);
   if (status & (DMA_CHANNEL_STATUS_TC | DMA_CHANNEL_STATUS_ERROR | DMA_CHANNEL_STATUS_ABORT))
   {
-    is_busy = false;
+    is_busy[c] = false;
   }
 
-  return is_busy;
+  return is_busy[c];
+}
+
+/* 하나라도 나가는 중이면 바쁘다 — 두 체인은 늘 같은 프레임을 함께 낸다 */
+bool ws2812IsBusy(void)
+{
+  bool busy = false;
+
+  if (is_init != true) return false;
+
+  for (uint8_t c = 0; c < WS2812_CHAIN_MAX; c++)
+  {
+    if (ws2812ChainBusy(c)) busy = true;
+  }
+  return busy;
 }
 
 bool ws2812Refresh(void)
@@ -668,35 +764,47 @@ bool ws2812Refresh(void)
    * DMA 는 캐시를 거치지 않는다. 버퍼를 메모리까지 밀어낸다.
    * 주소는 정렬돼 있고(위 선언), 길이도 캐시라인 배수로 올려 마지막 줄까지 덮는다.
    */
-  l1c_dc_writeback((uint32_t)frame_buf, HPM_L1C_CACHELINE_ALIGN_UP(WS2812_BUF_LEN));
-
-  if (spi_setup_dma_transfer(WS2812_SPI, &ctrl_config,
-                             NULL, NULL, WS2812_BUF_LEN, 0) != status_success)
+  /*
+   * 두 체인을 **연달아 건다.** 두 번째를 거는 사이 첫 번째는 이미 나가고 있으므로
+   * 전송은 사실상 동시다. 여기서 기다리는 코드는 하나도 없다.
+   */
+  for (uint8_t c = 0; c < WS2812_CHAIN_MAX; c++)
   {
-    return false;
+    uint32_t len = WS2812_LEAD_BYTES
+                 + chain[c].led_cnt * WS2812_BYTES_PER_LED
+                 + WS2812_RESET_BYTES;
+
+    l1c_dc_writeback((uint32_t)frame_buf[c], HPM_L1C_CACHELINE_ALIGN_UP(WS2812_BUF_LEN));
+
+    if (spi_setup_dma_transfer(chain[c].spi, &ctrl_config,
+                               NULL, NULL, len, 0) != status_success)
+    {
+      return false;
+    }
+
+    dma_default_channel_config(HPM_HDMA, &ch_config);
+    ch_config.src_addr      = core_local_mem_to_sys_address(0, (uint32_t)frame_buf[c]);
+    ch_config.dst_addr      = (uint32_t)&chain[c].spi->DATA;
+    ch_config.src_width     = DMA_TRANSFER_WIDTH_BYTE;
+    ch_config.dst_width     = DMA_TRANSFER_WIDTH_BYTE;
+    ch_config.src_addr_ctrl = DMA_ADDRESS_CONTROL_INCREMENT;
+    ch_config.dst_addr_ctrl = DMA_ADDRESS_CONTROL_FIXED;   /* SPI DATA 는 고정 주소 */
+    ch_config.src_burst_size = DMA_NUM_TRANSFER_PER_BURST_1T;
+    ch_config.dst_mode      = DMA_HANDSHAKE_MODE_HANDSHAKE; /* SPI 가 요청할 때만 */
+    ch_config.size_in_byte  = len;
+
+    dmamux_config(HPM_DMAMUX,
+                  DMA_SOC_CHN_TO_DMAMUX_CHN(HPM_HDMA, chain[c].dma_ch),
+                  chain[c].dmamux_src, true);
+
+    if (dma_setup_channel(HPM_HDMA, chain[c].dma_ch, &ch_config, true) != status_success)
+    {
+      return false;
+    }
+
+    is_busy[c] = true;
   }
 
-  dma_default_channel_config(HPM_HDMA, &ch_config);
-  ch_config.src_addr      = core_local_mem_to_sys_address(0, (uint32_t)frame_buf);
-  ch_config.dst_addr      = (uint32_t)&WS2812_SPI->DATA;
-  ch_config.src_width     = DMA_TRANSFER_WIDTH_BYTE;
-  ch_config.dst_width     = DMA_TRANSFER_WIDTH_BYTE;
-  ch_config.src_addr_ctrl = DMA_ADDRESS_CONTROL_INCREMENT;
-  ch_config.dst_addr_ctrl = DMA_ADDRESS_CONTROL_FIXED;   /* SPI DATA 는 고정 주소 */
-  ch_config.src_burst_size = DMA_NUM_TRANSFER_PER_BURST_1T;
-  ch_config.dst_mode      = DMA_HANDSHAKE_MODE_HANDSHAKE; /* SPI 가 요청할 때만 */
-  ch_config.size_in_byte  = WS2812_BUF_LEN;
-
-  dmamux_config(HPM_DMAMUX,
-                DMA_SOC_CHN_TO_DMAMUX_CHN(HPM_HDMA, WS2812_DMA_CH),
-                HPM_DMA_SRC_SPI1_TX, true);
-
-  if (dma_setup_channel(HPM_HDMA, WS2812_DMA_CH, &ch_config, true) != status_success)
-  {
-    return false;
-  }
-
-  is_busy  = true;
   is_dirty = false;   /* DMA 를 실제로 건 뒤에 — 위 주석 참고 */
   return true;
 }
@@ -750,7 +858,7 @@ void cliWs2812(cli_args_t *args)
     t0 = micros();
     for (uint32_t i = 0; i < n; i++)
     {
-      l1c_dc_writeback((uint32_t)frame_buf,
+      l1c_dc_writeback((uint32_t)frame_buf[0],
                        HPM_L1C_CACHELINE_ALIGN_UP(WS2812_BUF_LEN));
     }
     us = micros() - t0;
@@ -765,8 +873,8 @@ void cliWs2812(cli_args_t *args)
       for (uint32_t i = 0; i < n; i++)
       {
         dma_default_channel_config(HPM_HDMA, &cfg);
-        cfg.src_addr      = core_local_mem_to_sys_address(0, (uint32_t)frame_buf);
-        cfg.dst_addr      = (uint32_t)&WS2812_SPI->DATA;
+        cfg.src_addr      = core_local_mem_to_sys_address(0, (uint32_t)frame_buf[0]);
+        cfg.dst_addr      = (uint32_t)&chain[0].spi->DATA;
         cfg.src_width     = DMA_TRANSFER_WIDTH_BYTE;
         cfg.dst_width     = DMA_TRANSFER_WIDTH_BYTE;
         cfg.src_addr_ctrl = DMA_ADDRESS_CONTROL_INCREMENT;

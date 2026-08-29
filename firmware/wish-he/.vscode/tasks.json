@@ -1,22 +1,17 @@
 {
   "version": "2.0.0",
   "tasks": [
-    {
-      "label": "build-configure",
-      "type": "shell",
-      "windows": {
-        "command": "cmake -S . -B build -G 'MinGW Makefiles'"
-      },
-      "command": "cmake -S . -B build",
-      "problemMatcher": []
-    },
+    // ── 빌드 ────────────────────────────────────────────────────────────────
+    //
+    // ★ 보드를 고르면 그에 맞는 링커 스크립트·후처리·PID 가 따라온다.
+    //   tools/build.sh 가 키보드->보드 대응과 폴더 이름(build/<키보드>/)을 갖는다.
+    //   여기서 cmake 를 직접 부르면 그 대응이 두 곳으로 갈라진다.
+    //
     {
       "label": "build-build",
+      "detail": "키보드를 골라 빌드한다 (build/<키보드>/)",
       "type": "shell",
-      "windows": {
-        "command": "cmake -S . -B build -G 'MinGW Makefiles'; cmake --build build -j20"
-      },
-      "command": "cmake -S . -B build; cmake --build build -j20",
+      "command": "tools/build.sh ${input:keyboard}",
       "problemMatcher": [],
       "group": {
         "kind": "build",
@@ -25,8 +20,9 @@
     },
     {
       "label": "build-clean",
+      "detail": "그 키보드 빌드를 지우고 처음부터",
       "type": "shell",
-      "command": "cmake --build build --target clean",
+      "command": "tools/build.sh ${input:keyboard} -c",
       "problemMatcher": []
     },
 
@@ -37,9 +33,9 @@
     //
     {
       "label": "flash-usb",
-      "detail": "USB(부트로더 HID)로 기록. 배선 불필요. 먼저 CLI 에서 reset boot.",
+      "detail": "wish60-he-7u 를 USB 로 기록 (자체 IAP). 먼저 CLI 에서 reset boot.",
       "type": "shell",
-      "command": "python3 tools/iap_update.py build/wish-he.bin",
+      "command": "python3 tools/iap_update.py build/wish60-he-7u/wish60-he-7u.bin",
       "dependsOn": "build-build",
       "problemMatcher": [],
       "presentation": { "clear": true },
@@ -47,6 +43,14 @@
         "kind": "test",
         "isDefault": true
       }
+    },
+    {
+      "label": "flash-usb-61",
+      "detail": "wish61-he 를 USB 로 기록 (벤더 IAP). 부트로더 진입까지 알아서 한다.",
+      "type": "shell",
+      "command": "python3 tools/flash.py build/wish61-he/wish61-he-tag.bin",
+      "problemMatcher": [],
+      "presentation": { "clear": true }
     },
     {
       "label": "flash-usb-info",
@@ -60,7 +64,7 @@
       "label": "keys-track",
       "detail": "라이브 트래킹 — 눌린 깊이를 실제 배치대로. Ctrl+C 로 끝낸다.",
       "type": "shell",
-      "command": "python3 tools/he_track.py",
+      "command": "python3 tools/he_track.py --pid ${input:pid}",
       "problemMatcher": [],
       "presentation": { "clear": true }
     },
@@ -68,7 +72,7 @@
       "label": "keys-track-rate",
       "detail": "라이브 트래킹 스냅샷/초만 측정",
       "type": "shell",
-      "command": "python3 tools/he_track.py --rate",
+      "command": "python3 tools/he_track.py --pid ${input:pid} --rate",
       "problemMatcher": [],
       "presentation": { "clear": true }
     },
@@ -76,7 +80,7 @@
       "label": "flash-jtag",
       "detail": "JTAG(FT2232 + HPMicro OpenOCD)로 0x80020000 에 기록. 앱이 죽었을 때.",
       "type": "shell",
-      "command": "${env:HPM_RISCV_OPENOCD_PATH}/openocd -s tools/openocd -f hpm5361-fw.cfg -c \"adapter speed 4000\" -c \"init\" -c \"reset halt\" -c \"flash probe 0\" -c \"flash write_image erase build/wish-he.bin 0x80020000 bin\" -c \"verify_image build/wish-he.bin 0x80020000 bin\" -c \"reset run\" -c \"exit\"",
+      "command": "${env:HPM_RISCV_OPENOCD_PATH}/openocd -s tools/openocd -f hpm5361-fw.cfg -c \"adapter speed 4000\" -c \"init\" -c \"reset halt\" -c \"flash probe 0\" -c \"flash write_image erase build/wish60-he-7u/wish60-he-7u.bin 0x80020000 bin\" -c \"verify_image build/wish60-he-7u/wish60-he-7u.bin 0x80020000 bin\" -c \"reset run\" -c \"exit\"",
       "dependsOn": "build-build",
       "problemMatcher": []
     },
@@ -86,6 +90,28 @@
       "command": "${env:HPM_RISCV_OPENOCD_PATH}/openocd -s tools/openocd -f hpm5361-fw.cfg",
       "isBackground": true,
       "problemMatcher": []
+    }
+    ],
+
+  // ── 고르는 것 ───────────────────────────────────────────────────────────
+  //
+  // ★ 보드가 둘이다. 기본값을 두되 **매번 묻게** 한다 — 엉뚱한 보드에 굽는 것이
+  //   이 저장소에서 제일 흔한 사고다.
+  //
+  "inputs": [
+    {
+      "id": "keyboard",
+      "type": "pickString",
+      "description": "어느 키보드를 빌드하나",
+      "options": ["wish60-he-7u", "wish61-he"],
+      "default": "wish60-he-7u"
+    },
+    {
+      "id": "pid",
+      "type": "pickString",
+      "description": "어느 보드에 붙나 (USB PID)",
+      "options": ["0x5304", "0x5305"],
+      "default": "0x5304"
     }
   ]
 }

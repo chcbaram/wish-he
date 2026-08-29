@@ -14,8 +14,14 @@ import struct
 import sys
 import time
 
+import os
+
 from iap_update import (load_hidapi, enumerate_devices,
                         APP_USAGE_PAGE, APP_VID, APP_PID)
+
+# 보드는 PID 로 고른다 (dev.py 와 같은 규칙) — 두 대 이상 꽂고 쓴다
+#     WISH_PID=0x5305 python3 tools/via_test.py
+APP_PID = int(os.environ.get("WISH_PID", hex(APP_PID)), 0)
 
 
 REPORT_LEN = 32
@@ -78,7 +84,8 @@ def main():
             if d["usage_page"] == APP_USAGE_PAGE
             and d["vid"] == APP_VID and d["pid"] == APP_PID]
     if not devs:
-        sys.exit("설정 채널을 찾지 못했다")
+        sys.exit("설정 채널을 찾지 못했다 (%04X:%04X). WISH_PID 로 보드를 고를 것"
+                 % (APP_VID, APP_PID))
 
     v = Via(lib, devs[0]["path"])
     try:

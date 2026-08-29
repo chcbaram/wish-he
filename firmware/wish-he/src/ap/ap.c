@@ -17,6 +17,8 @@ void apMain(void)
   }
 }
 
+/* wish61-he 에는 표시 LED 가 없다 (PA23 이 RGB 데이터 선이다) — hw_def.h 참조 */
+#if defined(_USE_HW_LED)
 void updateLED(void)
 {
   static uint32_t pre_time = 0;
@@ -28,6 +30,7 @@ void updateLED(void)
     ledToggle(_DEF_LED1);
   }
 }
+#endif
 
 /*
  * 한 바퀴.
@@ -42,7 +45,9 @@ void updateLED(void)
  */
 void update(void const *arg)
 {
+#if defined(_USE_HW_LED)
   updateLED();
+#endif
 
   keysUpdate();                       /* ADC 스캔 + 눌림 판정 */
   if (qmkIsOn()) qmkUpdate();         /* 키맵 · 레이어 · 매크로 · VIA -> HID 리포트 */

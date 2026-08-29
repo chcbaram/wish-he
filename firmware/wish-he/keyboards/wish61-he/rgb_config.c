@@ -1,0 +1,75 @@
+/*
+ * rgb_config.c  —  자동 생성. 직접 고치지 말 것.
+ *   tools/gen_keymap.py 가 layout-kle.json 에서 만든다.
+ *
+ * g_led_config — QMK rgb_matrix 가 보는 배치.
+ *   matrix_co  (row, col) -> LED 인덱스, 없으면 NO_LED
+ *   point      LED 물리 좌표. x 0~224, y 0~64 로 normalize 한 값
+ *   flags      LED_FLAG_KEYLIGHT(4) = 키 밑, LED_FLAG_UNDERGLOW(2) = 언더글로우
+ */
+#include "quantum.h"
+
+#ifdef RGB_MATRIX_ENABLE
+
+led_config_t g_led_config = {
+  {   /* matrix_co */
+    {     56,     46,     42,     39,     16,     10,      3,     23 },
+    {     52,     59,     41,     40,     15,     11,      4,     31 },
+    { NO_LED,     33,     64,     13,     14,     12,     22,     32 },
+    {     55,     47,     43,     38,     17,      9,      2,     24 },
+    {     53,     50,     44,     35,     20,      7,      0,     25 },
+    {     54,     49,     63,     36,     19,      6,     27,     30 },
+    { NO_LED,     51,     45,     34,     21,      8,      1,     26 },
+    { NO_LED,     48,     62,     37,     18,      5,     28,     29 },
+  },
+  {   /* point */
+    {209,  6}, {187,  6}, {172,  6}, {157,  6}, {142,  6}, {127,  6},
+    {112,  6}, { 97,  6}, { 82,  6}, { 67,  6}, { 52,  6}, { 37,  6},
+    { 22,  6}, {  7,  6}, { 11, 19}, { 30, 19}, { 45, 19}, { 60, 19},
+    { 75, 19}, { 90, 19}, {105, 19}, {119, 19}, {134, 19}, {149, 19},
+    {164, 19}, {179, 19}, {194, 19}, {213, 19}, {207, 32}, {183, 32},
+    {168, 32}, {153, 32}, {138, 32}, {123, 32}, {108, 32}, { 93, 32},
+    { 78, 32}, { 63, 32}, { 49, 32}, { 34, 32}, { 13, 32}, { 17, 45},
+    { 41, 45}, { 56, 45}, { 71, 45}, { 86, 45}, {101, 45}, {116, 45},
+    {131, 45}, {146, 45}, {161, 45}, {175, 45}, {203, 45}, {215, 58},
+    {196, 58}, {177, 58}, {159, 58}, { 65, 58}, { 84, 58}, {103, 58},
+    {121, 58}, {140, 58}, { 47, 58}, { 28, 58}, {  9, 58}, {213,  0},
+    {220,  0}, {224,  8}, {224, 24}, {224, 40}, {224, 56}, {217, 64},
+    {204, 64}, {191, 64}, {178, 64}, {165, 64}, {152, 64}, {138, 64},
+    {125, 64}, {112, 64}, { 99, 64}, { 86, 64}, { 72, 64}, { 59, 64},
+    { 46, 64}, { 33, 64}, { 20, 64}, {  7, 64}, {  0, 56}, {  0, 40},
+    {  0, 24}, {  0,  8}, {  9,  0}, { 26,  0}, { 44,  0}, { 61,  0},
+    { 78,  0}, { 96,  0}, {113,  0}, {131,  0}, {148,  0}, {166,  0},
+    {183,  0}, {200,  0},
+  },
+  {   /* flags */
+    LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT,
+    LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT,
+    LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT,
+    LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT,
+    LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT,
+    LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT,
+    LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT,
+    LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT,
+    LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT,
+    LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT,
+    LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT,
+    LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT,
+    LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT,
+    LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT,
+    LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT,
+    LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT, LED_FLAG_KEYLIGHT,
+    LED_FLAG_KEYLIGHT, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW,
+    LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW,
+    LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW,
+    LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW,
+    LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW,
+    LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW,
+    LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW,
+    LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW,
+    LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW,
+    LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW, LED_FLAG_UNDERGLOW,
+  },
+};
+
+#endif

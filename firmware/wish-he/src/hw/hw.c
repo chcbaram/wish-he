@@ -53,7 +53,9 @@ bool hwInit(void)
   resetInit();
   flashInit();
   swtimerInit();
+#if defined(_USE_HW_LED)
   ledInit();
+#endif
   ws2812Init();
   keysInit();
   uartInit();

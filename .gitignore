@@ -28,6 +28,7 @@ CMakeUserPresets.json
 # ★ .elf / .asm / .bin 이 여기 들어 있다. 어셈코드와 바이너리는 깃에 올리지 않는다.
 #   CMake 후처리가 .asm 과 두 벌의 .bin 을 만들고, 다 합쳐 150MB 쯤 된다.
 #
+# 보드마다 build/<키보드>/ 로 나뉜다 (tools/build.sh)
 build/
 
 __pycache__/

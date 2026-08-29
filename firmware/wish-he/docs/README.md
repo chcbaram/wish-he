@@ -520,7 +520,7 @@ keys lat dump                    표본 400개를 그대로 — 평균으로는 
                   SIZEOF(.start) 로 엮여 있어 별도 섹션을 끼우면 식을 다시 짜야 한다
         · 태거  : `tools/fw_tag.py` 한 곳. 매직으로 자리를 찾아 채운다.
                   검사 범위는 태그 뒤 전부 = **이미지의 99.93%**
-        · 빌드  : CMake 후처리가 `build/wish-he-tag.bin` 을 **하나 더** 만든다.
+        · 빌드  : CMake 후처리가 `build/<키보드>/<키보드>-tag.bin` 을 **하나 더** 만든다.
                   웹 도구의 "파일에서 굽기" 로 올릴 때 쓴다
         · 배포  : `make_release.py` 도 같은 태거를 부른다
         · 부팅  : `hwVerifyFirm()` 이 대조, 어긋나면 `resetToBoot()`

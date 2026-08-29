@@ -95,14 +95,15 @@ python3 tools/he_test.py        # 단계별 시험 — 표로 나온다
 ## 굽기
 
 ```sh
-cmake -S . -B build && cmake --build build -j8    # firmware/wish-he 에서
-python3 tools/iap_update.py build/wish-he.bin      # USB 로. JTAG 불필요
+tools/build.sh                 # firmware/wish-he 에서. 기본 wish60-he-7u
+tools/build.sh wish61-he       # 다른 보드
+python3 tools/iap_update.py build/wish60-he-7u/wish60-he-7u.bin   # USB 로. JTAG 불필요
 ```
 
-빌드가 `wish-he-tag.bin` 을 하나 더 만든다 — 태그가 박혀 부팅 때 CRC 검사를 받는다.
+빌드가 `<키보드>-tag.bin` 을 하나 더 만든다 — 태그가 박혀 부팅 때 CRC 검사를 받는다.
 원본 `.bin` 은 태그가 0 이라 검사를 건너뛰므로 개발 중에는 그쪽을 쓴다.
 
-★ **링커 스크립트만 고치면 재링크가 안 걸린다.** `.ld` 를 만졌으면 `build/*.elf` 를
+★ **링커 스크립트만 고치면 재링크가 안 걸린다.** `.ld` 를 만졌으면 `build/*/*.elf` 를
 지우고 다시 빌드한다.
 
 ## 배포

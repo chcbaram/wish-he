@@ -1,0 +1,470 @@
+{
+  "name": "WISH61-HE",
+  "vendorId": "0x0483",
+  "productId": "0x5305",
+  "matrix": {
+    "rows": 8,
+    "cols": 8
+  },
+  "layouts": {
+    "keymap": [
+      [
+        {
+          "c": "#cccccc"
+        },
+        "2,3",
+        "2,5",
+        "1,5",
+        "0,5",
+        "3,5",
+        "6,5",
+        "4,5",
+        "5,5",
+        "7,5",
+        "1,6",
+        "0,6",
+        "3,6",
+        "6,6",
+        {
+          "c": "#aaaaaa",
+          "w": 2
+        },
+        "4,6"
+      ],
+      [
+        {
+          "c": "#aaaaaa",
+          "w": 1.5
+        },
+        "2,4",
+        {
+          "c": "#cccccc"
+        },
+        "1,4",
+        "0,4",
+        "3,4",
+        "7,4",
+        "5,4",
+        "4,4",
+        "6,4",
+        "2,6",
+        "0,7",
+        "3,7",
+        "4,7",
+        "6,7",
+        {
+          "c": "#aaaaaa",
+          "w": 1.5
+        },
+        "5,6"
+      ],
+      [
+        {
+          "c": "#aaaaaa",
+          "w": 1.75
+        },
+        "1,3",
+        {
+          "c": "#cccccc"
+        },
+        "0,3",
+        "3,3",
+        "7,3",
+        "5,3",
+        "4,3",
+        "6,3",
+        "2,1",
+        "2,7",
+        "1,7",
+        "5,7",
+        "7,7",
+        {
+          "c": "#aaaaaa",
+          "w": 2.25
+        },
+        "7,6"
+      ],
+      [
+        {
+          "c": "#aaaaaa",
+          "w": 2.25
+        },
+        "1,2",
+        {
+          "c": "#cccccc"
+        },
+        "0,2",
+        "3,2",
+        "4,2",
+        "6,2",
+        "0,1",
+        "3,1",
+        "7,1",
+        "5,1",
+        "4,1",
+        "6,1",
+        {
+          "c": "#aaaaaa",
+          "w": 2.75
+        },
+        "1,0"
+      ],
+      [
+        {
+          "c": "#aaaaaa",
+          "w": 1.25
+        },
+        "2,2",
+        {
+          "w": 1.25
+        },
+        "5,2",
+        {
+          "w": 1.25
+        },
+        "7,2",
+        {
+          "w": 6.25
+        },
+        "1,1",
+        {
+          "w": 1.25
+        },
+        "0,0",
+        {
+          "w": 1.25
+        },
+        "3,0",
+        {
+          "w": 1.25
+        },
+        "5,0",
+        {
+          "w": 1.25
+        },
+        "4,0"
+      ]
+    ]
+  },
+  "keycodes": [
+    "qmk_rgb_matrix_keycodes"
+  ],
+  "menus": [
+    {
+      "label": "Lighting",
+      "content": [
+        {
+          "label": "RGB Matrix",
+          "content": [
+            {
+              "label": "Brightness",
+              "type": "range",
+              "options": [
+                0,
+                255
+              ],
+              "content": [
+                "id_qmk_rgb_matrix_brightness",
+                3,
+                1
+              ]
+            },
+            {
+              "label": "Effect",
+              "type": "dropdown",
+              "options": [
+                "All Off",
+                "Solid Color",
+                "Gradient Up/Down",
+                "Breathing",
+                "Cycle All",
+                "Cycle Left/Right",
+                "Rainbow Moving Chevron",
+                "Pixel Flow",
+                "HE Depth Brightness",
+                "HE Depth Hue",
+                "HE Depth Ripple"
+              ],
+              "content": [
+                "id_qmk_rgb_matrix_effect",
+                3,
+                2
+              ]
+            },
+            {
+              "showIf": "{id_qmk_rgb_matrix_effect} != 0",
+              "label": "Effect Speed",
+              "type": "range",
+              "options": [
+                0,
+                255
+              ],
+              "content": [
+                "id_qmk_rgb_matrix_effect_speed",
+                3,
+                3
+              ]
+            },
+            {
+              "showIf": "{id_qmk_rgb_matrix_effect} != 0",
+              "label": "Color",
+              "type": "color",
+              "content": [
+                "id_qmk_rgb_matrix_color",
+                3,
+                4
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "QMK",
+      "content": [
+        {
+          "label": "Key Handling",
+          "content": [
+            {
+              "label": "Hold On Other Key Press",
+              "type": "toggle",
+              "content": [
+                "id_qmk_hold_okp",
+                14,
+                1
+              ]
+            },
+            {
+              "label": "Tapping Term (default 200)",
+              "type": "range",
+              "options": [
+                50,
+                500
+              ],
+              "content": [
+                "id_qmk_tapping_term",
+                14,
+                2
+              ]
+            },
+            {
+              "label": "NKRO",
+              "type": "toggle",
+              "content": [
+                "id_qmk_nkro",
+                15,
+                1
+              ]
+            },
+            {
+              "label": "Hold On Other Key Press and Tapping Term are saved per profile. NKRO applies to all profiles.",
+              "type": "label",
+              "content": [
+                "Note"
+              ]
+            }
+          ]
+        },
+        {
+          "label": "SOCD",
+          "content": [
+            {
+              "label": "KEY BIND 1",
+              "type": "toggle",
+              "content": [
+                "id_qmk_kill_switch_enable_lr",
+                10,
+                1
+              ]
+            },
+            {
+              "showIf": "{id_qmk_kill_switch_enable_lr} == 1",
+              "label": "- KEY 1",
+              "type": "keycode",
+              "content": [
+                "id_qmk_kill_switch_left",
+                10,
+                2
+              ]
+            },
+            {
+              "showIf": "{id_qmk_kill_switch_enable_lr} == 1",
+              "label": "- KEY 2",
+              "type": "keycode",
+              "content": [
+                "id_qmk_kill_switch_right",
+                10,
+                3
+              ]
+            },
+            {
+              "label": "KEY BIND 2",
+              "type": "toggle",
+              "content": [
+                "id_qmk_kill_switch_enable_ud",
+                11,
+                1
+              ]
+            },
+            {
+              "showIf": "{id_qmk_kill_switch_enable_ud} == 1",
+              "label": "- KEY 1",
+              "type": "keycode",
+              "content": [
+                "id_qmk_kill_switch_up",
+                11,
+                2
+              ]
+            },
+            {
+              "showIf": "{id_qmk_kill_switch_enable_ud} == 1",
+              "label": "- KEY 2",
+              "type": "keycode",
+              "content": [
+                "id_qmk_kill_switch_down",
+                11,
+                3
+              ]
+            },
+            {
+              "label": "Press both of a bind and only the newest one is sent. Saved per profile.",
+              "type": "label",
+              "content": [
+                "Note"
+              ]
+            }
+          ]
+        },
+        {
+          "label": "Anti-Ghosting",
+          "content": [
+            {
+              "label": "Enable",
+              "type": "toggle",
+              "content": [
+                "id_qmk_kkuk_enable",
+                12,
+                1
+              ]
+            },
+            {
+              "showIf": "{id_qmk_kkuk_enable} == 1",
+              "label": "First Delay Time",
+              "type": "dropdown",
+              "options": [
+                [
+                  "50 ms",
+                  5
+                ],
+                [
+                  "100 ms",
+                  10
+                ],
+                [
+                  "150 ms",
+                  15
+                ],
+                [
+                  "200 ms",
+                  20
+                ],
+                [
+                  "250 ms",
+                  25
+                ],
+                [
+                  "300 ms",
+                  30
+                ]
+              ],
+              "content": [
+                "id_qmk_kkuk_delay_time",
+                12,
+                2
+              ]
+            },
+            {
+              "showIf": "{id_qmk_kkuk_enable} == 1",
+              "label": "Repeat Time",
+              "type": "dropdown",
+              "options": [
+                [
+                  "50 ms",
+                  5
+                ],
+                [
+                  "60 ms",
+                  6
+                ],
+                [
+                  "70 ms",
+                  7
+                ],
+                [
+                  "80 ms",
+                  8
+                ],
+                [
+                  "90 ms",
+                  9
+                ],
+                [
+                  "100 ms",
+                  10
+                ],
+                [
+                  "200 ms",
+                  20
+                ]
+              ],
+              "content": [
+                "id_qmk_kkuk_repeat_time",
+                12,
+                3
+              ]
+            },
+            {
+              "label": "Hold two or more keys and they are re-sent as if tapped. Saved per profile.",
+              "type": "label",
+              "content": [
+                "Note"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "customKeycodes": [
+    {
+      "name": "Profile 1",
+      "title": "Switch to profile 1",
+      "shortName": "PF1"
+    },
+    {
+      "name": "Profile 2",
+      "title": "Switch to profile 2",
+      "shortName": "PF2"
+    },
+    {
+      "name": "Profile 3",
+      "title": "Switch to profile 3",
+      "shortName": "PF3"
+    },
+    {
+      "name": "Profile 4",
+      "title": "Switch to profile 4",
+      "shortName": "PF4"
+    },
+    {
+      "name": "Profile Next",
+      "title": "Switch to the next profile, wrapping around",
+      "shortName": "PF>"
+    },
+    {
+      "name": "Profile Prev",
+      "title": "Switch to the previous profile, wrapping around",
+      "shortName": "PF<"
+    }
+  ]
+}
