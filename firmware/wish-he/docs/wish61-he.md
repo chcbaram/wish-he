@@ -20,15 +20,23 @@
 | RGB | 정상 | 정상 (104 LED, 육안 확인) |
 | 빌드 | FLASH 20.7% | FLASH 31.5% |
 
+보정 뒤 전 키를 바닥까지 눌러 잰 값 (공칭 3.40mm 대비, `789d5e3` 이후)
+
+    wish60   3.34~3.49   평균오차 0.02  최대 0.09 mm
+    wish61   3.36~3.41   평균오차 0.01  최대 0.04 mm
+
 ## 빌드·굽기
 
 ```sh
-tools/build.sh wish61-he
-python3 tools/flash.py build/wish61-he/wish61-he-tag.bin
+tools/build.sh wish61-he    && python3 tools/flash.py      build/wish61-he/wish61-he-tag.bin
+tools/build.sh wish60-he-7u && python3 tools/iap_update.py build/wish60-he-7u/wish60-he-7u-tag.bin
 ```
 
-`flash.py` 는 앱이 돌고 있으면 CLI 로 부트로더에 넣고, 굽고, 앱으로 되돌린다.
-JTAG 이 필요 없다.
+★ **플래셔가 보드마다 다르다.** `flash.py` = wish61(벤더 IAP), `iap_update.py` =
+wish60. `WISH_PID` 로는 안 갈린다 — 그건 `dev.py` 의 CDC 포트만 고른다.
+
+둘 다 앱이 돌고 있으면 알아서 부트로더에 넣고, 굽고, 앱으로 되돌린다. JTAG 이
+필요 없다.
 
 ## 보드가 갈리는 곳 — 다섯 군데뿐
 
@@ -60,17 +68,17 @@ LED 전원  PA09 언더글로우 / PA10 키 위 / PA11 키 아래  ★ 안 세�
 
 ## 다음에 할 것
 
-### 1. via-he 웹앱 — 정의 추가 (작다)
+### ~~1. via-he 웹앱 — 정의 추가~~ ✔ 끝났다 (2026-08-29, via-he `eb162f2`)
 
 ```sh
 cp keyboards/wish61-he/layout-via.json ~/hdd/git/via-he/local-kbs/wish61-he.json
-cd ~/hdd/git/via-he
-bun node_modules/via-keyboards/scripts/build-all.ts public/definitions
-bun scripts/add-local-kbs.ts
+cd ~/hdd/git/via-he && bun run defs      # build:kbs + build:local
 ```
 
-등록 키가 VID/PID 라 wish60(`0x5304`)과 wish61(`0x5305`)이 공존한다. 앱 코드는
-안 건드려도 된다.
+등록 키가 VID/PID 라 wish60(`0x5304`)과 wish61(`0x5305`)이 공존한다. **앱 코드는
+안 건드렸다.** `he-boards.ts`(HE 탭이 열릴 보드 목록)는 스크립트가 만든다.
+
+★ 해시가 바뀌므로 **개발 서버를 다시 띄워야** 반영된다.
 
 ### 2. via-he 펌웨어 탭 — 보드별로 갈라야 한다 ★★ 지금은 위험하다
 
@@ -96,20 +104,47 @@ bun scripts/add-local-kbs.ts
 하나만 놓쳐도 실패하고, 그러면 App1 이 반쯤 쓰인 채 남아 다음 부팅에 App2(벤더)로
 복구된다.
 
-### 3. 벤더 펌웨어 → 우리 펌웨어 (개조 경로)
+### 3. 벤더 펌웨어 → 우리 펌웨어 (개조 경로) — 경로 자체는 검증됐다
 
 순정 보드(`1ca6:300b`, "AE61 Pro")를 웹앱에서 우리 것으로 바꾸는 길. 진입만 다르다 —
 벤더 앱에는 우리 `0xFF60` 채널이 없으므로 **자기 채널에 `08 01`(AppToBoot)** 을 보낸다.
+
+★★ **2026-08-29 에 실제로 끝까지 돌았다** (`tools/flash.py` 로). 사고로 wish60
+  이미지를 wish61 에 굽는 바람에 우연히 전 과정을 밟았고, 설계대로 동작했다.
+
+    잘못된 이미지 -> IAP 가 `devid` 로 거부 (ValiDate 0)  -> BootToApp 안 보냄
+    재연결        -> IAP 가 App2(벤더)로 자동 복구        -> "AE61 Pro" 로 열거
+    벤더 앱에 08 01 -> 부트로더 -> 우리 이미지 -> 검증 통과 -> 앱 복귀
+
+  남은 것은 **이 순서를 웹앱에 옮기는 일**뿐이다. 2번과 같이 하면 된다.
 
 ★ 안전하다. 벤더 앱은 부트로더로 넘어가기 전에 **App1 → App2 백업을 스스로 돌린다.**
   즉 개조하는 순간 순정 사본이 App2 에 남고, 우리 이미지가 깨지면 IAP 가 거기서
   자동 복구한다. 그리고 IAP 가 `devid`(0x0030000B)를 검사하므로 다른 제품에
   잘못 굽는 사고가 구조적으로 막혀 있다.
 
+★ **부트로더에 이미 들어와 있으면 다시 굽지 말 것.** `enter_boot()` 가 아무것도
+  안 하고 통과하는데, 그러면 진입 때 하는 **헤더 페이지 지우기를 건너뛰어** 다 쓰고
+  나서 ValiDate 가 거부한다. USB 를 뽑았다 꽂으면 App2 로 복구되고 거기서 다시 하면
+  된다.
+
 ★ 벤더 앱은 `0xCA`(보드 이름)에 답하지 않는다. 이미지는 사람이 골라야 한다 —
   부트로더 모드용 선택 UI 가 이미 있으므로 그 길을 쓴다.
 
-### 4. 남은 실측 두 가지
+### 4. `keys cal` 의 완료 기준이 헐겁다
+
+```c
+#define KEYS_CAL_STROKE_MIN  (500 * KEYS_ACC_CNT)   /* = 1500 카운트 */
+```
+
+wish61 의 실측 스트로크가 2160~3117 이라 **48~69% 만 눌러도 "끝난 키" 로 칠해진다**
+(wish60 도 56~66% 로 사정은 같다). 화면만 보고 넘어가면 덜 눌린 값이 눈금이 된다.
+
+당장 틀린 값이 나오지는 않는다 — 같은 힘이면 보정은 **1% 안으로 재현된다** (실측).
+다만 안내 문구가 "끝까지 눌러주세요" 라 사용자를 과하게 누르도록 유도하고, 그러면
+눈금이 10% 늘어난다. **"평소 치는 대로"** 가 맞는 문구다.
+
+### 5. 남은 실측 두 가지
 
   - `HW_RGB_IDLE_MA` · `CH_FULL_UA_*` 는 wish61 만 실측했다. wish60 값은 옛 문서에서
     온 것이라 같은 방법으로 다시 재 볼 만하다
@@ -118,6 +153,23 @@ bun scripts/add-local-kbs.ts
 ---
 
 ## 겪은 것 — 같은 데 두 번 빠지지 말 것
+
+★★ **캐시를 채우는 자리를 빠뜨리면 "재부팅해야 먹는" 버그가 된다.** `keysCalSave()`
+  와 `keysCfgLoad()` 에 `keysThrRebuild()` 가 없어서, 보정을 저장해도 판정 임계값도
+  깊이 표시도 옛 스트로크로 계속 돌았다 (`789d5e3` 에서 고침). 61키 실측 오차가
+  0.16mm → 0.01mm 로 줄었다.
+
+  진단 과정에서 두 번 놓쳤고, 놓친 방식이 더 값지다.
+
+  - **진단 명령이 진단 대상을 고치는 경우가 있다.** 값 주입 시험이 통과해 가설을
+    접었는데, 그 직전에 돌린 `keys base` 가 `keysCalibrate()` 안에서 재빌드를 부른다
+  - **설명 안 되는 사실이 남으면 그게 답이다.** "재보정했는데 값이 안 변한다" 는
+    이미 결정적이었는데 손힘 탓으로 돌렸고, 그 바람에 있지도 않은 "바닥이 무르다" 를
+    만들어 냈다
+
+★ **`tools/flash.py` 는 wish61 전용이다.** wish60 은 `tools/iap_update.py` 다.
+  `WISH_PID` 는 **dev.py 의 CDC 포트만** 고르고 flash.py 의 HID 대상은 안 바꾼다.
+  wish60 이미지를 flash.py 에 넘겨 wish61 을 부트로더에 처박은 적이 있다.
 
 ★★ **같은 사실을 두 곳에 적지 않는다.** 오늘 네 번 당했다.
 
