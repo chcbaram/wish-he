@@ -3447,6 +3447,22 @@ bool keysCalSave(uint32_t *p_done, uint32_t *p_skip)
   if (p_skip) *p_skip = skip;
 
   if (done == 0) return false;
+
+  /*
+   * ★ **표를 다시 만들어야 보정이 먹는다.**
+   *
+   *   thr[](입력·해제 임계)과 stroke_recip[](깊이 환산)은 키별 스트로크에서 푼
+   *   캐시다. 여기서 안 부르면 플래시에는 새 값이 들어갔는데 판정도 표시도 옛
+   *   스트로크로 계속 돈다 — 그리고 **다음 재부팅에서야 갑자기 바뀐다.**
+   *
+   *   증상이 고약하다. 보정한 사람은 아무 변화도 못 느끼고, 다시 보정해도 여전히
+   *   그대로다. 같은 값을 주입해 재부팅 전 3.17mm / 후 3.39mm 로 갈리는 것을 보고서야
+   *   찾았다 — 플래시 내용은 둘이 같다. 61키 실측 오차가 0.16mm 에서 0.01mm 로 줄었다.
+   *
+   *   ISR 문맥은 keysThrRebuild 가 알아서 미룬다.
+   */
+  keysThrRebuild();
+
   return keysCalSaveBlob();
 }
 
@@ -5717,6 +5733,9 @@ void cliKeys(cli_args_t *args)
   if (args->argc == 1 && args->isStr(0, "load"))
   {
     bool ok = keysCfgLoad();
+
+    /* 보정·설정이 통째로 갈렸다. 위 keysCalSave 와 같은 이유로 표를 다시 만든다 */
+    keysThrRebuild();
 
     cliPrintf("load : %s  보정 seq %d / 설정 seq %d\n",
               ok ? "OK" : "없음(기본값)", (int)cal_st.seq, (int)set_st.seq);
