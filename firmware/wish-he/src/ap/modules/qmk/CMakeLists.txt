@@ -120,6 +120,10 @@ add_compile_definitions(VIA_ENABLE)
 add_compile_definitions(RAW_ENABLE)
 add_compile_definitions(DYNAMIC_KEYMAP_ENABLE)
 add_compile_definitions(GRAVE_ESC_ENABLE)
+# Cmd(GUI)+GESC 는 ` 가 아니라 Esc 를 보낸다. macOS 에서 윈도우 전환을 Cmd+Esc 로
+# 두고 쓰면 기본 동작(Cmd+`)으로는 안 먹는다. 대신 이 키로 Cmd+` 는 못 만든다.
+# 보드 config.h 에 두면 process_grave_esc.c 가 그 헤더를 안 읽어 조용히 빠질 수 있다.
+add_compile_definitions(GRAVE_ESC_GUI_OVERRIDE)
 add_compile_definitions(RGB_MATRIX_ENABLE)
 
 # NKRO 와 확장키, 마우스키는 IF1 (hid_exk_if.c) 로 리포트 ID 를 나눠 쓴다
