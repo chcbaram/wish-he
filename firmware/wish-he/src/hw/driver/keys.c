@@ -934,6 +934,7 @@ typedef struct
   uint16_t press;        /* 입력지점 (깊이 카운트) */
   uint16_t release;      /* 해제지점 */
   uint16_t bottom_lo;    /* 이 깊이 이상이면 바닥 보호 구간 */
+  uint16_t rt_arm_lo;    /* 이 깊이 미만으로 올라오면 RT 가 풀린다 */
   uint16_t dead;         /* 이 깊이 미만은 아예 안 본다 */
   uint8_t  rt_flags;     /* 키별 KEYS_RT_* */
 
@@ -988,6 +989,16 @@ static void cliKeys(cli_args_t *args);
  *   0.096mm 쯤이다.
  */
 #define KEYS_RT_MIN_CNT    60
+
+/*
+ * RT 유효 구간의 위 경계에 두는 여유 (0.01mm 단위).
+ *
+ *   경계를 입력지점에 딱 붙이면 거기 걸친 손가락이 잡음만으로 구간을 들락거린다.
+ *   RT 가 풀렸다 걸렸다 하면 같은 손놀림이 어떤 때는 재입력이 되고 어떤 때는 안
+ *   된다 — 사용자 눈에는 "가끔 안 먹는다" 로만 보인다. 경계를 조금 위로 물려
+ *   히스테리시스를 준다.
+ */
+#define KEYS_RT_ARM_UM     5
 
 /*
  * RT 판정용 상태.
@@ -2252,6 +2263,7 @@ static void keysThrRebuild(void)
     const keys_sw_ref_t *r = keysSwRef(keysSwType(i));
     uint32_t stroke;
     uint32_t travel;
+    uint16_t arm_mgn;              /* RT 경계 여유 — 카운트로. 아래 문턱 보정에서 쓴다 */
     const uint16_t *curve;
     keys_thr_t *t   = &thr[i];
 
@@ -2368,6 +2380,10 @@ static void keysThrRebuild(void)
 
       t->bottom_lo = UM2CNT(b_um);
     }
+
+    /* 여유는 위치가 아니라 이동량이라 곡선을 안 태운다 — 위 UM2CNT_LIN 주석 참고 */
+    arm_mgn = UM2CNT_LIN(KEYS_RT_ARM_UM);
+
     #undef UM2CNT
     #undef UM2CNT_LIN
 
@@ -2410,6 +2426,24 @@ static void keysThrRebuild(void)
      *   실제가 어긋난다. 여기서 문턱만 올린다.
      */
     if (t->press < KEYS_RT_MIN_CNT) t->press = KEYS_RT_MIN_CNT;
+
+    /*
+     * RT 가 사는 구간의 위 경계 — **입력지점**이다 (여유 한 뼘 위).
+     *
+     * ★ 예전에는 쉬는 자리(스퀄치)까지 RT 를 살려 뒀다. 그러면 연속 RT 를 꺼도
+     *   켠 것과 같아진다 — 한 번 입력지점을 넘고 나면 손을 완전히 뗄 때까지
+     *   전 행정에서 RT 가 걸렸다. 연속 RT 를 껐는데 얕은 자리에서 재입력이
+     *   걸리는 것이 신고된 증상이었다.
+     *
+     * ★ 해제지점에 묶으면 안 된다 — 그게 옛 버그였다 (아래 rt_arm 주석).
+     *   해제지점은 사용자가 어디로든 옮길 수 있어 RT 구간이 따라 흔들린다.
+     *   입력지점은 "RT 가 여기서부터 산다" 는 규약 그 자체라 뜻이 안 흔들린다.
+     *
+     * ★ 하한은 스퀄치다. 입력지점을 아주 얕게 둔 사람에게서 "쉬는 자리로
+     *   돌아오면 풀린다" 는 옛 보장을 뺏지 않는다.
+     */
+    t->rt_arm_lo = (t->press > arm_mgn) ? (uint16_t)(t->press - arm_mgn) : 0;
+    if (t->rt_arm_lo < squelch_cnt[i]) t->rt_arm_lo = squelch_cnt[i];
 
     /*
      * 입력과 해제 사이에 잡음보다 넓은 틈을 남긴다.
@@ -2632,6 +2666,30 @@ ATTR_RAMFUNC static void keysTrack(uint32_t step)
       bool in_bottom  = bot_on && ((uint16_t)d >= t->bottom_lo);
       bool rt_active  = rt_on && (rt_cont || (rt_arm[step] & bit));
 
+      /*
+       * 절대 해제가 견줄 자리 — RT 가 걸린 동안에는 "원위치로 돌아왔다" 만 본다.
+       *
+       * ★ 사용자 해제지점을 그대로 쓰면 **RT 가 세운 눌림을 다음 스캔이 도로
+       *   지운다.** RT 재입력은 해제지점보다 얕은 곳에서도 걸리는데, 절대 해제는
+       *   그걸 안 보고 "해제지점보다 얕다" 만으로 뗀다. 눌림이 한 바퀴(26us)만
+       *   서 있다가 떨어지고, 호스트에는 1~3ms 짜리 유령 입력으로 보인다.
+       *
+       *   입력 2.45mm / 해제 2.40mm 처럼 행정의 거의 전부가 해제지점 위인 설정에서
+       *   재입력마다 난다. 기본값(1.00/0.50)에서는 재입력이 대개 해제지점보다
+       *   깊어서 안 걸린다 — 그래서 오래 안 드러났다.
+       *
+       *   들어오는 쪽은 이미 같은 문제를 겪고 고쳐 뒀다 (아래 RT 재입력 주석 —
+       *   RT 가 걸린 동안 절대 입력지점을 안 본다). 나가는 쪽만 그 처리를 못 받았다.
+       *
+       * ★ 그렇다고 가지를 지우면 안 된다. 재입력 거리가 RT 해제 거리보다 짧으면
+       *   peak 이 얕은 자리에 머물러 되돌림이 문턱을 영영 못 넘는다 — 손을 다 떼도
+       *   **키가 눌린 채로 굳는다.** 스퀄치는 실측 잡음 바닥에서 나온 상수라
+       *   설정을 어디에 두든 뜻이 안 변한다. rt_arm 을 푸는 자리와 같은 근거다.
+       */
+      uint16_t abs_rel = t->release;
+
+      if (rt_active && squelch_cnt[idx] < abs_rel) abs_rel = squelch_cnt[idx];
+
       if (rt_active && !in_bottom &&
           (int32_t)peak[step][c] - d >=
             (int32_t)t->rt_release[keysRtZone(idx, peak[step][c])])
@@ -2639,7 +2697,7 @@ ATTR_RAMFUNC static void keysTrack(uint32_t step)
         pressed[step] &= (uint16_t)~bit;
         peak[step][c]  = (uint16_t)d;
       }
-      else if (d < (int32_t)t->release)         /* 절대 해제 — 항상 유효하다 */
+      else if (d < (int32_t)abs_rel)            /* 절대 해제 */
       {
         pressed[step] &= (uint16_t)~bit;
         peak[step][c]  = (uint16_t)d;
@@ -2706,15 +2764,21 @@ ATTR_RAMFUNC static void keysTrack(uint32_t step)
        *   기본값이 아슬아슬하게 살아 있었다. 1.00 - 0.50 == 0.50 이고 비교가 `<`
        *   라 간신히 통과한다 — 해제지점을 조금만 올리면 넘어간다.
        *
-       * ★ 스퀄치 문턱을 쓴다. 원위치 판정에 **사용자 설정을 끌어들이면 안 된다** —
-       *   그게 이 버그의 뿌리였다. 스퀄치는 실측 잡음 바닥에서 나온 상수(0.12mm)라
-       *   입력지점·해제지점을 어디에 두든 뜻이 안 변한다.
+       * ★ 지금은 **입력지점** 한 뼘 위에서 푼다 (t->rt_arm_lo, 만드는 자리는
+       *   keysThrRebuild). 쉬는 자리까지 살려 두면 연속 RT 를 꺼도 켠 것과 같아진다 —
+       *   한 번 입력지점을 넘고 나면 손을 완전히 뗄 때까지 전 행정에서 RT 가
+       *   걸렸고, 그게 "연속 RT 를 껐는데 얕은 데서 재입력이 걸린다" 는 신고였다.
+       *
+       *   해제지점으로 되돌아가는 것이 아니다. 그건 사용자가 어디로든 옮길 수 있어
+       *   RT 구간이 따라 흔들렸다. 입력지점은 "RT 가 여기서부터 산다" 는 규약
+       *   자체라 뜻이 안 흔들리고, 하한이 스퀄치라 쉬는 자리에서 풀리는 옛 보장도
+       *   그대로 산다.
        *
        * ★ 그냥 지우면 안 된다. 데드존 가지(d < dead)가 이미 있지만 **데드존
        *   기본값이 0 이라 실질적으로 안 걸린다.** 그러면 rt_arm 이 영영 안 풀려,
        *   쉬는 상태에서 살짝만 눌러도 RT 가 절대 입력지점을 건너뛴다.
        */
-      if (!rt_cont && d < (int32_t)squelch_cnt[idx]) rt_arm[step] &= (uint16_t)~bit;
+      if (!rt_cont && d < (int32_t)t->rt_arm_lo) rt_arm[step] &= (uint16_t)~bit;
     }
   }
 
