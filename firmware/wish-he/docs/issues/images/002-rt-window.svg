@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 330" width="760" height="330">
+  <style>
+    text  { font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif }
+    .lbl  { fill:#6a737d; font-size:12px }
+    .row  { fill:#1f2328; font-size:13px }
+    .ttl  { fill:#1f2328; font-size:13px; font-weight:600 }
+    .bar  { fill:#f3f4f6; stroke:#d0d7de; stroke-width:1 }
+    .live { fill:#dcfce7; stroke:#16a34a; stroke-width:1.2 }
+    .act  { stroke:#d97706; stroke-width:1.5; stroke-dasharray:5 4 }
+  </style>
+
+  <rect x="0" y="0" width="760" height="330" fill="#ffffff"/>
+  <text class="ttl" x="16" y="24">래피드 트리거가 걸릴 수 있는 구간</text>
+  <text class="lbl" x="16" y="42">키 하나의 행정. 왼쪽이 쉬는 자리, 오른쪽이 바닥. 입력지점은 1.00mm</text>
+
+  <line class="act" x1="257" y1="62" x2="257" y2="286"/>
+  <text class="lbl" x="228" y="58" fill="#d97706">입력지점</text>
+  <text class="lbl" x="216" y="304">쉬는 자리</text>
+  <text class="lbl" x="676" y="304">바닥</text>
+
+  <g>
+    <text class="row" x="16" y="92">지금 펌웨어 — RT</text>
+    <rect class="bar"  x="228" y="76" width="472" height="22" rx="4"/>
+    <rect class="live" x="236" y="76" width="464" height="22" rx="4"/>
+    <text class="lbl"  x="16" y="108">(연속 RT 끔)</text>
+    <text class="lbl"  x="392" y="92" fill="#166534">첫 통과 뒤부터 쉬는 자리로 돌아올 때까지</text>
+  </g>
+
+  <g>
+    <text class="row" x="16" y="146">지금 펌웨어 — 연속 RT</text>
+    <rect class="bar"  x="228" y="130" width="472" height="22" rx="4"/>
+    <rect class="live" x="228" y="130" width="472" height="22" rx="4"/>
+    <text class="lbl"  x="450" y="146" fill="#166534">언제나 살아 있다</text>
+  </g>
+
+  <g>
+    <text class="row" x="16" y="200">흔한 규약 — RT</text>
+    <rect class="bar"  x="228" y="184" width="472" height="22" rx="4"/>
+    <rect class="live" x="257" y="184" width="443" height="22" rx="4"/>
+    <text class="lbl"  x="424" y="200" fill="#166534">입력지점 아래에서만</text>
+  </g>
+
+  <g>
+    <text class="row" x="16" y="254">흔한 규약 — 연속 RT</text>
+    <rect class="bar"  x="228" y="238" width="472" height="22" rx="4"/>
+    <rect class="live" x="236" y="238" width="464" height="22" rx="4"/>
+    <text class="lbl"  x="392" y="254" fill="#166534">첫 통과 뒤부터 쉬는 자리로 돌아올 때까지</text>
+  </g>
+
+  <text class="lbl" x="16" y="322">첫 줄과 마지막 줄이 같은 구간이다 — 이슈 002 의 뒷부분이 통째로 이 이야기다.</text>
+</svg>

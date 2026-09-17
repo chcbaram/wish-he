@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 420" width="760" height="420">
+  <style>
+    text  { font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif }
+    .lbl  { fill:#6a737d; font-size:12px }
+    .lbl2 { fill:#1f2328; font-size:13px; font-weight:600 }
+    .ax   { stroke:#8c959f; stroke-width:1 }
+    .thr  { stroke:#d97706; stroke-width:1.5; stroke-dasharray:6 4 }
+    .path { fill:none; stroke:#3b82f6; stroke-width:2.5 }
+    .warn { fill:#dc2626; font-size:12px }
+  </style>
+
+  <rect x="0" y="0" width="760" height="420" fill="#ffffff"/>
+  <text class="lbl2" x="16" y="24">손가락 한 번 움직임이 1~3ms 짜리 입력의 연속이 되는 과정</text>
+
+  <line class="ax" x1="150" y1="56" x2="150" y2="268"/>
+  <line class="ax" x1="150" y1="56" x2="726" y2="56"/>
+  <text class="lbl2" x="16" y="60">깊이 0.00mm</text>
+  <text class="lbl"  x="16" y="76">(쉬는 자리)</text>
+  <text class="lbl"  x="16" y="272">3.50mm (바닥)</text>
+  <text class="lbl2" x="680" y="48">시간</text>
+
+  <line class="thr" x1="150" y1="188" x2="726" y2="188"/>
+  <line class="thr" x1="150" y1="192" x2="726" y2="192"/>
+  <text class="lbl2" x="470" y="182" fill="#d97706">입력지점 2.45mm · 해제지점 2.40mm</text>
+
+  <path class="path" d="M 150 58
+    C 190 58, 210 210, 250 216
+    C 275 220, 295 140, 322 78
+    L 352 78
+    L 374 94 L 396 86 L 418 102 L 440 94 L 462 110 L 484 102 L 506 118 L 528 110
+    C 570 112, 610 80, 650 60
+    C 686 56, 706 56, 726 56"/>
+
+  <g fill="#dc2626">
+    <circle cx="374" cy="94"  r="4"/><circle cx="418" cy="102" r="4"/>
+    <circle cx="462" cy="110" r="4"/><circle cx="506" cy="118" r="4"/>
+  </g>
+  <text class="warn" x="352" y="146">0.10mm 내려갈 때마다 RT 재입력이 선다</text>
+  <text class="warn" x="352" y="162">— 다음 스캔(26us)에 도로 지워진다</text>
+
+  <line class="ax" x1="150" y1="320" x2="726" y2="320"/>
+  <line class="ax" x1="150" y1="364" x2="726" y2="364"/>
+  <text class="lbl2" x="16" y="338">호스트가</text>
+  <text class="lbl2" x="16" y="354">본 키</text>
+
+  <g stroke="#dc2626" stroke-width="2" fill="none">
+    <path d="M 374 364 L 374 324 L 380 324 L 380 364"/>
+    <path d="M 418 364 L 418 324 L 424 324 L 424 364"/>
+    <path d="M 462 364 L 462 324 L 468 324 L 468 364"/>
+    <path d="M 506 364 L 506 324 L 512 324 L 512 364"/>
+  </g>
+  <path d="M 196 364 L 196 324 L 292 324 L 292 364" stroke="#3b82f6" stroke-width="2" fill="none"/>
+  <text class="lbl"  x="196" y="384">제대로 된 입력</text>
+  <text class="warn" x="374" y="384">유령 입력, 하나에 1~3ms</text>
+</svg>

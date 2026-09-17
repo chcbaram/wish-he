@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 300" width="760" height="300">
+  <style>
+    text { font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif }
+    .lbl { fill:#6a737d; font-size:12px }
+    .ttl { fill:#1f2328; font-size:13px; font-weight:600 }
+    .box { fill:#f3f4f6; stroke:#9ca3af; stroke-width:1.2 }
+    .ok  { fill:#dcfce7; stroke:#16a34a; stroke-width:1.2 }
+    .bad { fill:#fee2e2; stroke:#dc2626; stroke-width:1.2 }
+    .gate{ fill:#dbeafe; stroke:#3b82f6; stroke-width:1.2 }
+    .t   { fill:#1f2328; font-size:12px }
+    .arr { stroke:#8c959f; stroke-width:1.4; fill:none; marker-end:url(#a) }
+    .cut { stroke:#dc2626; stroke-width:1.4; fill:none; stroke-dasharray:5 4 }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8c959f"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="760" height="300" fill="#ffffff"/>
+  <text class="ttl" x="16" y="24">보정은 두 경로가 같은 핵을 부른다 — 키보드를 막는 것은 한쪽뿐이다</text>
+
+  <rect class="box" x="16"  y="52" width="190" height="44" rx="6"/>
+  <text class="t"   x="30"  y="72">CLI — keys cal</text>
+  <text class="lbl" x="30"  y="88">keys.c:4991</text>
+
+  <rect class="box" x="16"  y="152" width="190" height="44" rx="6"/>
+  <text class="t"   x="30"  y="172">웹 설정 도구</text>
+  <text class="lbl" x="30"  y="188">HID 0xC7 CAL_START · hid_if.c:554</text>
+
+  <rect class="ok"  x="252" y="52" width="180" height="44" rx="6"/>
+  <text class="t"   x="266" y="72">report_off = true</text>
+  <text class="lbl" x="266" y="88">keys.c:6355 에서 되돌린다</text>
+
+  <rect class="bad" x="252" y="152" width="180" height="44" rx="6"/>
+  <text class="t"   x="266" y="172">cal_active = true</text>
+  <text class="lbl" x="266" y="188">그리고 그것뿐이다</text>
+
+  <rect class="gate" x="478" y="96" width="176" height="56" rx="6"/>
+  <text class="t"    x="492" y="120">keysIsReportEnabled()</text>
+  <text class="lbl"  x="492" y="138">keys.c:3174</text>
+
+  <path class="arr" d="M 206 74 L 246 74"/>
+  <path class="arr" d="M 206 174 L 246 174"/>
+  <path class="arr" d="M 432 74 C 460 74, 460 106, 474 112"/>
+  <path class="cut" d="M 432 174 C 460 174, 460 142, 474 136"/>
+  <text class="lbl" x="436" y="216" fill="#dc2626">한 번도 안 본다</text>
+
+  <rect class="ok"  x="478" y="196" width="266" height="40" rx="6"/>
+  <text class="t"   x="492" y="221">false → matrix_scan 이 전 키를 뗀 것으로 준다</text>
+
+  <rect class="bad" x="478" y="36" width="266" height="40" rx="6"/>
+  <text class="t"   x="492" y="61">true → 보정하려고 누른 63키가 호스트로</text>
+
+  <path class="arr" d="M 566 96 L 566 80"/>
+  <path class="arr" d="M 566 152 L 566 192"/>
+</svg>
