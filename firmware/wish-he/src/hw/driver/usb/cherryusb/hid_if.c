@@ -586,6 +586,13 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
         default: break;                       /* 상태만 */
       }
 
+      /*
+       * 호스트가 살아 있다는 신호. 이 물음이 끊기면 장치가 보정을 스스로 접는다 —
+       * 보정 중에는 리포트가 막히므로, 탭이 닫힌 채 남으면 키보드가 죽은 것과
+       * 같아진다 (keysCalWatch).
+       */
+      keysCalHostTick();
+
       p_tx[2] = keysCalIsActive() ? 1 : 0;
       p_tx[3] = (uint8_t)keysCalDone();
       p_tx[4] = (uint8_t)keysCalTotal();

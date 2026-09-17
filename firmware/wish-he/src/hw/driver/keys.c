@@ -3175,6 +3175,24 @@ bool keysIsReportEnabled(void)
 {
   if (report_off) return false;
 
+  /*
+   * 보정 중에도 막는다.
+   *
+   * ★ 막는 일이 **보정이 아니라 콘솔 명령에 붙어 있었다.** `keys cal` 은
+   *   report_off 로 덮인 길이라 조용했는데, 웹 도구가 부르는 HID 경로에는 그게
+   *   없어서 보정하느라 누른 63키가 그대로 호스트로 갔다. Backspace 가 페이지를
+   *   뒤로 보내고 Super 가 시작 메뉴를 여는 통에 보정 화면이 사라진다.
+   *
+   * ★ 부르는 쪽마다 붙이지 않고 **문지기 한 곳에 둔다.** 모든 리포트가 반드시
+   *   지나는 자리라, 보정을 시작하는 세 번째 길이 생겨도 같이 걸린다. 같은 뜻의
+   *   깃발을 두 곳에 세우면 다음 진입점이 하나를 빠뜨린다 — 이 버그가 정확히
+   *   그렇게 왔다.
+   *
+   * ★ 나가는 길을 반드시 같이 둔다 (keysCalWatch). 끝나지 않은 보정이 곧
+   *   **아무 글자도 안 나가는 키보드**가 되기 때문이다.
+   */
+  if (keysCalIsActive()) return false;
+
   /* 주입 중이면 명시할 때만 내보낸다 — 위 inject_live 주석 참고 */
   if (inject_live == false)
   {
@@ -3277,10 +3295,22 @@ static bool keysComboHeld(uint8_t kc1, uint8_t kc2)
  * 무압 기준값은 러닝 최대값이 늘 추적하므로 여기서 할 일이 없다. 바닥값만
  * 모은다 — 그건 실제로 끝까지 눌러야만 알 수 있다.
  */
-static bool cal_active = false;
+static bool     cal_active  = false;
+static bool     cal_host    = false;   /* 호스트가 시작해 지켜보는 보정인가 */
+static uint32_t cal_poll_ms = 0;       /* 마지막으로 호스트가 물어본 때 */
+
+/*
+ * 호스트가 이만큼 조용하면 보정을 스스로 접는다.
+ *
+ *   화면이 열려 있는 동안은 진행률을 그리려고 계속 물으므로 시계가 계속 뒤로
+ *   밀린다. 키 하나하나 천천히 누르는 사람을 끊지 않으면서, 탭이 닫힌 것은
+ *   금방 알아채는 길이다.
+ */
+#define KEYS_CAL_IDLE_MS   5000
 
 static bool keysCalIsDone(uint16_t row, uint16_t col);
 static bool keysCalSaveBlob(void);
+static void keysCalWatch(void);
 
 bool keysCalIsActive(void)
 {
@@ -3300,12 +3330,67 @@ void keysCalStart(void)
     cal_min_tmp[i] = 0xFFFF;
     cal_max_tmp[i] = 0;
   }
-  cal_active = true;
+  cal_active  = true;
+
+  /*
+   * 콘솔로 시작한 것으로 두고 시작한다 — 무응답 해제는 호스트가 실제로 물어본
+   * 뒤에야 걸린다 (keysCalHostTick). HID 경로는 시작 요청 자체가 물음이라
+   * 바로 이어서 켜진다.
+   */
+  cal_host    = false;
+  cal_poll_ms = millis();
 }
 
 void keysCalCancel(void)
 {
   cal_active = false;
+  cal_host   = false;
+}
+
+/*
+ * 호스트가 보정을 들여다봤다 — 살아 있다는 신호다.
+ *
+ * 웹 도구는 진행률을 그리려고 장치에 계속 상태를 묻는다. 그 물음이 오는 동안은
+ * 화면이 열려 있는 것이므로 시계를 뒤로 민다.
+ */
+void keysCalHostTick(void)
+{
+  cal_host    = true;
+  cal_poll_ms = millis();
+}
+
+/*
+ * 보정에서 나가는 길 — 메인 루프가 부른다.
+ *
+ * ★ 문지기(keysIsReportEnabled)가 보정을 보기 시작하면서 **필요해졌다.**
+ *
+ *   전에는 보정이 안 끝난 채 남아도 아무 일이 없었다. 이제는 끝나지 않은 보정이
+ *   곧 아무 글자도 안 나가는 키보드다. 웹 도구 탭을 보정 중에 닫으면 장치는
+ *   "끝내라" 는 말을 못 듣고, 사용자는 USB 를 뽑기 전까지 키보드가 죽은 줄 안다.
+ *
+ * ★ 무응답 해제는 **호스트가 시작한 보정에만** 건다. 콘솔(`keys cal`)은 아무도
+ *   묻지 않는 길이라, 똑같이 걸면 5초마다 스스로 취소된다.
+ *
+ * ★ 콘솔 없이도 나올 수 있어야 한다. 콘솔에는 Ctrl+Esc 취소가 있었지만
+ *   (keysCliKeep) HID 경로에는 없었다. 같은 조합을 쓴다 — 보정 중에 Ctrl 과 Esc 를
+ *   동시에 누를 일은 없다는 근거가 그대로다.
+ */
+static void keysCalWatch(void)
+{
+  if (cal_active == false) return;
+
+  if (keysComboHeld(KEYS_MOD_KC, KEYS_CANCEL_KC))
+  {
+    logPrintf("[  ] 보정 취소 — 키 조합\n");
+    keysCalCancel();
+    return;
+  }
+
+  if (cal_host && (millis() - cal_poll_ms >= KEYS_CAL_IDLE_MS))
+  {
+    logPrintf("[  ] 보정 취소 — 호스트가 %d ms 동안 조용하다\n", KEYS_CAL_IDLE_MS);
+    keysCalCancel();
+  }
 }
 
 /*
@@ -4565,6 +4650,8 @@ void keysCfgUpdate(void)
    * ISR 에서 하면 USB 가 멈춘다 (실제로 그렇게 굳었다).
    */
   keysProfUpdate_kb();
+
+  keysCalWatch();          /* 보정에서 나가는 길 — 문지기가 보정을 보므로 반드시 있다 */
 
   /*
    * ★ 보정이 안 됐으면 계속 다시 해 본다.

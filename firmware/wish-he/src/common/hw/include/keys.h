@@ -129,6 +129,7 @@ void     keysCalStart(void);
 void     keysCalCancel(void);
 void     keysCalCollect(void);        /* keysUpdate 안에서 불린다 */
 bool     keysCalIsActive(void);
+void     keysCalHostTick(void);
 uint32_t keysCalTotal(void);
 uint32_t keysCalDone(void);
 uint32_t keysCalBitmap(uint8_t *p_buf, uint32_t len);   /* 비트 i = 키 i 완료 */

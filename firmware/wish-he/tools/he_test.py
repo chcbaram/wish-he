@@ -700,6 +700,136 @@ def t_ghost_no_merge():
         h.close()
 
 
+def layout_cell(kc):
+    """펌웨어 키맵(keyboards/<보드>/layout.h)에서 그 키코드가 있는 셀.
+
+    ★ **VIA 키맵이 아니다.** 보정 취소 조합을 보는 keysComboHeld() 는 보드의
+      layout.h 표를 읽으므로, 사용자가 VIA 로 리맵해도 조합은 그 자리 그대로다.
+      시험이 VIA 쪽에서 찾으면 엉뚱한 셀을 집는다 — Esc 는 VIA 에서 GESC 라
+      아예 못 찾았다 (2026-09-18).
+    """
+    board = "wish61-he" if dev.PID == 0x5305 else "wish60-he-7u"
+    src   = open("%s/../keyboards/%s/layout.h"
+                 % (__file__.rsplit("/", 1)[0], board)).read()
+    body  = re.search(r"keys_keymap\[[^\]]*\]\[[^\]]*\]\s*=\s*\{(.*?)\n\};",
+                      src, re.S)
+    if not body:
+        return None
+    for st, row in enumerate(re.findall(r"\{([^{}]*)\}", body.group(1))):
+        for ch, v in enumerate(re.findall(r"0x([0-9A-Fa-f]{2})", row)):
+            if int(v, 16) == kc:
+                return st, ch
+    return None
+
+
+def cal(h, sub=0):
+    """보정 명령과 상태. 돌아오는 것은 (진행 중, 끝난 키, 전체 키)."""
+    r, _ = dev._cmd(h, [0xC7, sub])
+    return r[2], r[3], r[4]
+
+
+CAL_START, CAL_CANCEL = 1, 3
+
+
+@test("host", "보정 중에는 키가 호스트로 안 나간다 (#1)")
+def t_cal_report_gate():
+    """
+    ★ 막는 일이 보정이 아니라 **콘솔 명령**에 붙어 있었다.
+
+      `keys cal` 은 report_off 로 덮인 길이라 조용했는데, 웹 도구가 부르는 HID
+      경로에는 그게 없었다. 보정은 63키를 다 눌러야 끝나는 일이라 그게 그대로
+      호스트로 가면 Backspace 가 페이지를 뒤로 보내고 Super 가 시작 메뉴를 연다
+      — 보정 화면이 사라진다 (이슈 #1).
+
+    ★ 콘솔이 아니라 **HID 로** 시작해야 잡힌다. CLI 로 걸면 옛 펌웨어에서도
+      조용해서 시험이 늘 초록이다.
+    """
+    h = hid()
+    try:
+        say("keys inject live on")
+        say("keys inject %d %d d 300" % (CELL_ST, CELL_CH))
+        time.sleep(0.4)
+        if not held():
+            return "주입한 키가 호스트에 안 보인다 — 시험의 전제가 깨졌다"
+
+        cal(h, CAL_START)
+        time.sleep(0.4)
+        k = held()
+        if k:
+            return f"보정 중인데 키가 호스트로 갔다 — {['0x%02X' % x for x in k]}"
+
+        cal(h, CAL_CANCEL)
+        time.sleep(0.4)
+        if not held():
+            return "보정을 취소했는데 리포트가 안 살아났다"
+        return None
+    finally:
+        cal(h, CAL_CANCEL)
+        say("keys inject off", "keys inject live off")
+        h.close()
+
+
+@test("host", "웹 도구가 조용해지면 보정이 스스로 풀린다 (#1)")
+def t_cal_idle_release():
+    """
+    ★ 문지기가 보정을 보기 시작하면 **끝나지 않은 보정 = 죽은 키보드**다.
+
+      보정 중에 웹 도구 탭을 닫으면 장치는 "끝내라" 는 말을 못 듣는다. 나가는
+      길이 없으면 사용자는 USB 를 뽑기 전까지 키보드가 고장 난 줄 안다.
+      문지기 한 줄과 **반드시 같이** 있어야 하는 장치다.
+
+      도구는 진행률을 그리려고 계속 상태를 묻는다. 그 물음이 끊기면 스스로 접는다.
+    """
+    h = hid()
+    try:
+        cal(h, CAL_START)
+        time.sleep(0.5)
+        if cal(h)[0] != 1:
+            return "보정이 시작되지 않았다 — 시험의 전제가 깨졌다"
+
+        time.sleep(6.5)                   # KEYS_CAL_IDLE_MS 5초 + 여유
+        if cal(h)[0] != 0:
+            return "6.5초를 기다렸는데 보정이 안 풀렸다 — 탭이 닫히면 키보드가 죽는다"
+        return None
+    finally:
+        cal(h, CAL_CANCEL)
+        h.close()
+
+
+@test("host", "보정 중에 Ctrl+Esc 로 빠져나온다 (#1)")
+def t_cal_combo_escape():
+    """
+    ★ 콘솔이 없는 사용자도 나올 수 있어야 한다.
+
+      콘솔에는 Ctrl+Esc 취소가 있었지만(keysCliKeep) HID 경로에는 없었다.
+      같은 조합을 쓴다 — 보정 중에 Ctrl 과 Esc 를 동시에 누를 일은 없다.
+
+    ★ 호스트가 조용해지기를 기다리는 길과 **둘 다** 있어야 한다. 무응답 해제는
+      5초가 걸리고, 그 사이에도 사람은 키보드를 되찾을 수 있어야 한다.
+    """
+    h = hid()
+    try:
+        c1 = layout_cell(0xE0)            # Left Ctrl
+        c2 = layout_cell(0x29)            # Esc
+        if c1 is None or c2 is None:
+            return "키맵에서 Ctrl 또는 Esc 를 못 찾았다"
+
+        cal(h, CAL_START)
+        time.sleep(0.3)
+        if cal(h)[0] != 1:
+            return "보정이 시작되지 않았다 — 시험의 전제가 깨졌다"
+
+        say("keys inject %d %d d 300" % c1, "keys inject %d %d d 300" % c2)
+        time.sleep(0.8)
+        if cal(h)[0] != 0:
+            return "Ctrl+Esc 를 눌렀는데 보정이 안 풀렸다"
+        return None
+    finally:
+        cal(h, CAL_CANCEL)
+        say("keys inject off")
+        h.close()
+
+
 @test("host", "부트 프로토콜에서 키가 나간다 (B1)")
 def t_boot_protocol():
     """
