@@ -232,6 +232,14 @@ APP_RESP_OK    = 0x00
 APP_VID = 0x0483
 APP_PID = 0x5304
 
+# 이 업데이터(0xFF53 부트로더)로 굽는 앱들. wish61-he 는 부트로더가 달라 flash.py 를 쓴다.
+#
+# ★ --pid 로 앱을 고르면 안 된다. 그 값이 부트로더를 찾을 때도 걸러서, 앱과 부트로더의
+#   PID 가 다른 보드(wish40-he 는 5307 / 5308)는 부트로더를 영영 못 찾는다. 그래서 앱은
+#   이 목록으로 찾고 부트로더는 usage page 로 찾는다.
+APP_PIDS = (0x5304,     # wish60-he-7u
+            0x5307)     # wish40-he
+
 
 def find_iap(devs, vid=0, pid=0):
     """
@@ -251,10 +259,10 @@ def find_iap(devs, vid=0, pid=0):
 def find_app(devs, vid=0, pid=0):
     """이 펌웨어의 설정 채널만 고른다 (usage page + VID/PID 둘 다 일치)."""
     want_vid = vid or APP_VID
-    want_pid = pid or APP_PID
+    want_pid = (pid,) if pid else APP_PIDS
     return [d for d in devs
             if d["usage_page"] == APP_USAGE_PAGE
-            and d["vid"] == want_vid and d["pid"] == want_pid]
+            and d["vid"] == want_vid and d["pid"] in want_pid]
 
 
 def request_boot(lib, dev, verbose=False):

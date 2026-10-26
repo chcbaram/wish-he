@@ -5166,6 +5166,10 @@ void cliKeys(cli_args_t *args)
       break;
     }
   }
+  if (args->argc == 2 && args->isStr(0, "bar") && args->isStr(1, "mm"))
+  {
+    report_off = true;
+  }
 
 
   /*
@@ -6189,9 +6193,15 @@ void cliKeys(cli_args_t *args)
    *
    * 슬롯은 한 번 잡히면 값이 0 으로 돌아올 때까지 유지한다 — 떼는 동안 막대가
    * 줄어드는 걸 봐야 하기 때문이다. 그래야 자리가 튀지 않는다.
+   *
+   * `keys bar mm` 은 줄 끝에 mm 를 더 찍는다. d 는 원시 카운트라 "바닥이 3.40mm 로
+   * 나오나" 를 보려면 거리 곡선을 거친 값(keysGetDepthUm)이 따로 필요하다 — 그 값은
+   * 그동안 라이브 트래킹(0xFF61)으로만 나가서 CLI 로는 볼 수가 없었다.
    */
-  if (args->argc == 1 && args->isStr(0, "bar"))
+  if ((args->argc == 1 && args->isStr(0, "bar")) ||
+      (args->argc == 2 && args->isStr(0, "bar") && args->isStr(1, "mm")))
   {
+    bool     show_mm = (args->argc == 2);
     int8_t   slot_s[KEYS_BAR_SLOTS];
     int8_t   slot_c[KEYS_BAR_SLOTS];
     uint32_t slot_ms[KEYS_BAR_SLOTS];
@@ -6270,7 +6280,8 @@ void cliKeys(cli_args_t *args)
 
         if (slot_s[i] < 0)
         {
-          cliPrintf("  --      ---      ---  %*s   \n", KEYS_BAR_W, "");
+          cliPrintf("  --      ---      ---  %*s   %s\n", KEYS_BAR_W, "",
+                    show_mm ? "         " : "");
           continue;
         }
 
@@ -6291,10 +6302,17 @@ void cliKeys(cli_args_t *args)
           }
           bar[KEYS_BAR_W] = 0;
 
-          cliPrintf("  s%d,ch%d  raw %4d  d %4d  %s %s\n",
+          cliPrintf("  s%d,ch%d  raw %4d  d %4d  %s %s",
                     (int)slot_s[i], (int)slot_c[i],
                     (int)keysGetRaw(slot_s[i], slot_c[i]), (int)d, bar,
                     keysGetPressed(slot_s[i], slot_c[i]) ? "ON" : "  ");
+          if (show_mm)
+          {
+            uint32_t um = keysGetDepthUm(slot_s[i], slot_c[i]);   /* 0.01mm */
+
+            cliPrintf("  %d.%02d mm", (int)(um / 100), (int)(um % 100));
+          }
+          cliPrintf("\n");
         }
       }
 
@@ -6508,7 +6526,7 @@ void cliKeys(cli_args_t *args)
     cliPrintf("keys load      설정 다시 읽기\n");
     cliPrintf("keys base\n");
     cliPrintf("keys map\n");
-    cliPrintf("keys bar       눌린 깊이를 막대로 (최대 6개)\n");
+    cliPrintf("keys bar [mm]  눌린 깊이를 막대로 (최대 6개). mm 를 주면 거리도 찍는다\n");
     cliPrintf("keys key <st> <ch>   한 키만 — 누름마다 최대깊이와 판정 여부\n");
 #if defined(_USE_HW_WS2812)
     cliPrintf("keys led       누른 키의 LED 를 켠다 (매핑 확인)\n");
