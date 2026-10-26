@@ -18,14 +18,23 @@ typedef struct
 } led_tbl_t;
 
 
-/* hpm5300evk : User LED = PA23, 470ohm 로 +3.3V 풀업 -> 액티브 로우 */
 static const led_tbl_t led_tbl[LED_MAX_CH] =
 {
+#if defined(HW_BOARD_WISH40_HE)
+  /* wish40-he : PA31 -> LED -> 1k -> GND. 액티브 하이 (회로도 LED2 / R12) */
+  {
+    HPM_GPIO0, GPIO_DI_GPIOA, 31,
+    IOC_PAD_PA31, IOC_PA31_FUNC_CTL_GPIO_A_31,
+    1, 0
+  },
+#else
+  /* hpm5300evk : User LED = PA23, 470ohm 로 +3.3V 풀업 -> 액티브 로우 */
   {
     HPM_GPIO0, GPIO_DI_GPIOA, 23,
     IOC_PAD_PA23, IOC_PA23_FUNC_CTL_GPIO_A_23,
     BOARD_LED_ON_LEVEL, BOARD_LED_OFF_LEVEL
   },
+#endif
 };
 
 

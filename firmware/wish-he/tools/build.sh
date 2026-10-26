@@ -22,6 +22,7 @@ KB=${1:-wish60-he-7u}
 case "$KB" in
   wish60-he-7u) BOARD=wish60-he ;;
   wish61-he)    BOARD=wish61-he ;;
+  wish40-he)    BOARD=wish40-he ;;
   *) echo "모르는 키보드: $KB  (keyboards/ 를 볼 것)" >&2; exit 1 ;;
 esac
 

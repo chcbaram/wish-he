@@ -43,7 +43,7 @@ VID, PID = "0x0483", "0x5304"
 ROWS, COLS = 8, 8
 
 # --board 로 정해지는 경로들
-KLE_PATH = VIA_PATH = HDR_PATH = None
+KLE_PATH = VIA_PATH = HDR_PATH = DEFAULT_KM_PATH = None
 
 
 BOARD_DIR = None
@@ -61,6 +61,7 @@ def set_board(name):
     #include "layout.h" 한 줄이면 된다.
     """
     global KLE_PATH, VIA_PATH, HDR_PATH, KEYMAP_PATH, LAYOUT_PATH, LABELS_PATH, MENUS_PATH
+    global DEFAULT_KM_PATH
     global BOARD_DIR
     d = BOARDS / name
     if not d.is_dir():
@@ -70,6 +71,7 @@ def set_board(name):
     VIA_PATH    = d / "layout-via.json"
     HDR_PATH    = d / "layout.h"
     KEYMAP_PATH = d / "keymap.c"        # QMK 키맵   (생성물)
+    DEFAULT_KM_PATH = d / "keymap-default.json"   # 공장 기본 레이어 (손으로 쓴다, 선택)
     LAYOUT_PATH = d / "layout_qmk.h"    # QMK LAYOUT 매크로 (생성물)
     LABELS_PATH = d / "labels.json"     # 레이아웃 옵션 이름 (손으로 쓴다, 선택)
     MENUS_PATH  = d / "menus.json"      # VIA 커스텀 메뉴   (손으로 쓴다, 선택)
@@ -131,11 +133,21 @@ LEARN_RE = re.compile(r"#(\d+)\s+(\d+),(\d+)")
 
 
 def load_kle():
+    """
+    ★ 행렬 크기도 메타데이터에서 받는다 ("rows" · "cols", 없으면 8x8).
+
+      wish40-he 는 ADC 채널이 6개라 8x6 이다. 8x8 로 박아 두면 VIA 정의의 matrix 와
+      펌웨어의 MATRIX_COLS 가 어긋난다 — VIA 는 그 크기로 키맵 버퍼를 자른다.
+    """
+    global ROWS, COLS
     if not KLE_PATH.exists():
         sys.exit(f"[E_] 없다: {KLE_PATH}")
     kle = json.loads(KLE_PATH.read_text())
     if not isinstance(kle, list):
         sys.exit("[E_] KLE 는 최상위가 배열이어야 한다 (keyboard-layout-editor 원본 형식)")
+    meta = next((it for it in kle if isinstance(it, dict) and "name" in it), {})
+    ROWS = int(meta.get("rows", 8))
+    COLS = int(meta.get("cols", 8))
     return kle
 
 
@@ -694,7 +706,13 @@ def cmd_gen():
     kmap = [[0] * COLS for _ in range(ROWS)]
     names = [[None] * COLS for _ in range(ROWS)]
     n = 0
-    for r, row in enumerate(rows_of(kle)):
+    layers = default_layers(len(keys))
+    if layers:
+        for (s_, c_), qk in zip(keys, layers[0]):
+            nm = qmk_to_kc_name(qk)
+            kmap[s_][c_] = KC.get(nm, 0)
+            names[s_][c_] = nm
+    for r, row in enumerate([] if layers else rows_of(kle)):
         base = DEFAULT_ROWS[r] if r < len(DEFAULT_ROWS) else []
         if r == len(rows_of(kle)) - 1:                     # 바닥줄은 키 수로 고른다
             cnt = sum(1 for it in row
@@ -851,12 +869,13 @@ def gen_qmk(kle, keys, names):
     #
     # 레이어 0 은 위에서 만든 기본 배치 그대로. 레이어 1 은 FN 을 눌렀을 때의
     # 자리인데, 지금은 F키·방향키만 얹고 나머지는 투명(KC_TRNS)으로 둔다.
-    order = []
-    for i, (s, c) in enumerate(keys):
-        nm = names[s][c] or "NO"
-        order.append(QMK_SPECIAL.get(nm, f"KC_{nm}"))
-
-    fn = fn_layer(kle, keys, names)
+    layers = default_layers(n)
+    if not layers:
+        order = []
+        for i, (s, c) in enumerate(keys):
+            nm = names[s][c] or "NO"
+            order.append(QMK_SPECIAL.get(nm, f"KC_{nm}"))
+        layers = [order, fn_layer(kle, keys, names)]
 
     K = [
         "/*",
@@ -872,14 +891,14 @@ def gen_qmk(kle, keys, names):
         "",
         "const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {",
     ]
-    for idx, layer in enumerate((order, fn)):
+    for idx, layer in enumerate(layers):
         K.append(f"  [{idx}] = LAYOUT(")
         for i in range(0, n, 8):
             K.append("    " + ", ".join(layer[i:i + 8]) + ("," if i + 8 < n else ""))
         K.append("  )," if idx == 0 else "  ),")
     K += ["};", ""]
     KEYMAP_PATH.write_text("\n".join(K))
-    print(f"생성: {KEYMAP_PATH.relative_to(ROOT)}  (레이어 2)")
+    print(f"생성: {KEYMAP_PATH.relative_to(ROOT)}  (레이어 {len(layers)})")
 
 
 # FN 레이어에 얹을 것 — 숫자열은 F키, WASD 쪽은 방향키.
@@ -897,6 +916,43 @@ FN_MAP = {
     "B": "RGB_TOG",             # 조명 켜고 끄기
     "N": "RGB_MODE_FORWARD",    # 다음 모드
 }
+
+
+def default_layers(n_keys):
+    """
+    보드 폴더의 keymap-default.json — 공장 기본 레이어를 **물리 배치 순서**로 적는다.
+
+        { "layers": [ ["QK_GESC", "KC_Q", ...], [...], ... ] }
+
+    ★ 없으면 위의 60% 규칙(DEFAULT_ROWS · FN_MAP)으로 만든다. 40% 는 레이어 구성이
+      통째로 달라서(숫자가 아래 레이어에 있다) 규칙으로 뽑을 수가 없다.
+    """
+    if DEFAULT_KM_PATH is None or not DEFAULT_KM_PATH.exists():
+        return None
+    layers = json.loads(DEFAULT_KM_PATH.read_text())["layers"]
+    for i, layer in enumerate(layers):
+        if len(layer) != n_keys:
+            sys.exit(f"[E_] {DEFAULT_KM_PATH.name} 레이어 {i} 가 {len(layer)} 키다 "
+                     f"(레이아웃은 {n_keys} 키)")
+    return layers
+
+
+def qmk_to_kc_name(qk):
+    """
+    QMK 키코드 이름 -> 위 KC 표의 이름. layout.h 의 keys_keymap(HID 코드)에 쓴다.
+
+    keys_keymap 은 QMK 를 거치지 않는 자리에서만 본다 — 지금은 CLI 가 리포트를 막은 동안
+    Ctrl+Esc 로 빠져나오는 판정(keysComboHeld) 하나다. 탭·홀드 키는 탭 쪽, 레이어 키는
+    FN 으로 본다.
+    """
+    m = re.match(r"LT\(\d+,\s*(KC_\w+)\)$", qk)
+    if m:
+        qk = m.group(1)
+    if re.match(r"(MO|TG|TT|OSL)\(\d+\)$", qk):
+        return "FN"
+    if qk == "QK_GESC":
+        return "ESC"
+    return qk[3:] if qk.startswith("KC_") and qk[3:] in KC else "NO"
 
 
 def fn_layer(kle, keys, names):

@@ -9,6 +9,8 @@
 #define _DEF_FIRMWATRE_VERSION    "V260918R1"
 #if defined(HW_BOARD_WISH61_HE)
 #define _DEF_BOARD_NAME           "WISH61-HE"
+#elif defined(HW_BOARD_WISH40_HE)
+#define _DEF_BOARD_NAME           "WISH40-HE"
 #else
 #define _DEF_BOARD_NAME           "WISH60-HE"
 #endif
@@ -42,7 +44,7 @@
 #define _USE_HW_PERF_STAT       1
 
 /*
- * 표시 LED — **wish60-he 에만 있다.**
+ * 표시 LED — wish60-he (PA23, 액티브 로우) · wish40-he (PA31, 액티브 하이). 핀은 led.c.
  *
  * ★ led.c 가 PA23 을 GPIO 로 잡는데, wish61-he 에서 PA23 은 RGB 오른쪽 채널의
  *   SPI2_MOSI 다 (keyboards/wish61-he/config.h). 그대로 켜면 표시 LED 드라이버가
@@ -95,10 +97,17 @@
  */
 #define _USE_HW_QMK
 
-/* 키 스캔 (ADC 시퀀스 + 아날로그 MUX). 8채널 x 8스텝 = 64키 */
+/*
+ * 키 스캔 (ADC 시퀀스 + 아날로그 MUX). 기본 8채널 x 8스텝 = 64칸.
+ *
+ * ★ 채널 수는 키보드가 정한다 — wish40-he 는 MUX 가 6개라 6채널(ADC 하나에 3개)이다.
+ *   keyboards/<모델>/config.h 가 먼저 들어오므로(-include) 거기서 정의하면 이긴다.
+ */
 #define _USE_HW_KEYS
 #define      HW_KEYS_STEP_MAX       8       /* MUX 스텝 = 논리 행 */
+#ifndef      HW_KEYS_CH_MAX
 #define      HW_KEYS_CH_MAX         8       /* ADC 채널 = 논리 열 */
+#endif
 #define      KEYS_CH_MAX_PER_ADC    (HW_KEYS_CH_MAX / 2)   /* ADC 하나가 맡는 채널 */
 
 #define _USE_HW_UART

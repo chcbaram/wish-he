@@ -55,6 +55,7 @@ void logPrintf(const char *fmt, ...);
  *   0x5209  WISH65-74F9
  *   0x5304  WISH60-HE
  *   0x5305  WISH61-HE
+ *   0x5307  WISH40-HE      (0x5306 은 qmk-link 가 쓴다 — 다른 저장소도 뒤져서 고른다)
  *
  * ★ 벤더 앱(1ca6:300b)과도 달라지므로, 우리 앱이 뜬 뒤에는 tools/flash.py 의
  *   AppToBoot 가 보드를 못 찾는다. 앱에 부트로더로 돌아가는 길을 반드시 둘 것.
@@ -62,6 +63,8 @@ void logPrintf(const char *fmt, ...);
  */
 #if defined(HW_BOARD_WISH61_HE)
 #define USBD_PID           0x5305      /* WISH61-HE */
+#elif defined(HW_BOARD_WISH40_HE)
+#define USBD_PID           0x5307      /* WISH40-HE — 5306 은 qmk-link, 5308 은 이 보드의 부트로더 */
 #else
 #define USBD_PID           0x5304      /* WISH60-HE */
 #endif

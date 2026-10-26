@@ -16,6 +16,7 @@ message(STATUS "Keyboard: ${HW_KEYBOARD}")
 #
 #   wish60-he : 자체 IAP.  매직 4B, 진입점 ORIGIN+4,        앱 384KB (0x80020000~)
 #   wish61-he : 벤더 IAP.  20B 헤더 + CRC32, 진입점 슬롯+0x1000, 앱 252KB (0x80021000~)
+#   wish40-he : 우리 부트로더(boot/wish40-he). 계약은 wish60-he 와 같다
 #
 # ★ 키보드 축과 헷갈리지 말 것. 키보드는 "어떤 키가 어디 있나"(레이아웃·핀맵)이고,
 #   보드는 "이 이미지를 누가 어떻게 굽나"(부트로더 계약)다. 지금은 1:1 이지만
@@ -31,6 +32,9 @@ if(HW_BOARD STREQUAL "wish61-he")
 elseif(HW_BOARD STREQUAL "wish60-he")
   set(HW_LDSCRIPT HPM5361_IAP_APP.ld)
   set(HW_BOARD_DEF HW_BOARD_WISH60_HE)
+elseif(HW_BOARD STREQUAL "wish40-he")
+  set(HW_LDSCRIPT HPM5361_IAP_APP.ld)
+  set(HW_BOARD_DEF HW_BOARD_WISH40_HE)
 else()
   message(FATAL_ERROR "알 수 없는 HW_BOARD: ${HW_BOARD}")
 endif()

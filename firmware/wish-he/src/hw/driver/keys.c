@@ -321,6 +321,29 @@ static uint32_t settle_cycles = KEYS_SETTLE_CYCLES;
 /* 원시 16비트를 이만큼 내려 12비트 영역으로 쓴다 */
 #define KEYS_RAW_SHIFT          4
 
+/*
+ * 누르면 값이 오르는 보드는 들어오는 자리에서 뒤집는다 (keyboards/<모델>/config.h 의
+ * HW_KEYS_PRESS_RISES).
+ *
+ * ★ 이 파일 전체가 "누르면 내려간다" 를 전제한다 — 보정 이상치, 래피드 트리거 방향,
+ *   기준값 추적까지. 그 전제를 곳곳에서 갈라 고치는 대신 입구 하나에서 뒤집는다.
+ *   거리 곡선은 u = (값 − 무압) / (바닥 − 무압) 로 정규화해서 쓰므로 아핀 변환에
+ *   영향을 안 받는다 (keysCurveBuild 주석).
+ *
+ * ★ 하드웨어 값을 복사하는 자리에서만 뒤집는다. keysFilter 안에서 뒤집으면 keys inject
+ *   가 넣는 값까지 뒤집혀 시험(he_test.py)이 "누르면 오른다" 눈금으로 바뀐다.
+ *
+ * 하위 16비트가 값이고 위는 시퀀스 정보라 XOR 0xFFFF 가 곧 0xFFFF − 값이다.
+ * >> 4 하면 4095 − (값 >> 4) 가 된다.
+ *
+ * 누르면 오르는 까닭 — wish40-he 는 센서가 바텀이고 자석이 N극 하향이다 (docs/wish40-he.md).
+ */
+#if defined(HW_KEYS_PRESS_RISES) && HW_KEYS_PRESS_RISES
+#define KEYS_RAW_IN(packed)     ((packed) ^ 0xFFFFU)
+#else
+#define KEYS_RAW_IN(packed)     (packed)
+#endif
+
 
 
 /*
@@ -2888,8 +2911,8 @@ ATTR_RAMFUNC bool keysUpdate(void)
 
     for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++)
     {
-      snap[i]               = adc0_buf[i];
-      snap[KEYS_SEQ_LEN + i] = adc1_buf[i];
+      snap[i]               = KEYS_RAW_IN(adc0_buf[i]);
+      snap[KEYS_SEQ_LEN + i] = KEYS_RAW_IN(adc1_buf[i]);
     }
 
     /* 주입 중인 셀만 갈아 끼운다 — 스텝당 분기 하나다 */
@@ -6377,8 +6400,8 @@ void cliKeys(cli_args_t *args)
           {
             for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++)
             {
-              keysFilter(step, i,                adc0_buf[i]);
-              keysFilter(step, KEYS_SEQ_LEN + i, adc1_buf[i]);
+              keysFilter(step, i,                KEYS_RAW_IN(adc0_buf[i]));
+              keysFilter(step, KEYS_SEQ_LEN + i, KEYS_RAW_IN(adc1_buf[i]));
             }
           }
 

@@ -136,6 +136,15 @@ void board_init_usb(USB_Type *ptr)
 {
     if (ptr == HPM_USB0) {
         clock_add_to_group(clock_usb0, 0);
+#if defined(HW_BOARD_WISH40_HE)
+        /*
+         * ★ LQFP64 에는 VBUS 감지 핀이 없다. PHY 에 "VBUS 유효" 를 직접 세운다.
+         *   안 하면 컨트롤러가 세션이 없다고 보고 D+ 풀업을 안 건다 — 펌웨어는 멀쩡히
+         *   도는데 호스트에 아무것도 안 보인다. 부트로더에서 OTGSC.BSV = 0 으로 잡았다
+         *   (docs/wish40-he.md). wish60 · wish61 은 LQFP100 이라 VBUS 핀이 있다.
+         */
+        usb_phy_using_internal_vbus(ptr);
+#endif
     }
 }
 

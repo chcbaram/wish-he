@@ -56,14 +56,21 @@ VERBOSE = False
   전제가 보드에 묶여 있었다.
 
       WISH_CELL=6,3 python3 tools/he_test.py     그 보드의 보통 키를 지정한다
+
+★ 열 수도 보드마다 다르다. 키별 설정(0xC5)의 번호는 `스텝 x 열 수 + 열` 인데 wish40-he
+  는 6열이다. 8 로 박아 두면 엉뚱한 키의 설정을 읽고 쓴다.
 """
+#   PID      (스텝, 열, 열 수)   시험 칸 — 오른쪽 이웃 칸도 보통 키여야 한다
+_BOARD = {
+    0x5304: (0, 0, 8),           # wish60-he-7u 의 X 키
+    0x5305: (6, 3, 8),           # wish61-he 의 A 키 (s0/ch0 은 RCtrl 이라 못 쓴다)
+    0x5307: (5, 1, 6),           # wish40-he 의 E 키 (이웃 s5/ch2 = T)
+}
+CELL_ST, CELL_CH, COLS = _BOARD.get(int(os.environ.get("WISH_PID", "0x5304"), 0),
+                                    _BOARD[0x5304])
 _cell = os.environ.get("WISH_CELL")
 if _cell:
     CELL_ST, CELL_CH = (int(x) for x in _cell.split(","))
-elif int(os.environ.get("WISH_PID", "0x5304"), 0) == 0x5305:
-    CELL_ST, CELL_CH = 6, 3      # wish61-he 의 A 키 (s0/ch0 은 RCtrl 이라 못 쓴다)
-else:
-    CELL_ST, CELL_CH = 0, 0      # wish60-he-7u 의 X 키
 DRIFT_TICK_MS    = 512           # keys.c 의 KEYS_DRIFT_MS
 DRIFT_STEP       = 3             # KEYS_DRIFT_STEP
 DRIFT_BAND       = 150           # KEYS_DRIFT_BAND
@@ -225,7 +232,7 @@ def t_release_zero():
       순서 보정까지 건너뛰어져 t->release 가 0 으로 남았다. d 는 0 미만으로 안
       내려가므로 `d < 0` 이 영원히 거짓 — 손을 다 떼도 안 떨어졌다.
     """
-    idx = CELL_ST * 8 + CELL_CH
+    idx = CELL_ST * COLS + CELL_CH
     orig = keycfg(idx)
 
     try:
@@ -600,7 +607,7 @@ def t_rt_reseed():
       남는다. 그 상태에서 RT 를 켜면 `peak - d` 가 이미 해제 문턱을 넘어 있어
       **손을 전혀 안 움직였는데 그 자리에서 떼진다.**
     """
-    idx = CELL_ST * 8 + CELL_CH
+    idx = CELL_ST * COLS + CELL_CH
     orig = keycfg(idx)
     try:
         say("keys rt off")
