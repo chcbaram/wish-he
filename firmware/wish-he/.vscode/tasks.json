@@ -84,6 +84,32 @@
       "dependsOn": "build-build",
       "problemMatcher": []
     },
+
+    // ── wish40-he 부트로더 ──────────────────────────────────────────────────
+    //
+    // 새 보드는 칩이 비어 있다. 부트로더를 JTAG 으로 한 번 넣으면 그 뒤로는 USB 다
+    // (iap_update.py · 웹앱). 저장소의 bin 은 시험을 통과한 판이다 — docs/wish40-he.md
+    //
+    // ★ 0x80000000 ~ 0x80020000 만 지운다. 부트로더 + 업데이트 플래그 자리다.
+    //   앱(0x20000~)과 설정·보정(0xC0000~)은 안 건드린다 — 이미 쓰던 보드에 다시
+    //   넣어도 앱과 보정값이 그대로 남는다.
+    //
+    {
+      "label": "boot-wish40-flash",
+      "detail": "새 wish40-he 보드에 부트로더를 JTAG 으로 굽는다 (boot/wish40-he/bin). 앱 자리는 안 건드린다.",
+      "type": "shell",
+      "command": "${env:HPM_RISCV_OPENOCD_PATH}/openocd -s tools/openocd -f hpm5361-fw.cfg -c \"adapter speed 4000\" -c \"init\" -c \"reset halt\" -c \"flash probe 0\" -c \"flash erase_address 0x80000000 0x20000\" -c \"flash write_image boot/wish40-he/bin/wish40-he-boot.bin 0x80000000 bin\" -c \"verify_image boot/wish40-he/bin/wish40-he-boot.bin 0x80000000 bin\" -c \"reset run\" -c \"exit\"",
+      "problemMatcher": [],
+      "presentation": { "clear": true }
+    },
+    {
+      "label": "boot-wish40-release",
+      "detail": "부트로더를 빌드해 저장소의 bin 을 갈아 끼운다 — 시험한 판일 때만",
+      "type": "shell",
+      "command": "cmake -S boot/wish40-he -B build/boot-wish40-he && cmake --build build/boot-wish40-he && cp build/boot-wish40-he/wish40-he-boot.bin boot/wish40-he/bin/ && shasum -a 256 boot/wish40-he/bin/wish40-he-boot.bin",
+      "problemMatcher": [],
+      "presentation": { "clear": true }
+    },
     {
       "label": "openocd-server",
       "type": "shell",
