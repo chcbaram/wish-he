@@ -130,12 +130,35 @@ static const uint8_t other_speed_config_descriptor_fs[] = {
   CDC_ACM_DESCRIPTOR_INIT(USB_IF_CDC, CDC_INT_EP, CDC_OUT_EP, CDC_IN_EP, USB_BULK_EP_MPS_HS, 0x02),
 };
 
+/*
+ * USB 시리얼 — wish40-he 는 칩 고유 ID(OTP UUID 128비트)를 16진 32자리로 쓴다.
+ *
+ * ★ "0001" 고정이면 같은 모델 두 장을 같이 꽂았을 때 호스트도 도구도 둘을 못 가른다.
+ *   도구는 VID/PID 로 보드를 고르고, 맥의 포트 이름(/dev/cu.usbmodem...)은 시리얼에서
+ *   나온다 — 둘 다 같으면 어느 쪽에 붙을지 모른다. 두 번째 보드를 비교할 때 한 장씩
+ *   꽂아야 했던 이유다.
+ *
+ * ★ 자르지 않는다. UUID 의 어느 부분이 칩마다 다른지 모른다 — 웨이퍼가 같으면 앞쪽이
+ *   같을 수 있다. 32자리도 USB 문자열 한도(126자) 안이다.
+ *
+ * ★ wish60 · wish61 은 그대로 "0001" 이다. 시리얼이 바뀌면 포트 이름과 웹앱의 장치
+ *   권한이 달라질 수 있는데, 이미 쓰고 있는 보드에서 그걸 겪게 할 이유가 없다.
+ */
+#if defined(HW_BOARD_WISH40_HE)
+static char serial_str[OTP_SOC_UUID_LEN * 2 + 1] = "0001";
+#define USB_SERIAL_STR  serial_str
+#else
+#define USB_SERIAL_STR  "0001"
+#endif
+
 static const char *string_descriptors[] = {
   (const char[]){ 0x09, 0x04 },   /* LangID : en-US */
   "HPMicro",
   _DEF_BOARD_NAME,
-  "0001",
+  USB_SERIAL_STR,
 };
+
+static void usbDescSerialInit(void);
 
 
 static const uint8_t *device_descriptor_callback(uint8_t speed)
@@ -183,7 +206,28 @@ static const struct usb_descriptor usb_descriptor_set =
 
 void usbDescRegister(uint8_t busid)
 {
+  usbDescSerialInit();
   usbd_desc_register(busid, &usb_descriptor_set);
+}
+
+static void usbDescSerialInit(void)
+{
+#if defined(HW_BOARD_WISH40_HE)
+  static const char hex[] = "0123456789ABCDEF";
+  uint32_t w[OTP_SOC_UUID_LEN / 4];
+
+  /* 비어 있는 OTP 면 예전 값을 둔다 — 시리얼이 없는 것보다 낫다 */
+  if (bspGetUuid(w) == false) return;
+
+  for (uint32_t i = 0; i < OTP_SOC_UUID_LEN / 4; i++)
+  {
+    for (uint32_t k = 0; k < 8; k++)
+    {
+      serial_str[i * 8 + k] = hex[(w[i] >> (28 - k * 4)) & 0xF];
+    }
+  }
+  serial_str[OTP_SOC_UUID_LEN * 2] = 0;
+#endif
 }
 
 /* 스택 이벤트는 클래스 글루 전부에게 뿌린다. */

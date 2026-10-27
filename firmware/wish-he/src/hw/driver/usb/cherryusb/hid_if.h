@@ -138,6 +138,8 @@ extern "C" {
  *   페이지 0,1  LE32 값들
  *   페이지 2    MCU 이름 (문자열)
  *   페이지 3    만든 이
+ *   페이지 4    칩 고유 ID — OTP UUID 16바이트. 비어 있으면 0. 옛 펌웨어도 0 을 준다
+ *               (숫자 페이지 범위를 넘어 아무것도 안 채운다) — 0 이면 "모름" 이다
  *
  * 문자열을 숫자 뒤에 이어 붙이지 않는다 — 숫자 개수가 늘면 자리가 밀려 도구가
  * 엉뚱한 바이트를 읽는다. 페이지로 나누면 각자 4번지에서 시작한다.
@@ -148,6 +150,7 @@ extern "C" {
 
 #define HID_HW_PAGE_MCU           2
 #define HID_HW_PAGE_AUTHOR        3
+#define HID_HW_PAGE_UUID          4
 
 #define HID_CMD_STAT              0xC9
 

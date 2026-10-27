@@ -435,6 +435,24 @@ static bool hidCmdHandler(const uint8_t *p_rx, uint8_t *p_tx)
       v[8]  = KEYS_LAYOUT_ROWS;
       v[9]  = KEYS_LAYOUT_COLS;
 
+      /*
+       * 칩 고유 ID. 같은 모델을 두 대 꽂으면 웹앱 목록에 같은 이름이 두 줄 뜨는데,
+       * 브라우저(WebHID)는 USB 시리얼을 안 넘겨준다. 그래서 장치에 직접 묻는다.
+       */
+      if (page == HID_HW_PAGE_UUID)
+      {
+        uint32_t w[4];
+
+        if (bspGetUuid(w))
+        {
+          for (uint32_t i = 0; i < 16; i++)
+          {
+            p_tx[HID_HW_OFF + i] = (uint8_t)(w[i / 4] >> (24 - (i % 4) * 8));
+          }
+        }
+        break;
+      }
+
       if (page == HID_HW_PAGE_MCU || page == HID_HW_PAGE_AUTHOR)
       {
         const char *p_str = (page == HID_HW_PAGE_MCU) ? _DEF_MCU_NAME

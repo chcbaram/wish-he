@@ -4,6 +4,7 @@
 #include "hpm5361_it.h"
 
 #include "hpm_interrupt.h"
+#include "hpm_otp_drv.h"
 
 
 
@@ -65,4 +66,19 @@ void Error_Handler(void)
   while (1)
   {
   }
+}
+
+bool bspGetUuid(uint32_t w[4])
+{
+  uint32_t all_or  = 0;
+  uint32_t all_and = 0xFFFFFFFFUL;
+
+  /* 섀도 레지스터라 리셋 때 이미 읽혀 있다 — ISR 에서 불러도 된다 */
+  for (uint32_t i = 0; i < OTP_SOC_UUID_LEN / 4; i++)
+  {
+    w[i]     = otp_read_from_shadow(OTP_SOC_UUID_IDX + i);
+    all_or  |= w[i];
+    all_and &= w[i];
+  }
+  return !(all_or == 0 || all_and == 0xFFFFFFFFUL);
 }

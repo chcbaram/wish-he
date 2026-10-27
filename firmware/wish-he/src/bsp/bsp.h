@@ -39,6 +39,12 @@ uint32_t micros(void);
 
 void Error_Handler(void);
 
+/*
+ * 칩 고유 ID — OTP UUID 128비트(워드 4개). 비어 있으면(전부 0 이나 전부 1) false.
+ * USB 시리얼(wish40-he)과 하드웨어 정보 명령(0xCA 페이지 4)이 같이 쓴다.
+ */
+bool bspGetUuid(uint32_t w[4]);
+
 
 #ifdef __cplusplus
 }

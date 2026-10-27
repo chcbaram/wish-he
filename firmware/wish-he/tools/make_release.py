@@ -71,6 +71,10 @@ BOARDS = {
         "dir": "wish60-he", "name": "WISH60-HE",
         "bin": "{kb}.bin", "tag": "fw_tag", "magic": b"HPM\n",
     },
+    "wish40-he": {
+        "dir": "wish40-he", "name": "WISH40-HE",
+        "bin": "{kb}.bin", "tag": "fw_tag", "magic": b"HPM\n",     # 부트로더 계약이 wish60 과 같다
+    },
     "wish61-he": {
         "dir": "wish61-he", "name": "WISH61-HE",
         "bin": "{kb}-tag.bin", "tag": "none",
