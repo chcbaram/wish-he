@@ -90,6 +90,20 @@ static const uint8_t adc1_seq_ch[KEYS_SEQ_LEN] = HW_KEYS_ADC1_SEQ_CH;
 
 static uint32_t settle_cycles = KEYS_SETTLE_CYCLES;
 
+/*
+ * ADC 샘플 조리개 (ADC 클럭 수). 보드가 config.h 에 안 주면 5 다.
+ *
+ * `keys sample <n>` 으로 굽지 않고 바꾼다 — 채널마다 레지스터 하나라 다음 변환부터
+ * 바로 먹는다. 시퀀스 안에서 바로 앞 채널이 다음 채널에 번지는지를 이걸로 잰다.
+ */
+#ifdef HW_KEYS_SAMPLE_CYCLES
+#define KEYS_SAMPLE_CYCLES      HW_KEYS_SAMPLE_CYCLES
+#else
+#define KEYS_SAMPLE_CYCLES      5
+#endif
+
+static uint32_t sample_cycles = KEYS_SAMPLE_CYCLES;
+
 /* 완료를 기다리다 이만큼 돌면 포기한다. 스핀이 영원히 걸리는 것만 막으면 된다. */
 #define KEYS_WAIT_LIMIT         100000
 
@@ -980,6 +994,7 @@ static uint32_t stroke_recip[KEYS_MAX];
 
 static void            keysInitPins(void);
 static bool            keysInitAdc(ADC16_Type *ptr, const uint8_t *seq_ch, volatile uint32_t *buf);
+static bool            keysSetSampleCycles(uint32_t cycles);
 static ATTR_RAMFUNC void keysTrack(uint32_t step);
 static inline void     keysFilter(uint32_t step, uint32_t ch, uint32_t packed);
 static void            keysThrRebuild(void);
@@ -1569,9 +1584,9 @@ static bool keysInitAdc(ADC16_Type *ptr, const uint8_t *seq_ch, volatile uint32_
 
   adc16_get_channel_default_config(&ch_cfg);
   /*
-   * 샘플 조리개.
+   * 샘플 조리개. 보드가 HW_KEYS_SAMPLE_CYCLES 로 바꿀 수 있다 (기본 5).
    *
-   * ★ 늘려도 소용없다 — 재 봤다 (2026-08-17).
+   * ★ **잡음에는** 늘려도 소용없다 — 재 봤다 (2026-08-17).
    *
    *   5 -> 16 으로 3.2배 넓혀 60초씩 두 번 (스캔 150만 회) 쟀는데 잡음이 그대로였다.
    *
@@ -1581,10 +1596,14 @@ static bool keysInitAdc(ADC16_Type *ptr, const uint8_t *seq_ch, volatile uint32_
    *   즉 우리 잡음 바닥은 S/H 정착이나 소스 임피던스가 아니다. 센서 자체의 출력
    *   잡음과 저주파 성분(드리프트·전원)이 지배한다. ADC 쪽을 아무리 손봐도 안 준다.
    *
-   *   ★ 그러니 여기를 다시 올리려면 **먼저 잡음 출처가 바뀌었다는 근거**가 있어야
-   *     한다. 스캔율만 잃는다.
+   *   ★ 그러니 잡음 때문에 여기를 다시 올리려면 **먼저 잡음 출처가 바뀌었다는 근거**가
+   *     있어야 한다. 스캔율만 잃는다.
+   *
+   * ★ **채널 사이 번짐에는 듣는다.** 센서 출력 커패시터가 크면 샘플 커패시터가 남긴
+   *   앞 채널 전하가 다음 채널에 남는다. 그런 보드는 config.h 에서 올린다 —
+   *   wish40-he 가 16 이고, 측정은 그쪽 config.h 에 있다.
    */
-  ch_cfg.sample_cycle = 5;
+  ch_cfg.sample_cycle = sample_cycles;
   for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++)
   {
     ch_cfg.ch = seq_ch[i];
@@ -1634,6 +1653,26 @@ static bool keysInitAdc(ADC16_Type *ptr, const uint8_t *seq_ch, volatile uint32_
   /* 완료는 폴링으로 본다. 인터럽트는 켜지 않는다. */
   adc16_clear_status_flags(ptr, ADC16_INT_STS_SEQ_CMPT_MASK);
 
+  return true;
+}
+
+static bool keysSetSampleCycles(uint32_t cycles)
+{
+  adc16_channel_config_t ch_cfg;
+
+  if (cycles == 0 || cycles > 255) return false;
+
+  sample_cycles = cycles;
+
+  adc16_get_channel_default_config(&ch_cfg);
+  ch_cfg.sample_cycle = sample_cycles;
+  for (uint32_t i = 0; i < KEYS_SEQ_LEN; i++)
+  {
+    ch_cfg.ch = adc0_seq_ch[i];
+    adc16_init_channel(HPM_ADC0, &ch_cfg);
+    ch_cfg.ch = adc1_seq_ch[i];
+    adc16_init_channel(HPM_ADC1, &ch_cfg);
+  }
   return true;
 }
 
@@ -6499,6 +6538,22 @@ void cliKeys(cli_args_t *args)
    * 최소를 찾고, 찾으면 config.h 에 적는다. 스텝마다 도는 값이라 스캔 시간에
    * 8배로 들어온다 — `keys info` 로 같이 본다.
    */
+  /*
+   * 샘플 조리개를 굽지 않고 바꾼다.
+   *
+   * 변환 하나가 `n + 21` ADC 클럭이라, 한 클럭 늘 때마다 스캔이 채널 수 x 스텝 수
+   * 클럭만큼 길어진다 — `keys time` 으로 같이 본다.
+   */
+  if (args->argc >= 1 && args->isStr(0, "sample"))
+  {
+    if (args->argc == 2 && keysSetSampleCycles(args->getData(1)) == false)
+    {
+      cliPrintf("[E_] 범위 밖\n");
+    }
+    cliPrintf("sample %d clk  (기본값 %d)\n", (int)sample_cycles, (int)KEYS_SAMPLE_CYCLES);
+    ret = true;
+  }
+
   if (args->argc >= 1 && args->isStr(0, "settle"))
   {
     if (args->argc == 2)
@@ -6513,6 +6568,7 @@ void cliKeys(cli_args_t *args)
   if (ret == false)
   {
     cliPrintf("keys settle [n]  MUX 세틀링 nop 수 — 번짐이 있으면 올린다\n");
+    cliPrintf("keys sample [n]  ADC 샘플 조리개 (클럭)\n");
     cliPrintf("keys info\n");
     cliPrintf("keys adc\n");
     cliPrintf("keys show      눌린 키 표시 (8x8 격자)\n");
