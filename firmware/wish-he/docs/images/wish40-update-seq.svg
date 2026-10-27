@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="560" viewBox="0 0 1120 560" role="img" aria-label="wish40-he 굽기 순서">
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8c959f"/></marker></defs>
+<rect width="1120" height="560" fill="#ffffff"/>
+<text xml:space="preserve" x="560.0" y="34" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="17" fill="#1f2328" text-anchor="middle" font-weight="700">매직 페이지를 맨 마지막에 쓴다</text>
+<text xml:space="preserve" x="560.0" y="56" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="12.5" fill="#6a737d" text-anchor="middle" font-weight="400">어디서 끊겨도 0x80020000 에 &quot;HPM\n&quot; 이 없으니 다음 부팅은 부트로더에 남는다</text>
+<text xml:space="preserve" x="246.0" y="92" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11" fill="#6a737d" text-anchor="middle" font-weight="400">0x20000</text>
+<text xml:space="preserve" x="346.0" y="92" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11" fill="#6a737d" text-anchor="middle" font-weight="400">0x21000</text>
+<text xml:space="preserve" x="446.0" y="92" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11" fill="#6a737d" text-anchor="middle" font-weight="400">0x22000</text>
+<text xml:space="preserve" x="546.0" y="92" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11" fill="#6a737d" text-anchor="middle" font-weight="400">0x23000</text>
+<text xml:space="preserve" x="646.0" y="92" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11" fill="#6a737d" text-anchor="middle" font-weight="400">…</text>
+<text xml:space="preserve" x="746.0" y="92" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace" font-size="11" fill="#6a737d" text-anchor="middle" font-weight="400">끝</text>
+<text xml:space="preserve" x="40" y="122" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="13.5" fill="#1f2328" text-anchor="start" font-weight="700">굽기 전</text>
+<rect x="200" y="102" width="92" height="46" rx="4" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.2"/>
+<text xml:space="preserve" x="246.0" y="130" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="middle" font-weight="400">옛 앱</text>
+<rect x="300" y="102" width="92" height="46" rx="4" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.2"/>
+<text xml:space="preserve" x="346.0" y="130" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="middle" font-weight="400">옛 앱</text>
+<rect x="400" y="102" width="92" height="46" rx="4" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.2"/>
+<text xml:space="preserve" x="446.0" y="130" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="middle" font-weight="400">옛 앱</text>
+<rect x="500" y="102" width="92" height="46" rx="4" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.2"/>
+<text xml:space="preserve" x="546.0" y="130" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="middle" font-weight="400">옛 앱</text>
+<rect x="600" y="102" width="92" height="46" rx="4" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.2"/>
+<text xml:space="preserve" x="646.0" y="130" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="middle" font-weight="400">옛 앱</text>
+<rect x="700" y="102" width="92" height="46" rx="4" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.2"/>
+<text xml:space="preserve" x="746.0" y="130" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="middle" font-weight="400">옛 앱</text>
+<text xml:space="preserve" x="810" y="120" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="12" fill="#1f2328" text-anchor="start" font-weight="400">앱이 돈다</text>
+<text xml:space="preserve" x="810" y="139" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="start" font-weight="400">매직이 있다 → 넘어간다</text>
+<text xml:space="preserve" x="40" y="198" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="13.5" fill="#1f2328" text-anchor="start" font-weight="700">0x81 시작</text>
+<rect x="200" y="178" width="92" height="46" rx="4" fill="#fafbfc" stroke="#d0d7de" stroke-width="1.2" stroke-dasharray="4 3"/>
+<text xml:space="preserve" x="246.0" y="206" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="middle" font-weight="400">지움</text>
+<rect x="300" y="178" width="92" height="46" rx="4" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.2"/>
+<text xml:space="preserve" x="346.0" y="206" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="middle" font-weight="400">옛 앱</text>
+<rect x="400" y="178" width="92" height="46" rx="4" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.2"/>
+<text xml:space="preserve" x="446.0" y="206" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="middle" font-weight="400">옛 앱</text>
+<rect x="500" y="178" width="92" height="46" rx="4" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.2"/>
+<text xml:space="preserve" x="546.0" y="206" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="middle" font-weight="400">옛 앱</text>
+<rect x="600" y="178" width="92" height="46" rx="4" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.2"/>
+<text xml:space="preserve" x="646.0" y="206" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="middle" font-weight="400">옛 앱</text>
+<rect x="700" y="178" width="92" height="46" rx="4" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.2"/>
+<text xml:space="preserve" x="746.0" y="206" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="middle" font-weight="400">옛 앱</text>
+<text xml:space="preserve" x="810" y="196" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="12" fill="#1f2328" text-anchor="start" font-weight="400">첫 섹터부터 지운다</text>
+<text xml:space="preserve" x="810" y="215" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="start" font-weight="400">여기서 끊겨도 매직이 없다</text>
+<text xml:space="preserve" x="40" y="274" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="13.5" fill="#1f2328" text-anchor="start" font-weight="700">0x80 · 0x82</text>
+<rect x="200" y="254" width="92" height="46" rx="4" fill="#dcfce7" stroke="#16a34a" stroke-width="1.2" stroke-dasharray="5 3"/>
+<text xml:space="preserve" x="246.0" y="276" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">RAM 에</text>
+<text xml:space="preserve" x="246.0" y="291" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">들고 있다</text>
+<rect x="300" y="254" width="92" height="46" rx="4" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.2"/>
+<text xml:space="preserve" x="346.0" y="282" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">새 앱</text>
+<rect x="400" y="254" width="92" height="46" rx="4" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.2"/>
+<text xml:space="preserve" x="446.0" y="282" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">새 앱</text>
+<rect x="500" y="254" width="92" height="46" rx="4" fill="#fafbfc" stroke="#d0d7de" stroke-width="1.2" stroke-dasharray="4 3"/>
+<text xml:space="preserve" x="546.0" y="282" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="middle" font-weight="400">지움</text>
+<rect x="600" y="254" width="92" height="46" rx="4" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.2"/>
+<text xml:space="preserve" x="646.0" y="282" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="middle" font-weight="400">옛 앱</text>
+<rect x="700" y="254" width="92" height="46" rx="4" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.2"/>
+<text xml:space="preserve" x="746.0" y="282" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="middle" font-weight="400">옛 앱</text>
+<text xml:space="preserve" x="810" y="272" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="12" fill="#1f2328" text-anchor="start" font-weight="400">받는 대로 지우고 · 쓰고 · 되읽는다</text>
+<text xml:space="preserve" x="810" y="291" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="start" font-weight="400">첫 페이지만 RAM 에 둔다</text>
+<text xml:space="preserve" x="40" y="350" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="13.5" fill="#1f2328" text-anchor="start" font-weight="700">마지막 0x82</text>
+<rect x="200" y="330" width="92" height="46" rx="4" fill="#dcfce7" stroke="#16a34a" stroke-width="1.2" stroke-dasharray="5 3"/>
+<text xml:space="preserve" x="246.0" y="352" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">RAM 에</text>
+<text xml:space="preserve" x="246.0" y="367" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">들고 있다</text>
+<rect x="300" y="330" width="92" height="46" rx="4" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.2"/>
+<text xml:space="preserve" x="346.0" y="358" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">새 앱</text>
+<rect x="400" y="330" width="92" height="46" rx="4" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.2"/>
+<text xml:space="preserve" x="446.0" y="358" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">새 앱</text>
+<rect x="500" y="330" width="92" height="46" rx="4" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.2"/>
+<text xml:space="preserve" x="546.0" y="358" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">새 앱</text>
+<rect x="600" y="330" width="92" height="46" rx="4" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.2"/>
+<text xml:space="preserve" x="646.0" y="358" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">새 앱</text>
+<rect x="700" y="330" width="92" height="46" rx="4" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.2"/>
+<text xml:space="preserve" x="746.0" y="358" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">새 앱</text>
+<text xml:space="preserve" x="810" y="348" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="12" fill="#1f2328" text-anchor="start" font-weight="400">나머지가 다 들어갔다</text>
+<text xml:space="preserve" x="810" y="367" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="start" font-weight="400">아직 매직이 없다</text>
+<text xml:space="preserve" x="40" y="426" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="13.5" fill="#1f2328" text-anchor="start" font-weight="700">0x83 종료</text>
+<rect x="200" y="406" width="92" height="46" rx="4" fill="#ede9fe" stroke="#7c3aed" stroke-width="2.4"/>
+<text xml:space="preserve" x="246.0" y="428" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">새 앱</text>
+<text xml:space="preserve" x="246.0" y="443" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="700">+ 매직</text>
+<rect x="300" y="406" width="92" height="46" rx="4" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.2"/>
+<text xml:space="preserve" x="346.0" y="434" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">새 앱</text>
+<rect x="400" y="406" width="92" height="46" rx="4" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.2"/>
+<text xml:space="preserve" x="446.0" y="434" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">새 앱</text>
+<rect x="500" y="406" width="92" height="46" rx="4" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.2"/>
+<text xml:space="preserve" x="546.0" y="434" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">새 앱</text>
+<rect x="600" y="406" width="92" height="46" rx="4" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.2"/>
+<text xml:space="preserve" x="646.0" y="434" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">새 앱</text>
+<rect x="700" y="406" width="92" height="46" rx="4" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.2"/>
+<text xml:space="preserve" x="746.0" y="434" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#1f2328" text-anchor="middle" font-weight="400">새 앱</text>
+<text xml:space="preserve" x="810" y="424" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="12" fill="#1f2328" text-anchor="start" font-weight="400">첫 페이지를 쓴다 → 매직이 생긴다</text>
+<text xml:space="preserve" x="810" y="443" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="11.5" fill="#6a737d" text-anchor="start" font-weight="400">플래그를 지우고 50 ms 뒤 리셋</text>
+<rect x="40" y="476" width="1040" height="66" rx="6" fill="#fafbfc" stroke="#e5e7eb" stroke-width="1"/>
+<text xml:space="preserve" x="54" y="502" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="12" fill="#1f2328" text-anchor="start" font-weight="400">★ 시험: 세 페이지만 쓰고 끊은 뒤 플래그까지 지워 &quot;앱으로 가라&quot; 쪽 조건을 최대한 만들었다 — 매직이 없어 부트로더에 남았고, 다시 구워 복구했다.</text>
+<text xml:space="preserve" x="54" y="524" font-family="-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif" font-size="12" fill="#1f2328" text-anchor="start" font-weight="400">★ 쓰는 범위는 0x20000 ~ 0x80000 으로 못 박았다. 호스트가 주소를 줄 수 없어 부트로더 자신도 앱 데이터(0xC0000~)도 덮을 길이 없다.</text>
+</svg>

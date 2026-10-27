@@ -3,7 +3,9 @@
 # Svg 헬퍼 + 다이어그램 생성
 import os, html
 
-OUT = "/Users/hancheol/hdd/git/hpm5300evk/firmware/wish60-he/docs/images"
+# 이 스크립트가 있는 폴더에 쓴다 (예전에는 옛 작업장 경로를 박아 두어 여기서 돌리면
+# 엉뚱한 곳에 생겼다)
+OUT = os.path.dirname(os.path.abspath(__file__))
 os.makedirs(OUT, exist_ok=True)
 
 MONO = "ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace"
@@ -275,6 +277,225 @@ def keys_pipeline():
     s.save("keys-pipeline.svg")
 
 
+# ────────────────────────────────────────── wish40-he 플래시 배치
+def wish40_flash_map():
+    W, H = 1120, 640
+    s = Svg(W, H, "wish40-he 플래시 배치")
+    s.text(W/2, 34, "wish40-he 플래시 1MB — 누가 어디를 쓰나", size=17, anchor="middle", weight="700")
+    s.text(W/2, 56, "계약은 wish60-he 부트로더와 같다. 앱은 이 배치를 이미 안다. (칸 높이는 비율이 아니다)",
+           size=12.5, anchor="middle", fill=MUTED)
+
+    X, BW = 150, 480
+    rows = [
+        # (키, 주소, 높이, 이름, 설명, 채움, 테두리, 점선)
+        ("gap0",  "0x80000000", 30, "비움", "", GAP_F, GAP_S, "4 3"),
+        ("norcfg","0x80000400", 30, "nor_cfg_option  16 B", "ROM 이 XPI 를 이걸로 잡는다", ROM_F, ROM_S, None),
+        ("hdr",   "0x80001000", 30, "부트 헤더", "ROM 이 찾는 이미지 표지", ROM_F, ROM_S, None),
+        ("boot",  "0x80003000", 92, "부트로더", "34 KB 사용 / 116 KB 한도 — 넘으면 링커가 멈춘다", FLASH_F, FLASH_S, None),
+        ("flag",  "0x8001D000", 34, "업데이트 플래그", "4 KB 섹터 — 0xFFFFFFFF 가 아니면 남는다", WARN_F, WARN_S, None),
+        ("app",   "0x80020000", 120, "앱  384 KB", "첫 4 바이트 \"HPM\\n\", 진입점 0x80020004", APP_F, APP_S, None),
+        ("gap1",  "0x80080000", 56, "안 쓴다", "wish60 의 데이터 자리 — 규칙으로 비워 둔다", GAP_F, GAP_S, "4 3"),
+        ("data",  "0x800C0000", 100, "앱 데이터", "보정 · QMK EEPROM · 설정 · 스위치 정의", RAM_F, RAM_S, None),
+    ]
+    y = 86
+    ys = {}
+    for key, addr, h, name, desc, f, st, dash in rows:
+        s.rect(X, y, BW, h, f, st, rx=4, sw=1.4, dash=dash)
+        s.text(X - 12, y + 15, addr, size=11.5, anchor="end", mono=True, fill=MUTED)
+        if h >= 50:
+            s.text(X + 14, y + h/2 - 4, name, size=13, weight="700")
+            s.text(X + 14, y + h/2 + 14, desc, size=11.5, fill=MUTED)
+        else:
+            s.text(X + 14, y + h/2 + 4, name, size=13, weight="700")
+            if desc:
+                s.text(X + BW - 14, y + h/2 + 4, desc, size=11.5, anchor="end", fill=MUTED)
+        ys[key] = (y, y + h)
+        y += h + 4
+    s.text(X - 12, y + 4, "0x80100000", size=11.5, anchor="end", mono=True, fill=MUTED)
+
+    def bracket(lane, y0, y1, col):
+        """칸 오른쪽에 범위 괄호를 긋는다. 가운데 y 를 돌려준다."""
+        s.path(f"M{lane - 8} {y0 + 2} L{lane} {y0 + 2} L{lane} {y1 - 2} L{lane - 8} {y1 - 2}",
+               stroke=col, sw=2.2)
+        return (y0 + y1) / 2
+
+    RX, RW = 770, 310
+
+    def writer(cy, title, l1, l2, col):
+        by = cy - 41
+        s.rect(RX, by, RW, 82, "#ffffff", col, rx=8, sw=1.6)
+        s.text(RX + 14, by + 24, title, size=13, weight="700")
+        s.text(RX + 14, by + 46, l1, size=11.5)
+        s.text(RX + 14, by + 66, l2, size=11.5, fill=MUTED)
+
+    L1, L2, L3 = X + BW + 22, X + BW + 46, X + BW + 70
+
+    # JTAG — 0x00000 ~ 0x20000 (부트로더 + 플래그까지)
+    cy = bracket(L1, ys["gap0"][0], ys["flag"][1], FLASH_S)
+    s.line(L1, cy, RX, cy, stroke=FLASH_S, sw=1.3, marker=True)
+    writer(cy, "JTAG — boot-wish40-flash 태스크", "0x00000 ~ 0x20000 만 지우고 쓴다",
+           "새 보드에 한 번. 앱과 보정값은 남는다", FLASH_S)
+
+    # 부트로더 — 앱 자리, 끝나면 플래그 지움
+    cy = bracket(L2, ys["app"][0], ys["app"][1], APP_S)
+    fy = bracket(L2, ys["flag"][0], ys["flag"][1], APP_S)
+    s.line(L2, cy, RX, cy, stroke=APP_S, sw=1.3, marker=True)
+    s.line(L2, fy, L2 + 10, fy, stroke=APP_S, sw=1.3)
+    s.path(f"M{L2 + 10} {fy} L{RX - 40} {fy} L{RX - 40} {cy - 30} L{RX} {cy - 30}",
+           stroke=APP_S, sw=1.1, dash="4 3", marker=True)
+    writer(cy, "부트로더 — USB 굽기", "0x20000 ~ 0x80000 만 쓴다 (못 박음)",
+           "끝나면 플래그 섹터를 지운다", APP_S)
+
+    # 앱 — 플래그에 쓰고, 자기 데이터는 0xC0000 위
+    cy = bracket(L3, ys["data"][0], ys["data"][1], RAM_S)
+    fy = bracket(L3, ys["flag"][0], ys["flag"][1], RAM_S)
+    s.line(L3, cy, RX, cy, stroke=RAM_S, sw=1.3, marker=True)
+    s.path(f"M{L3} {fy} L{RX - 20} {fy} L{RX - 20} {cy - 30} L{RX} {cy - 30}",
+           stroke=RAM_S, sw=1.1, dash="4 3", marker=True)
+    writer(cy, "앱", "플래그에 0x0000FFFF 를 쓰고 리셋 → 부트로더",
+           "자기 데이터는 0xC0000 위에만 쓴다", RAM_S)
+
+    s.rect(RX, 86, RW, 66, "#fafbfc", "#e5e7eb", rx=6, sw=1)
+    boxlines(s, RX, 84, RW, [
+        "부트로더는 0x20000 앞을 지울 길이 없다.",
+        "굽다 망가져도 부트로더는 산다. 그 대신",
+        "USB 로는 부트로더 자신을 못 고친다.",
+    ], dy=17, size=11.5, mono=False)
+
+    s.save("wish40-flash-map.svg")
+
+
+# ────────────────────────────────────────── wish40-he 부팅 판정
+def wish40_boot_flow():
+    W, H = 1120, 600
+    s = Svg(W, H, "wish40-he 부팅 판정")
+    s.text(W/2, 34, "부팅마다 고른다 — 앱으로 가나, 남나", size=17, anchor="middle", weight="700")
+    s.text(W/2, 56, "판정은 ROM 이 넘겨 준 24 MHz 그대로 한다. PLL 과 USB 는 남을 때만 켠다.",
+           size=12.5, anchor="middle", fill=MUTED)
+
+    def box(x, y, w, h, t, l1, l2, f, st):
+        s.rect(x, y, w, h, f, st, rx=8, sw=1.6)
+        s.text(x + w/2, y + 26, t, size=13.5, anchor="middle", weight="700")
+        if l1: s.text(x + w/2, y + 47, l1, size=11.5, anchor="middle")
+        if l2: s.text(x + w/2, y + 66, l2, size=11.5, anchor="middle", fill=MUTED)
+
+    box(40, 96, 180, 78, "전원 · 리셋", "ROM 이 부트 헤더를 읽고", "0x80003000 으로", ROM_F, ROM_S)
+    s.line(220, 135, 268, 135, marker=True)
+    box(270, 96, 220, 78, "부트로더 판정", "GPIO 와 ADC 원샷만 쓴다", "", FLASH_F, FLASH_S)
+
+    # 조건 목록
+    s.rect(270, 196, 220, 158, "#fafbfc", "#e5e7eb", rx=6, sw=1)
+    boxlines(s, 270, 196, 220, [
+        "① 0x80020000 = \"HPM\\n\"",
+        "② 플래그 = 0xFFFFFFFF",
+        "③ BOOT 버튼 안 눌림",
+        "④ Esc 안 눌림",
+        "",
+        "어긋난 것이 boot_why 비트",
+        "(1 · 2 · 4 · 8) 로 남는다",
+    ], dy=18, size=11.5, mono=False)
+    s.line(380, 174, 380, 196, stroke="#d0d7de")
+
+    s.line(490, 135, 556, 135, marker=True)
+    s.diamond(620, 135, 62, 44, PER_F, PER_S)
+    s.text(620, 131, "넷 다", size=12.5, anchor="middle", weight="700")
+    s.text(620, 148, "참?", size=12.5, anchor="middle", weight="700")
+
+    # 예 → 앱
+    s.line(682, 135, 760, 135, marker=True)
+    s.text(720, 125, "예", size=12, anchor="middle", fill=MUTED)
+    box(762, 92, 318, 86, "앱으로 점프  0x80020004", "PLL · USB 를 안 건드리고 넘긴다",
+        "앱이 24 MHz 에서 제 클럭을 처음부터 잡는다", APP_F, APP_S)
+
+    # 아니오 → 업데이트 모드
+    s.line(620, 179, 620, 236, marker=True)
+    s.text(632, 212, "아니오", size=12, fill=MUTED)
+    box(500, 238, 240, 96, "업데이트 모드", "400 MHz · USB 0483:5308", "LED 100 ms 마다 반전", WARN_F, WARN_S)
+
+    s.line(740, 286, 800, 286, marker=True)
+    box(802, 238, 278, 96, "굽기  0x80 ~ 0x83", "wish60 부트로더와 같은 프로토콜",
+        "iap_update.py · 웹앱 그대로", WARN_F, WARN_S)
+
+    s.line(941, 334, 941, 380, marker=True)
+    box(802, 382, 278, 96, "종료 0x83", "매직 페이지를 쓰고 플래그를 지운다",
+        "50 ms 뒤 리셋 — 점프하지 않는다", WARN_F, WARN_S)
+
+    # 리셋 → 처음으로
+    s.path("M802 430 L 130 430 L 130 176", stroke=LINE, sw=1.3, dash="6 4", marker=True)
+    s.text(470, 448, "다음 부팅이 판정부터 다시 한다 — 앱은 늘 깨끗한 상태에서 출발한다",
+           size=12, anchor="middle", fill=MUTED)
+
+    s.rect(40, 488, 1040, 90, "#fafbfc", "#e5e7eb", rx=6, sw=1)
+    boxlines(s, 40, 488, 1040, [
+        "★ Esc 는 극성을 가정하지 않는다 — |값 − VCC/2| > 8192 일 때 눌림. 스위치를 바꾸면 방향이 뒤집힌다.",
+        "★ 센서가 레일에 붙은 값(0.2 V 밑, VCC − 0.2 V 위)은 눌림으로 치지 않는다 — Esc 센서 하나가 죽으면 영영 앱으로 못 간다.",
+        "★ 조립하면 BOOT 버튼에 손이 안 닿는다. 앱이 깨졌을 때 남는 길이 Esc 다.",
+    ], dy=22, size=12, mono=False)
+
+    s.save("wish40-boot-flow.svg")
+
+
+# ────────────────────────────────────────── wish40-he 굽기 순서
+def wish40_update_seq():
+    W, H = 1120, 560
+    s = Svg(W, H, "wish40-he 굽기 순서")
+    s.text(W/2, 34, "매직 페이지를 맨 마지막에 쓴다", size=17, anchor="middle", weight="700")
+    s.text(W/2, 56, "어디서 끊겨도 0x80020000 에 \"HPM\\n\" 이 없으니 다음 부팅은 부트로더에 남는다",
+           size=12.5, anchor="middle", fill=MUTED)
+
+    SX, SW, SH, GAPX = 200, 92, 46, 8
+    labels = ["0x20000", "0x21000", "0x22000", "0x23000", "…", "끝"]
+
+    def strip(y, states, title, note1, note2):
+        s.text(40, y + 20, title, size=13.5, weight="700")
+        for i, st in enumerate(states):
+            x = SX + i * (SW + GAPX)
+            if st == "old":
+                s.rect(x, y, SW, SH, PER_F, PER_S, rx=4)
+                s.text(x + SW/2, y + 28, "옛 앱", size=11.5, anchor="middle", fill=MUTED)
+            elif st == "erased":
+                s.rect(x, y, SW, SH, GAP_F, GAP_S, rx=4, dash="4 3")
+                s.text(x + SW/2, y + 28, "지움", size=11.5, anchor="middle", fill=MUTED)
+            elif st == "ram":
+                s.rect(x, y, SW, SH, RAM_F, RAM_S, rx=4, dash="5 3")
+                s.text(x + SW/2, y + 22, "RAM 에", size=11.5, anchor="middle")
+                s.text(x + SW/2, y + 37, "들고 있다", size=11.5, anchor="middle")
+            elif st == "new":
+                s.rect(x, y, SW, SH, APP_F, APP_S, rx=4)
+                s.text(x + SW/2, y + 28, "새 앱", size=11.5, anchor="middle")
+            elif st == "magic":
+                s.rect(x, y, SW, SH, APP_F, APP_S, rx=4, sw=2.4)
+                s.text(x + SW/2, y + 22, "새 앱", size=11.5, anchor="middle")
+                s.text(x + SW/2, y + 37, "+ 매직", size=11.5, anchor="middle", weight="700")
+        nx = SX + 6 * (SW + GAPX) + 10
+        s.text(nx, y + 18, note1, size=12)
+        s.text(nx, y + 37, note2, size=11.5, fill=MUTED)
+
+    for i, l in enumerate(labels):
+        s.text(SX + i * (SW + GAPX) + SW/2, 92, l, size=11, anchor="middle", mono=True, fill=MUTED)
+
+    strip(102, ["old"] * 6, "굽기 전", "앱이 돈다", "매직이 있다 → 넘어간다")
+    strip(178, ["erased", "old", "old", "old", "old", "old"], "0x81 시작",
+          "첫 섹터부터 지운다", "여기서 끊겨도 매직이 없다")
+    strip(254, ["ram", "new", "new", "erased", "old", "old"], "0x80 · 0x82",
+          "받는 대로 지우고 · 쓰고 · 되읽는다", "첫 페이지만 RAM 에 둔다")
+    strip(330, ["ram", "new", "new", "new", "new", "new"], "마지막 0x82",
+          "나머지가 다 들어갔다", "아직 매직이 없다")
+    strip(406, ["magic", "new", "new", "new", "new", "new"], "0x83 종료",
+          "첫 페이지를 쓴다 → 매직이 생긴다", "플래그를 지우고 50 ms 뒤 리셋")
+
+    s.rect(40, 476, 1040, 66, "#fafbfc", "#e5e7eb", rx=6, sw=1)
+    boxlines(s, 40, 476, 1040, [
+        "★ 시험: 세 페이지만 쓰고 끊은 뒤 플래그까지 지워 \"앱으로 가라\" 쪽 조건을 최대한 만들었다 — 매직이 없어 부트로더에 남았고, 다시 구워 복구했다.",
+        "★ 쓰는 범위는 0x20000 ~ 0x80000 으로 못 박았다. 호스트가 주소를 줄 수 없어 부트로더 자신도 앱 데이터(0xC0000~)도 덮을 길이 없다.",
+    ], dy=22, size=12, mono=False)
+
+    s.save("wish40-update-seq.svg")
+
+
 print("생성:")
 ws2812_dma()
 keys_pipeline()
+wish40_flash_map()
+wish40_boot_flow()
+wish40_update_seq()
